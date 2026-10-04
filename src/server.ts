@@ -3,15 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { renderReadmePage, renderCreditsPage } from "./render-readme.ts";
-import {
-  listFeatures,
-  insertFeature,
-  updateFeatureGeometry,
-  deleteFeature,
-  listTerrainDabs,
-  insertTerrainDabs,
-  InvalidFeatureError,
-} from "./db.ts";
+import { listMarks, insertMark, MARK_KINDS } from "./db.ts";
+import type { MarkKind } from "./db.ts";
 import { resolveSession } from "./session.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -53,6 +46,14 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return raw.length ? JSON.parse(raw) : {};
 }
 
+function isMarkKind(value: unknown): value is MarkKind {
+  return typeof value === "string" && (MARK_KINDS as readonly string[]).includes(value);
+}
+
+function isPercentage(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100;
+}
+
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const { sessionId, setCookieHeader } = resolveSession(req);
@@ -72,13 +73,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     return;
   }
 
-  if (url.pathname === "/api/features" && req.method === "GET") {
+  if (url.pathname === "/api/marks" && req.method === "GET") {
+    const body = JSON.stringify(listMarks());
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify(listFeatures()));
+    res.end(body);
     return;
   }
 
-  if (url.pathname === "/api/features" && req.method === "POST") {
+  if (url.pathname === "/api/marks" && req.method === "POST") {
     let payload: unknown;
     try {
       payload = await readJsonBody(req);
@@ -87,84 +89,20 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       res.end(JSON.stringify({ error: "invalid JSON body" }));
       return;
     }
-    try {
-      const feature = insertFeature(payload, sessionId);
-      res.writeHead(201, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify(feature));
-    } catch (err) {
-      if (err instanceof InvalidFeatureError) {
-        res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ error: err.message }));
-        return;
-      }
-      throw err;
-    }
-    return;
-  }
-
-  if (url.pathname === "/api/terrain-dabs" && req.method === "GET") {
-    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify({ dabs: listTerrainDabs() }));
-    return;
-  }
-
-  if (url.pathname === "/api/terrain-dabs" && req.method === "POST") {
-    let payload: unknown;
-    try {
-      payload = await readJsonBody(req);
-    } catch {
+    const { x, y, kind } = (payload ?? {}) as Record<string, unknown>;
+    if (!isPercentage(x) || !isPercentage(y) || !isMarkKind(kind)) {
       res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ error: "invalid JSON body" }));
+      res.end(
+        JSON.stringify({
+          error: `a mark needs x and y in [0,100] and kind one of ${MARK_KINDS.join(", ")}`,
+        }),
+      );
       return;
     }
-    const { dabs } = (payload ?? {}) as Record<string, unknown>;
-    try {
-      const inserted = insertTerrainDabs(dabs, sessionId);
-      res.writeHead(201, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ dabs: inserted }));
-    } catch (err) {
-      if (err instanceof InvalidFeatureError) {
-        res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ error: err.message }));
-        return;
-      }
-      throw err;
-    }
-    return;
-  }
-
-  const featureIdMatch = /^\/api\/features\/(\d+)$/.exec(url.pathname);
-  if (featureIdMatch && req.method === "PUT") {
-    const id = Number(featureIdMatch[1]);
-    let payload: unknown;
-    try {
-      payload = await readJsonBody(req);
-    } catch {
-      res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ error: "invalid JSON body" }));
-      return;
-    }
-    const { geometry } = (payload ?? {}) as Record<string, unknown>;
-    try {
-      const updated = updateFeatureGeometry(id, geometry);
-      res.writeHead(updated ? 200 : 404, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify(updated ?? { error: "no such feature" }));
-    } catch (err) {
-      if (err instanceof InvalidFeatureError) {
-        res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ error: err.message }));
-        return;
-      }
-      throw err;
-    }
-    return;
-  }
-
-  if (featureIdMatch && req.method === "DELETE") {
-    const id = Number(featureIdMatch[1]);
-    const removed = deleteFeature(id);
-    res.writeHead(removed ? 204 : 404, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(removed ? undefined : JSON.stringify({ error: "no such feature" }));
+    const mark = insertMark(x, y, kind, sessionId);
+    const body = JSON.stringify(mark);
+    res.writeHead(201, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(body);
     return;
   }
 

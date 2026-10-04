@@ -4,66 +4,57 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>The Isle</title>
-    <link rel="stylesheet" href="/vendor/leaflet/leaflet.css" />
-    <link rel="stylesheet" href="/vendor/geoman/leaflet-geoman.min.css" />
     <link rel="stylesheet" href="/app.css" />
   </head>
   <body>
     <header class="page-header">
       <h1>The Isle</h1>
-      <p>
-        A shared island. Pick an area kind and drag on the map to paint it, or pick a
-        line/object kind and draw it with the map's toolbar — it stays for everyone
-        who visits next.
-      </p>
+      <p>A shared island. Click or tap anywhere to leave a small mark — it stays for everyone who visits next.</p>
     </header>
 
-    <div id="kindbar" class="kindbar">
-      <div class="kindbar-group" data-geometry="Terrain">
-        <span class="kindbar-label">Areas</span>
-        <button type="button" class="kind-choice is-active" data-kind="grass" style="--swatch: #6fae53">Grass</button>
-        <button type="button" class="kind-choice" data-kind="sand" style="--swatch: #e4c27a">Sand</button>
-        <button type="button" class="kind-choice" data-kind="rock" style="--swatch: #9a9a93">Rock</button>
-        <button type="button" class="kind-choice" data-kind="water" style="--swatch: #5fb3d9">Water</button>
-        <button type="button" class="kind-choice" data-kind="forest" style="--swatch: #2f6b3a">Forest</button>
-        <button type="button" class="kind-choice" data-kind="eraser" style="--swatch: #d8d4c8">Eraser</button>
+    <main>
+      <div id="map" class="map">
+        <img src="/assets/island.png" alt="A fictional island" class="map-image" draggable="false" />
+        <div id="marks" class="marks-layer"></div>
       </div>
-      <div class="kindbar-group" data-role="brush-size">
-        <span class="kindbar-label">Brush</span>
-        <button type="button" class="size-choice" data-size="small">S</button>
-        <button type="button" class="size-choice is-active" data-size="medium">M</button>
-        <button type="button" class="size-choice" data-size="large">L</button>
-      </div>
-      <div class="kindbar-group" data-geometry="LineString">
-        <span class="kindbar-label">Lines</span>
-        <button type="button" class="kind-choice" data-kind="road" style="--swatch: #6b5842">Road</button>
-        <button type="button" class="kind-choice" data-kind="path" style="--swatch: #c2a877">Path</button>
-      </div>
-      <div class="kindbar-group" data-geometry="Point">
-        <span class="kindbar-label">Objects</span>
-        <button type="button" class="kind-choice" data-kind="building" style="--swatch: #8a7a9a">Building</button>
-        <button type="button" class="kind-choice" data-kind="ruin" style="--swatch: #7a7268">Ruin</button>
-      </div>
-    </div>
-
-    <main class="home-main">
-      <div id="map" class="map"></div>
     </main>
-    <p class="map-hint">
-      Areas: pick a brush size, then click and drag on the map to paint (eraser restores
-      the original map). Lines and objects: use the map's own toolbar to draw, edit,
-      drag, or remove a shape.
-    </p>
+
+    <div id="palette" class="palette" hidden>
+      <button type="button" class="palette-choice" data-kind="flag">
+        <img src="/assets/icons/flag.svg" alt="Flag" />
+      </button>
+      <button type="button" class="palette-choice" data-kind="campfire">
+        <img src="/assets/icons/campfire.svg" alt="Campfire" />
+      </button>
+      <button type="button" class="palette-choice" data-kind="tent">
+        <img src="/assets/icons/tent.svg" alt="Tent" />
+      </button>
+      <button type="button" class="palette-choice" data-kind="boat">
+        <img src="/assets/icons/boat.svg" alt="Boat" />
+      </button>
+      <button type="button" class="palette-choice" data-kind="tree">
+        <img src="/assets/icons/tree.svg" alt="Tree" />
+      </button>
+      <button type="button" class="palette-choice" data-kind="ruin">
+        <img src="/assets/icons/ruin.svg" alt="Ruin" />
+      </button>
+    </div>
 
     <footer class="page-footer">
       <p>
         <a href="/readme/">What "good" means for this app</a> &middot;
-        see <a href="/credits/">credits</a> for art sources
+        Island art by
+        <a href="https://wisedawn.itch.io/" target="_blank" rel="noopener">Wisedawn</a>
+        via
+        <a href="https://opengameart.org/content/25-cc0-top-down-islands" target="_blank" rel="noopener"
+          >OpenGameArt</a
+        >
+        (CC0) &middot; Icons by Lorc &amp; Delapouite via
+        <a href="https://game-icons.net" target="_blank" rel="noopener">game-icons.net</a>
+        (CC BY 3.0)
       </p>
     </footer>
 
-    <script src="/vendor/leaflet/leaflet.js"></script>
-    <script src="/vendor/geoman/leaflet-geoman.min.js"></script>
     <script src="/app.js" type="module"></script>
   </body>
 </html>
