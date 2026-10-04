@@ -18,5 +18,8 @@
   },
   "engines": {
     "pnpm": ">=11"
+  },
+  "dependencies": {
+    "marked": "^18.0.14"
   }
 }

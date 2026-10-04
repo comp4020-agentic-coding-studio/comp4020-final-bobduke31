@@ -1,0 +1,141 @@
+:root {
+  color-scheme: light;
+  --ocean: #0b4f6c;
+  --ocean-deep: #073b52;
+  --ink: #0c2d33;
+  --panel: #ffffffee;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: linear-gradient(180deg, var(--ocean) 0%, var(--ocean-deep) 100%);
+  color: #f2f8fa;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.page-header {
+  text-align: center;
+  padding: 1.5rem 1rem 0.5rem;
+  max-width: 40rem;
+}
+
+.page-header h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.75rem;
+}
+
+.page-header p {
+  margin: 0;
+  opacity: 0.85;
+}
+
+main {
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.map {
+  position: relative;
+  width: min(90vw, 720px);
+  aspect-ratio: 1 / 1;
+  cursor: crosshair;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+.map-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+}
+
+.marks-layer {
+  position: absolute;
+  inset: 0;
+}
+
+.mark {
+  position: absolute;
+  width: 7%;
+  aspect-ratio: 1 / 1;
+  transform: translate(-50%, -100%);
+  filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.55));
+  pointer-events: none;
+}
+
+.mark img {
+  width: 100%;
+  height: 100%;
+}
+
+.palette {
+  position: fixed;
+  display: flex;
+  gap: 0.4rem;
+  background: var(--panel);
+  border-radius: 0.75rem;
+  padding: 0.5rem;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  z-index: 10;
+}
+
+.palette[hidden] {
+  display: none;
+}
+
+.palette-choice {
+  width: 2.75rem;
+  height: 2.75rem;
+  border: none;
+  border-radius: 0.5rem;
+  background: #eef3f4;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0.5rem;
+}
+
+.palette-choice:hover,
+.palette-choice:focus-visible {
+  background: #d7e4e6;
+}
+
+.palette-choice img {
+  width: 100%;
+  height: 100%;
+}
+
+.page-footer {
+  margin-top: auto;
+  padding: 1rem;
+  font-size: 0.8rem;
+  text-align: center;
+  opacity: 0.75;
+  max-width: 44rem;
+}
+
+.page-footer a {
+  color: inherit;
+}
+
+.readme {
+  max-width: 42rem;
+  margin: 2rem auto;
+  padding: 0 1.5rem;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.6;
+}
