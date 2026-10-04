@@ -13,6 +13,21 @@ function renderMark(mark) {
   img.src = `/assets/icons/${mark.kind}.svg`;
   img.alt = mark.kind;
   el.appendChild(img);
+
+  if (mark.mine) {
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "mark-remove";
+    removeButton.setAttribute("aria-label", `Remove this ${mark.kind} mark`);
+    removeButton.textContent = "×";
+    removeButton.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const res = await fetch(`/api/marks/${mark.id}`, { method: "DELETE" });
+      if (res.ok) el.remove();
+    });
+    el.appendChild(removeButton);
+  }
+
   marksLayer.appendChild(el);
 }
 

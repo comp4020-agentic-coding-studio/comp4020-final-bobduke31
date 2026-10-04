@@ -62,3 +62,18 @@ export function insertMark(x: number, y: number, kind: MarkKind, sessionId: stri
   const row = insertStmt.get(x, y, kind, sessionId) as unknown as MarkRow;
   return rowToMark(row);
 }
+
+const getStmt = db.prepare("SELECT * FROM marks WHERE id = ?");
+const deleteStmt = db.prepare("DELETE FROM marks WHERE id = ?");
+
+export type DeleteMarkResult = "deleted" | "not-found" | "forbidden";
+
+// A visitor may only remove marks their own session placed - checked here,
+// next to session_id, rather than trusting the caller to have already filtered.
+export function deleteMarkOwnedBy(id: number, sessionId: string): DeleteMarkResult {
+  const row = getStmt.get(id) as unknown as MarkRow | undefined;
+  if (!row) return "not-found";
+  if (row.session_id !== sessionId) return "forbidden";
+  deleteStmt.run(id);
+  return "deleted";
+}

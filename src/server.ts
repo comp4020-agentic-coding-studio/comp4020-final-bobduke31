@@ -3,8 +3,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize } from "node:path";
 import { renderReadmePage, renderCreditsPage } from "./render-readme.ts";
-import { listMarks, insertMark, MARK_KINDS } from "./db.ts";
-import type { MarkKind } from "./db.ts";
+import { listMarks, insertMark, deleteMarkOwnedBy, MARK_KINDS } from "./db.ts";
+import type { Mark, MarkKind } from "./db.ts";
 import { resolveSession } from "./session.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -54,6 +54,13 @@ function isPercentage(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100;
 }
 
+// Never hand another visitor's session id to the client - just whether this
+// mark is theirs to remove.
+function toClientMark(mark: Mark, sessionId: string) {
+  const { sessionId: owner, ...rest } = mark;
+  return { ...rest, mine: owner === sessionId };
+}
+
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const { sessionId, setCookieHeader } = resolveSession(req);
@@ -74,7 +81,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
 
   if (url.pathname === "/api/marks" && req.method === "GET") {
-    const body = JSON.stringify(listMarks());
+    const body = JSON.stringify(listMarks().map((mark) => toClientMark(mark, sessionId)));
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
     res.end(body);
     return;
@@ -100,9 +107,28 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return;
     }
     const mark = insertMark(x, y, kind, sessionId);
-    const body = JSON.stringify(mark);
+    const body = JSON.stringify(toClientMark(mark, sessionId));
     res.writeHead(201, { "Content-Type": "application/json; charset=utf-8" });
     res.end(body);
+    return;
+  }
+
+  const markIdMatch = /^\/api\/marks\/(\d+)$/.exec(url.pathname);
+  if (markIdMatch && req.method === "DELETE") {
+    const id = Number(markIdMatch[1]);
+    const result = deleteMarkOwnedBy(id, sessionId);
+    if (result === "not-found") {
+      res.writeHead(404, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: "mark not found" }));
+      return;
+    }
+    if (result === "forbidden") {
+      res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: "you can only remove marks you placed yourself" }));
+      return;
+    }
+    res.writeHead(204);
+    res.end();
     return;
   }
 
