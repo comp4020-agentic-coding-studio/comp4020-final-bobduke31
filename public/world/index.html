@@ -10,13 +10,79 @@
     <header class="page-header">
       <h1>Shared terrain — C9 real-time prototype</h1>
       <p>
-        Drag to raise terrain. Hold Shift and drag to lower it. Open this page in a second window or browser profile
-        to watch changes arrive live, with no reload.
+        Pick a tool, then drag on the map. Open this page in a second window or browser profile to watch changes
+        arrive live, with no reload.
       </p>
     </header>
+
+    <div class="toolbar">
+      <div class="tool-group">
+        <span class="tool-group-label">Elevation</span>
+        <button type="button" data-tool="raise" class="active" title="Raises existing land. Has no effect on the sea.">
+          Raise
+        </button>
+        <button type="button" data-tool="lower" title="Lowers existing land, but stops short of the sea - it never turns land into water.">
+          Lower
+        </button>
+        <button
+          type="button"
+          data-tool="smooth"
+          title="Softens bumpy land by averaging it with its neighbours. Never crosses the coastline into the sea."
+        >
+          Smooth
+        </button>
+      </div>
+      <div class="tool-group">
+        <span class="tool-group-label">Relief</span>
+        <button type="button" data-tool="mountain" title="Raises land into a rocky ridge - changes height and material together.">
+          Mountain
+        </button>
+        <button type="button" data-tool="peak" title="Raises land to a high, rocky summit - the tallest, most prominent terrain.">
+          Peak
+        </button>
+      </div>
+      <div class="tool-group">
+        <span class="tool-group-label">Terrain</span>
+        <button type="button" data-tool="grassland">Grassland</button>
+        <button type="button" data-tool="sand">Sand</button>
+        <button type="button" data-tool="forest">Forest</button>
+        <button type="button" data-tool="rock" title="Rocky ground material, at whatever height it already is - for height, use Mountain or Peak.">
+          Rock
+        </button>
+      </div>
+      <div class="tool-group">
+        <span class="tool-group-label">Land</span>
+        <button type="button" data-tool="land" title="The only tool that turns sea into land.">Create land</button>
+        <button type="button" data-tool="sea" title="The only tool that turns land into sea.">Paint sea</button>
+      </div>
+      <div class="tool-group">
+        <label>Brush size <input id="brush-size" type="range" min="4" max="28" step="1" value="10" /></label>
+        <label>Strength <input id="brush-strength" type="range" min="0.03" max="0.3" step="0.01" value="0.15" /></label>
+      </div>
+      <div class="tool-group">
+        <span class="tool-group-label">View</span>
+        <button type="button" data-view="top" class="active" title="Flat map, accurate shapes - best for precise editing.">
+          Top-down
+        </button>
+        <button
+          type="button"
+          data-view="oblique"
+          title="Elevation shears upward so mountains show real height and a visible side. Still editable, but redraws the whole map on every stroke, so it's less responsive than top-down."
+        >
+          Oblique
+        </button>
+      </div>
+    </div>
+    <p class="tool-hint">
+      Raise / Lower / Smooth / Mountain / Peak only ever reshape existing land - they can't turn it into sea. Create
+      Land and Paint Sea are the only tools that change the coastline itself.
+    </p>
+
     <main>
       <canvas id="stage"></canvas>
     </main>
+    <script src="/world/vendor/d3-array.js"></script>
+    <script src="/world/vendor/d3-contour.js"></script>
     <script type="module" src="/world/world-client.js"></script>
   </body>
 </html>

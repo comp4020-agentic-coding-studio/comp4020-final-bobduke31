@@ -32,3 +32,15 @@ each icon ships with was removed and the glyph's fill was changed to
 A short form of this attribution ("Icons by Lorc & Delapouite, game-icons.net,
 CC BY 3.0") is also shown in the app's footer, since CC BY requires the credit
 to travel with the work, not just sit in the repo.
+
+## Vendored code (terrain renderer)
+
+Not art assets, but the same "record what was reused" discipline applies.
+All vendored as plain files under `public/world/vendor/`, loaded directly by
+the browser with no build step, no attribution required by either licence.
+
+| Library | Version | Licence | Used for |
+| --- | --- | --- | --- |
+| [d3-array](https://github.com/d3/d3-array) | 3.x | ISC | dependency of d3-contour |
+| [d3-contour](https://github.com/d3/d3-contour) | 4.x | ISC | marching-squares coastline extraction from the elevation grid |
+| [simplex-noise](https://github.com/jwagner/simplex-noise.js) by Jonas Wagner | 4.0.3 | MIT | deterministic ridged-noise mountain folds in the terrain shading (see `terrain-renderer.js`) |

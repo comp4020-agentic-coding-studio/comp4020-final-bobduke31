@@ -90,3 +90,52 @@ it("rejects an empty batch", async () => {
   const res = await postCells([]);
   expect(res.status).toBe(400);
 });
+
+async function postTypes(cells: unknown): Promise<Response> {
+  return fetch(new URL("/api/terrain/types", baseUrl), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cells }),
+  });
+}
+
+it("paints a terrain type onto land and lists it back", async () => {
+  await postCells([{ x: 70, y: 10, elevation: 0.5 }]); // make it land first
+  const res = await postTypes([{ x: 70, y: 10, terrain: "forest" }]);
+  expect(res.status).toBe(204);
+
+  const list = await fetch(new URL("/api/terrain-types", baseUrl));
+  const types = await list.json();
+  expect(types).toContainEqual({ x: 70, y: 10, terrain: "forest" });
+});
+
+it("silently ignores a terrain type painted onto sea", async () => {
+  // (71, 10) has never been painted, so it defaults to sea.
+  const res = await postTypes([{ x: 71, y: 10, terrain: "forest" }]);
+  expect(res.status).toBe(204);
+
+  const list = await fetch(new URL("/api/terrain-types", baseUrl));
+  const types = await list.json();
+  expect(types).not.toContainEqual(expect.objectContaining({ x: 71, y: 10 }));
+});
+
+it("clears a cell's terrain type when it's painted back to sea, and broadcasts the clear", async () => {
+  await postCells([{ x: 72, y: 10, elevation: 0.5 }]);
+  await postTypes([{ x: 72, y: 10, terrain: "rock" }]);
+
+  const events = await fetch(new URL("/api/events", baseUrl));
+  const waiting = waitForEvent(events.body as ReadableStream<Uint8Array>, "terrain-type:clear");
+  await postCells([{ x: 72, y: 10, elevation: -0.5 }]); // paint it back to sea
+
+  const payload = (await waiting) as { cells: { x: number; y: number }[] };
+  expect(payload.cells).toContainEqual({ x: 72, y: 10 });
+
+  const list = await fetch(new URL("/api/terrain-types", baseUrl));
+  const types = await list.json();
+  expect(types).not.toContainEqual(expect.objectContaining({ x: 72, y: 10 }));
+});
+
+it("rejects an unknown terrain type", async () => {
+  const res = await postTypes([{ x: 1, y: 1, terrain: "lava" }]);
+  expect(res.status).toBe(400);
+});

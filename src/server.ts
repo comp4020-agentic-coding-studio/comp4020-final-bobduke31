@@ -6,8 +6,16 @@ import { renderReadmePage, renderCreditsPage } from "./render-readme.ts";
 import { listMarks, insertMark, deleteMarkOwnedBy, MARK_KINDS } from "./db.ts";
 import type { Mark, MarkKind } from "./db.ts";
 import { resolveSession } from "./session.ts";
-import { listCells, applyCells, isValidCell } from "./terrain.ts";
-import type { TerrainCell } from "./terrain.ts";
+import {
+  listCells,
+  applyCells,
+  isValidCell,
+  listTerrainTypes,
+  applyTerrainTypes,
+  isValidTerrainTypeCell,
+  isLand,
+} from "./terrain.ts";
+import type { TerrainCell, TerrainTypeCell } from "./terrain.ts";
 import { subscribe, broadcast } from "./realtime.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -173,8 +181,53 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return;
     }
     const validCells = cells as TerrainCell[];
-    applyCells(validCells);
+    const submerged = applyCells(validCells);
     broadcast("terrain:update", { cells: validCells });
+    // Elevation is the one source of truth for land vs sea (ADR.md): any
+    // cell pushed underwater here loses its terrain type server-side, and
+    // every connected client - including the one that just painted it -
+    // is told so, rather than trusting each client to clear it themselves.
+    if (submerged.length > 0) {
+      broadcast("terrain-type:clear", { cells: submerged.map(({ x, y }) => ({ x, y })) });
+    }
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  if (url.pathname === "/api/terrain-types" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(listTerrainTypes()));
+    return;
+  }
+
+  if (url.pathname === "/api/terrain/types" && req.method === "POST") {
+    let payload: unknown;
+    try {
+      payload = await readJsonBody(req);
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: "invalid JSON body" }));
+      return;
+    }
+    const { cells } = (payload ?? {}) as Record<string, unknown>;
+    if (!Array.isArray(cells) || cells.length === 0 || !cells.every(isValidTerrainTypeCell)) {
+      res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(
+        JSON.stringify({
+          error: `cells must be a non-empty array of {x, y, terrain}, terrain one of grassland/sand/forest/rock`,
+        }),
+      );
+      return;
+    }
+    // Painting a terrain type over sea is a silent no-op rather than an
+    // error: a brush stroke straddling a coastline is the normal case, not
+    // a malformed request.
+    const onLand = (cells as TerrainTypeCell[]).filter((cell) => isLand(cell.x, cell.y));
+    if (onLand.length > 0) {
+      applyTerrainTypes(onLand);
+      broadcast("terrain-type:update", { cells: onLand });
+    }
     res.writeHead(204);
     res.end();
     return;

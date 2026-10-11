@@ -1,97 +1,399 @@
-import { GRID_SIZE, ELEVATION_MIN, ELEVATION_MAX, createGrid, clamp, applyCells, setFromList } from "./terrain-model.js";
-import { renderTerrain } from "./terrain-renderer.js";
+import {
+  GRID_SIZE,
+  ELEVATION_MIN,
+  ELEVATION_MAX,
+  SEA_LEVEL,
+  TERRAIN_TYPES,
+  clamp,
+  createElevationGrid,
+  createTypeGrid,
+  isLand,
+  applyElevationCells,
+  setElevationFromList,
+  applyTypeCells,
+  clearTypeCells,
+  setTypesFromList,
+} from "./terrain-model.js";
+import { renderTerrain, renderTerrainOblique, obliqueRise, OBLIQUE_MAX_RISE } from "./terrain-renderer.js";
 
-const CELL_PX = 6;
-const BRUSH_RADIUS = 5;
-const STRENGTH = 0.15;
+// Canvas footprint stays the same (256 * 3 = 768, same as the old 128 * 6)
+// - resolution doubles by making cells smaller, not the map physically
+// bigger, which is what actually makes individual cells less noticeable.
+const CELL_PX = 3;
 const FLUSH_INTERVAL_MS = 100;
+const LAND_PUSH = 0.35; // how far "create land" / "paint sea" push past sea level
+
+// The oblique view (see terrain-renderer.js) shifts elevated cells upward
+// on screen, so a tall peak near the top of the grid needs real headroom
+// above the ordinary top-down layout or it gets clipped at the canvas
+// edge. +4 is just slack past the theoretical maximum rise.
+const OBLIQUE_MARGIN = OBLIQUE_MAX_RISE + 4;
+let viewMode = "top"; // "top" | "oblique" - see wireViewToggle
+
+// Raise/Lower/Smooth/Mountain/Peak all sculpt existing land and must never
+// cross into the sea - only Create Land / Paint Sea are allowed to change
+// the land/water boundary (see ADR.md and the tool semantics below). This
+// floor is the one place that rule is enforced, so every land-sculpting
+// tool shares it rather than each clamping its own way.
+const LAND_FLOOR = SEA_LEVEL + 0.02;
+const MOUNTAIN_TARGET = 0.6;
+const PEAK_TARGET = 0.95;
 
 const canvas = document.getElementById("stage");
 canvas.width = GRID_SIZE * CELL_PX;
 canvas.height = GRID_SIZE * CELL_PX;
 const ctx = canvas.getContext("2d");
 
-const grid = createGrid();
-const pending = new Map();
-let painting = false;
-let lowering = false;
+const elevationGrid = createElevationGrid();
+const typeGrid = createTypeGrid();
+
+let currentTool = "raise";
+// Doubled from the 128-grid default (5) so the brush covers the same
+// physical/screen area now that cells are half the size.
+let brushRadius = 10;
+let brushStrength = 0.15;
+
+const pendingElevation = new Map();
+const pendingTypes = new Map();
 let flushHandle = null;
+let painting = false;
+let lastGridPos = null;
 
-function redraw() {
-  renderTerrain(ctx, grid, CELL_PX);
+function smoothstep(t) {
+  const clamped = Math.min(1, Math.max(0, t));
+  return clamped * clamped * (3 - 2 * clamped);
 }
 
-function paintAt(centerX, centerY) {
-  const sign = lowering ? -1 : 1;
-  for (let dy = -BRUSH_RADIUS; dy <= BRUSH_RADIUS; dy++) {
-    for (let dx = -BRUSH_RADIUS; dx <= BRUSH_RADIUS; dx++) {
-      const x = centerX + dx;
-      const y = centerY + dy;
-      if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) continue;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist > BRUSH_RADIUS) continue;
-      const falloff = 1 - dist / BRUSH_RADIUS;
-      const index = y * GRID_SIZE + x;
-      // Clamped client-side so the brush can never even attempt an
-      // out-of-range value; the server clamps/rejects independently too
-      // (src/terrain.ts isValidCell), since the client's word is never
-      // trusted on its own.
-      const elevation = clamp(grid[index] + sign * STRENGTH * falloff, ELEVATION_MIN, ELEVATION_MAX);
-      grid[index] = elevation;
-      pending.set(`${x},${y}`, { x, y, elevation });
-    }
+// --- Rendering: batched to one redraw per animation frame, of only the
+// cells that actually changed, instead of the previous "redraw the full
+// 128x128 grid synchronously on every pointer event" (profiled at ~19ms
+// per redraw, and a single 60-step drag triggered 75 of them - over a
+// second of blocked input). Input and model updates below stay fully
+// synchronous and cheap (plain array writes); only painting to the canvas
+// is deferred and coalesced here. ---
+let renderScheduled = false;
+let dirty = null; // {minX, minY, maxX, maxY} - the union of cells touched since the last paint
+
+function markDirty(x, y) {
+  if (!dirty) {
+    dirty = { minX: x, minY: y, maxX: x, maxY: y };
+    return;
   }
-  redraw();
-  scheduleFlush();
+  if (x < dirty.minX) dirty.minX = x;
+  if (y < dirty.minY) dirty.minY = y;
+  if (x > dirty.maxX) dirty.maxX = x;
+  if (y > dirty.maxY) dirty.maxY = y;
 }
+
+function scheduleRender() {
+  if (renderScheduled) return;
+  renderScheduled = true;
+  requestAnimationFrame(() => {
+    renderScheduled = false;
+    if (!dirty) return;
+    // The oblique view has no safe "just the changed cells" shortcut: a
+    // column's height can newly cover (or uncover) rows several steps
+    // farther away on screen, not just the cells a brush stroke actually
+    // touched - see renderTerrainOblique's doc comment. So it always
+    // repaints the whole grid, batched to one redraw per animation frame
+    // the same way the partial redraw below is, rather than once per
+    // pointer event.
+    if (viewMode === "oblique") {
+      dirty = null;
+      renderTerrainOblique(ctx, elevationGrid, typeGrid, CELL_PX, OBLIQUE_MARGIN);
+      return;
+    }
+    // Padded by 1: the coastline stroke has width, so it can cover a
+    // sliver of a cell just outside the cells that actually changed.
+    const region = { minX: dirty.minX - 1, minY: dirty.minY - 1, maxX: dirty.maxX + 1, maxY: dirty.maxY + 1 };
+    dirty = null;
+    renderTerrain(ctx, elevationGrid, typeGrid, CELL_PX, region);
+  });
+}
+
+function redrawAll() {
+  dirty = null;
+  if (viewMode === "oblique") renderTerrainOblique(ctx, elevationGrid, typeGrid, CELL_PX, OBLIQUE_MARGIN);
+  else renderTerrain(ctx, elevationGrid, typeGrid, CELL_PX);
+}
+
+function queueElevation(x, y, elevation) {
+  pendingElevation.set(`${x},${y}`, { x, y, elevation });
+}
+
+function queueType(x, y, terrain) {
+  pendingTypes.set(`${x},${y}`, { x, y, terrain });
+}
+
+let flushing = false;
 
 function scheduleFlush() {
+  // Guards the pending *timer*, but a slow network response could still
+  // leave a flush in flight when the next one fires - `flushing` below
+  // guards that case, which this alone does not.
   if (flushHandle) return;
   flushHandle = setTimeout(flush, FLUSH_INTERVAL_MS);
 }
 
 async function flush() {
   flushHandle = null;
-  if (pending.size === 0) return;
-  const cells = [...pending.values()];
-  pending.clear();
+  // If a previous flush's request is still in flight (e.g. a slow
+  // connection outlasting the 100ms interval), wait for it rather than
+  // sending a second, overlapping request for the same cells - two
+  // in-flight requests racing could let the server apply them out of
+  // send-order, which would silently undo the newer edit. `flush()` is
+  // called again once the in-flight one finishes if anything is still
+  // pending (see below), so nothing queued here is lost.
+  if (flushing) return;
+  if (pendingElevation.size === 0 && pendingTypes.size === 0) return;
+  flushing = true;
+  const elevationCells = [...pendingElevation.values()];
+  const typeCells = [...pendingTypes.values()];
+  pendingElevation.clear();
+  pendingTypes.clear();
   try {
-    await fetch("/api/terrain/cells", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cells }),
-    });
+    if (elevationCells.length > 0) {
+      await fetch("/api/terrain/cells", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cells: elevationCells }),
+      });
+    }
+    if (typeCells.length > 0) {
+      await fetch("/api/terrain/types", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cells: typeCells }),
+      });
+    }
   } catch {
-    // Best-effort for this first pass: a dropped batch is visible again
-    // next time someone repaints the same spot, an acceptable cost for a
-    // shared, ownerless canvas - see ADR.md.
+    // Best-effort for this pass: a dropped batch is visible again next
+    // time someone repaints the same spot - see ADR.md.
   }
+  flushing = false;
+  // Anything painted while that request was in flight needs its own
+  // flush - this is what makes the early return above safe rather than
+  // silently losing a batch.
+  if (pendingElevation.size > 0 || pendingTypes.size > 0) scheduleFlush();
+}
+
+// Visits every cell within brushRadius of (cx, cy), with a smooth
+// (smoothstep, not linear) falloff from the centre - a brush stroke reads
+// as a soft bump rather than a sharp cone.
+function forEachBrushCell(cx, cy, apply) {
+  const r = brushRadius;
+  for (let dy = -r; dy <= r; dy++) {
+    for (let dx = -r; dx <= r; dx++) {
+      const x = cx + dx;
+      const y = cy + dy;
+      if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) continue;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > r) continue;
+      const falloff = smoothstep(1 - dist / r);
+      apply(x, y, falloff);
+    }
+  }
+}
+
+function lerpTowards(current, target, t) {
+  return current + (target - current) * t;
+}
+
+function neighborAverage(x, y) {
+  let sum = 0;
+  let count = 0;
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const nx = x + dx;
+      const ny = y + dy;
+      if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) continue;
+      sum += elevationGrid[ny * GRID_SIZE + nx];
+      count++;
+    }
+  }
+  return sum / count;
+}
+
+// Every elevation tool goes through here, so "becomes sea -> loses its
+// terrain type" (the server's own rule, src/terrain.ts applyCells) holds
+// optimistically on the client too, for every tool, in one place. This is
+// the ONLY path that may write elevation at or below SEA_LEVEL - every
+// land-sculpting tool below goes through setLandElevation instead, which
+// cannot.
+function setElevation(x, y, elevation) {
+  const clamped = clamp(elevation, ELEVATION_MIN, ELEVATION_MAX);
+  elevationGrid[y * GRID_SIZE + x] = clamped;
+  queueElevation(x, y, clamped);
+  markDirty(x, y);
+  if (clamped <= SEA_LEVEL) clearTypeCells(typeGrid, [{ x, y }]);
+}
+
+// Raise, Lower, Smooth, Mountain and Peak all go through here: they sculpt
+// existing land and must never cross into the sea by accident (this was a
+// real bug - Lower or Smooth near a coast, or just repeated use, could push
+// a land cell below SEA_LEVEL with nothing stopping it, scattering stray
+// "ocean" cells through what should stay land). Two rules enforce that:
+// a cell that's currently sea is left alone (these tools don't create
+// land - Create Land does), and the result is always clamped above
+// LAND_FLOOR, so no amount of lowering/smoothing can tip it into the sea.
+function setLandElevation(x, y, elevation) {
+  const index = y * GRID_SIZE + x;
+  if (elevationGrid[index] <= SEA_LEVEL) return;
+  const clamped = clamp(elevation, LAND_FLOOR, ELEVATION_MAX);
+  elevationGrid[index] = clamped;
+  queueElevation(x, y, clamped);
+  markDirty(x, y);
+}
+
+function setRockType(x, y) {
+  typeGrid[y * GRID_SIZE + x] = TERRAIN_TYPES.indexOf("rock");
+  queueType(x, y, "rock");
+}
+
+function paintAt(cx, cy) {
+  switch (currentTool) {
+    case "raise":
+      forEachBrushCell(cx, cy, (x, y, falloff) => {
+        setLandElevation(x, y, elevationGrid[y * GRID_SIZE + x] + brushStrength * falloff);
+      });
+      break;
+    case "lower":
+      forEachBrushCell(cx, cy, (x, y, falloff) => {
+        setLandElevation(x, y, elevationGrid[y * GRID_SIZE + x] - brushStrength * falloff);
+      });
+      break;
+    case "smooth":
+      forEachBrushCell(cx, cy, (x, y, falloff) => {
+        const current = elevationGrid[y * GRID_SIZE + x];
+        setLandElevation(x, y, lerpTowards(current, neighborAverage(x, y), brushStrength * 2 * falloff));
+      });
+      break;
+    case "mountain":
+      // Raises land toward a high ridge band and marks it rocky - a
+      // mountain is height and material together, not a grey tint on flat
+      // ground (see ADR.md / CLAUDE.md on not faking elevation with colour).
+      forEachBrushCell(cx, cy, (x, y, falloff) => {
+        const current = elevationGrid[y * GRID_SIZE + x];
+        if (current <= SEA_LEVEL) return;
+        setLandElevation(x, y, lerpTowards(current, MOUNTAIN_TARGET, falloff));
+        setRockType(x, y);
+        markDirty(x, y);
+      });
+      break;
+    case "peak":
+      // Same idea, pushed toward the elevation ceiling for a prominent
+      // summit; the renderer tints the highest rock as snow, so a peak
+      // reads as a peak even with colour turned off (hillshading alone).
+      forEachBrushCell(cx, cy, (x, y, falloff) => {
+        const current = elevationGrid[y * GRID_SIZE + x];
+        if (current <= SEA_LEVEL) return;
+        setLandElevation(x, y, lerpTowards(current, PEAK_TARGET, falloff));
+        setRockType(x, y);
+        markDirty(x, y);
+      });
+      break;
+    case "land":
+      // Blends toward "comfortably land", stronger at the brush centre -
+      // repeated strokes still make progress on reluctant deep water. The
+      // one elevation tool (with "sea" below) allowed to cross SEA_LEVEL.
+      forEachBrushCell(cx, cy, (x, y, falloff) => {
+        const current = elevationGrid[y * GRID_SIZE + x];
+        setElevation(x, y, lerpTowards(current, SEA_LEVEL + LAND_PUSH, falloff));
+      });
+      break;
+    case "sea":
+      forEachBrushCell(cx, cy, (x, y, falloff) => {
+        const current = elevationGrid[y * GRID_SIZE + x];
+        setElevation(x, y, lerpTowards(current, SEA_LEVEL - LAND_PUSH, falloff));
+      });
+      break;
+    default:
+      // One of TERRAIN_TYPES: painting a type only ever touches land - a
+      // brush straddling a coastline simply has no effect on its sea half,
+      // the same rule the server enforces independently.
+      forEachBrushCell(cx, cy, (x, y) => {
+        if (!isLand(elevationGrid, x, y)) return;
+        typeGrid[y * GRID_SIZE + x] = TERRAIN_TYPES.indexOf(currentTool);
+        queueType(x, y, currentTool);
+        markDirty(x, y);
+      });
+      break;
+  }
+  scheduleRender();
+  scheduleFlush();
+}
+
+// Paints along the segment from the last known pointer position to the new
+// one, not just at the new point - without this, a fast drag leaves gaps
+// between sampled positions instead of a continuous stroke.
+function paintAlong(x0, y0, x1, y1) {
+  const dist = Math.hypot(x1 - x0, y1 - y0);
+  const step = Math.max(1, brushRadius / 2);
+  const steps = Math.max(1, Math.ceil(dist / step));
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    paintAt(Math.round(x0 + (x1 - x0) * t), Math.round(y0 + (y1 - y0) * t));
+  }
+}
+
+// In the oblique view, a screen point doesn't map to one grid cell by
+// simple division any more - what's drawn at (px, py) might be the lit cap
+// of a tall, *farther* mountain column that happens to reach forward over
+// closer, flatter ground (exactly the occlusion the projection is for).
+// This walks the same column geometry renderTerrainOblique draws, from the
+// nearest row backward, and returns the first (so: frontmost, topmost-drawn)
+// cell whose column actually covers that point - i.e. whatever the user is
+// really looking at under their cursor, not just whatever row the y pixel
+// would land on in a flat top-down reading.
+function obliqueScreenToGrid(px, py) {
+  const gx = Math.floor(px / CELL_PX);
+  if (gx < 0 || gx >= GRID_SIZE) return { x: -1, y: -1 };
+  for (let gy = GRID_SIZE - 1; gy >= 0; gy--) {
+    const baseY = gy * CELL_PX;
+    const top = baseY - obliqueRise(elevationGrid[gy * GRID_SIZE + gx]);
+    if (py >= top && py <= baseY + CELL_PX) return { x: gx, y: gy };
+  }
+  return { x: -1, y: -1 };
 }
 
 function canvasToGrid(event) {
   const rect = canvas.getBoundingClientRect();
-  const x = Math.floor(((event.clientX - rect.left) / rect.width) * GRID_SIZE);
-  const y = Math.floor(((event.clientY - rect.top) / rect.height) * GRID_SIZE);
-  return { x, y };
+  const px = ((event.clientX - rect.left) / rect.width) * canvas.width;
+  const py = ((event.clientY - rect.top) / rect.height) * canvas.height;
+  if (viewMode === "oblique") return obliqueScreenToGrid(px, py - OBLIQUE_MARGIN);
+  return { x: Math.floor(px / CELL_PX), y: Math.floor(py / CELL_PX) };
+}
+
+// -1,-1 means the pointer isn't over any drawn terrain column at all - only
+// reachable in the oblique view, by pointing at empty space above every
+// column within that screen x (e.g. the sky above a low-lying map). Just
+// doesn't paint, the same way clicking outside the canvas entirely already
+// does nothing.
+function isOffTerrain(pos) {
+  return pos.x < 0 || pos.y < 0;
 }
 
 canvas.addEventListener("pointerdown", (event) => {
   painting = true;
-  lowering = event.shiftKey;
   canvas.setPointerCapture(event.pointerId);
-  const { x, y } = canvasToGrid(event);
-  paintAt(x, y);
+  const pos = canvasToGrid(event);
+  lastGridPos = isOffTerrain(pos) ? null : pos;
+  if (!isOffTerrain(pos)) paintAt(pos.x, pos.y);
 });
 
 canvas.addEventListener("pointermove", (event) => {
   if (!painting) return;
-  const { x, y } = canvasToGrid(event);
-  paintAt(x, y);
+  const pos = canvasToGrid(event);
+  if (isOffTerrain(pos)) return;
+  if (lastGridPos) paintAlong(lastGridPos.x, lastGridPos.y, pos.x, pos.y);
+  else paintAt(pos.x, pos.y);
+  lastGridPos = pos;
 });
 
 function stopPainting() {
   if (!painting) return;
   painting = false;
+  lastGridPos = null;
   flush();
 }
 
@@ -99,11 +401,69 @@ canvas.addEventListener("pointerup", stopPainting);
 canvas.addEventListener("pointercancel", stopPainting);
 canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 
+function wireToolbar() {
+  const buttons = document.querySelectorAll("[data-tool]");
+  for (const button of buttons) {
+    button.addEventListener("click", () => {
+      for (const other of buttons) other.classList.remove("active");
+      button.classList.add("active");
+      currentTool = button.dataset.tool;
+    });
+  }
+
+  const sizeInput = document.getElementById("brush-size");
+  sizeInput.addEventListener("input", () => {
+    brushRadius = Number(sizeInput.value);
+  });
+
+  const strengthInput = document.getElementById("brush-strength");
+  strengthInput.addEventListener("input", () => {
+    brushStrength = Number(strengthInput.value);
+  });
+}
+
+function wireViewToggle() {
+  const buttons = document.querySelectorAll("[data-view]");
+  for (const button of buttons) {
+    button.addEventListener("click", () => {
+      const mode = button.dataset.view;
+      if (mode === viewMode) return;
+      viewMode = mode;
+      for (const other of buttons) other.classList.remove("active");
+      button.classList.add("active");
+      // The oblique view needs extra canvas height so a peak near row 0
+      // has room to rise into without being clipped (see OBLIQUE_MARGIN);
+      // top-down doesn't, so this only grows the canvas when switching in,
+      // not permanently. world.css gives #stage a fixed CSS height, which
+      // would otherwise squash this taller backing store back down and
+      // throw off its aspect ratio - overriding it inline keeps a 1:1
+      // pixel mapping (and canvasToGrid's px/py math correct) either way.
+      canvas.height = GRID_SIZE * CELL_PX + (viewMode === "oblique" ? OBLIQUE_MARGIN : 0);
+      canvas.style.height = `${canvas.height}px`;
+      redrawAll();
+    });
+  }
+}
+
 async function loadTerrain() {
-  const res = await fetch("/api/terrain");
-  const cells = await res.json();
-  setFromList(grid, cells);
-  redraw();
+  const [elevationRes, typesRes] = await Promise.all([
+    fetch("/api/terrain"),
+    fetch("/api/terrain-types"),
+  ]);
+  setElevationFromList(elevationGrid, await elevationRes.json());
+  setTypesFromList(typeGrid, await typesRes.json());
+  redrawAll();
+}
+
+// A cell still sitting in `pendingElevation`/`pendingTypes` has a local
+// edit we haven't sent yet - it is, by definition, newer than whatever
+// value this broadcast carries for that cell. Applying the broadcast
+// anyway would briefly snap the display back to a stale value before our
+// own next flush corrects it again a moment later. Skipping those cells
+// here and trusting the in-flight/next flush to reconcile them avoids
+// that visible regression, without needing any server-side versioning.
+function withoutPendingOverrides(cells, pending) {
+  return cells.filter((cell) => !pending.has(`${cell.x},${cell.y}`));
 }
 
 function connectEvents() {
@@ -115,10 +475,28 @@ function connectEvents() {
   source.addEventListener("open", loadTerrain);
   source.addEventListener("terrain:update", (event) => {
     const { cells } = JSON.parse(event.data);
-    applyCells(grid, cells);
-    redraw();
+    const toApply = withoutPendingOverrides(cells, pendingElevation);
+    applyElevationCells(elevationGrid, toApply);
+    for (const { x, y } of toApply) markDirty(x, y);
+    scheduleRender();
+  });
+  source.addEventListener("terrain-type:update", (event) => {
+    const { cells } = JSON.parse(event.data);
+    const toApply = withoutPendingOverrides(cells, pendingTypes);
+    applyTypeCells(typeGrid, toApply);
+    for (const { x, y } of toApply) markDirty(x, y);
+    scheduleRender();
+  });
+  source.addEventListener("terrain-type:clear", (event) => {
+    const { cells } = JSON.parse(event.data);
+    const toApply = withoutPendingOverrides(cells, pendingTypes);
+    clearTypeCells(typeGrid, toApply);
+    for (const { x, y } of toApply) markDirty(x, y);
+    scheduleRender();
   });
 }
 
+wireToolbar();
+wireViewToggle();
 loadTerrain();
 connectEvents();
