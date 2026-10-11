@@ -17,7 +17,7 @@ export interface Mark {
 const dbPath = process.env.DB_PATH ?? "/data/app.db";
 mkdirSync(dirname(dbPath), { recursive: true });
 
-const db = new DatabaseSync(dbPath);
+export const db = new DatabaseSync(dbPath);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS marks (

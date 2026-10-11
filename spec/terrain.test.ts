@@ -1,0 +1,92 @@
+import { expect, inject, it } from "vitest";
+
+// Ours to write, per spec/README.md: the app's own behaviour, against the
+// same running instance spec/invariants.test.ts checks.
+const baseUrl = inject("baseUrl");
+
+async function postCells(cells: unknown): Promise<Response> {
+  return fetch(new URL("/api/terrain/cells", baseUrl), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cells }),
+  });
+}
+
+// Reads Server-Sent Events frames off a fetch response body until one
+// matching `eventType` arrives, or `timeoutMs` elapses - the real test of
+// "a change reaches every other open session", not just that the create
+// endpoint returns 2xx.
+async function waitForEvent(
+  stream: ReadableStream<Uint8Array>,
+  eventType: string,
+  timeoutMs = 2000,
+): Promise<unknown> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error(`no "${eventType}" event within ${timeoutMs}ms`)), timeoutMs),
+  );
+
+  const read = (async () => {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) throw new Error("event stream closed before the expected event arrived");
+      buffer += decoder.decode(value, { stream: true });
+
+      let frameEnd: number;
+      while ((frameEnd = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, frameEnd);
+        buffer = buffer.slice(frameEnd + 2);
+        const type = /^event: (.+)$/m.exec(frame)?.[1];
+        const data = /^data: (.+)$/m.exec(frame)?.[1];
+        if (type === eventType && data) return JSON.parse(data);
+      }
+    }
+  })();
+
+  try {
+    return await Promise.race([read, timeout]);
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+}
+
+it("persists a painted cell and lists it back", async () => {
+  const cell = { x: 10, y: 20, elevation: 0.4 };
+  const res = await postCells([cell]);
+  expect(res.status).toBe(204);
+
+  const list = await fetch(new URL("/api/terrain", baseUrl));
+  const cells = await list.json();
+  expect(cells).toContainEqual(cell);
+});
+
+it("broadcasts a painted cell to an open event stream within a second", async () => {
+  const events = await fetch(new URL("/api/events", baseUrl));
+  expect(events.headers.get("content-type")).toContain("text/event-stream");
+  expect(events.body).not.toBeNull();
+
+  const cell = { x: 55, y: 60, elevation: -0.3 };
+  const waiting = waitForEvent(events.body as ReadableStream<Uint8Array>, "terrain:update");
+  await postCells([cell]);
+
+  const payload = (await waiting) as { cells: typeof cell[] };
+  expect(payload.cells).toContainEqual(cell);
+});
+
+it("rejects a cell outside the grid", async () => {
+  const res = await postCells([{ x: 999, y: 0, elevation: 0 }]);
+  expect(res.status).toBe(400);
+});
+
+it("rejects an elevation outside the allowed range", async () => {
+  const res = await postCells([{ x: 1, y: 1, elevation: 5 }]);
+  expect(res.status).toBe(400);
+});
+
+it("rejects an empty batch", async () => {
+  const res = await postCells([]);
+  expect(res.status).toBe(400);
+});

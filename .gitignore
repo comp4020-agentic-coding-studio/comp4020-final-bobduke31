@@ -20,3 +20,8 @@ mise.local.toml
 # your course API key, and this repo goes public when you ship. Your tracked
 # harness is CLAUDE.md (and any AGENTS.md), not this directory.
 .claude/
+
+# Local dev/research material: reference screenshots, disposable visual
+# spikes. Useful while building, not required by any spec, and not something
+# that should ship in a repo that goes public at the cutoff.
+research/

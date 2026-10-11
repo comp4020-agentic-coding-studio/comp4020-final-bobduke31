@@ -6,6 +6,9 @@ import { renderReadmePage, renderCreditsPage } from "./render-readme.ts";
 import { listMarks, insertMark, deleteMarkOwnedBy, MARK_KINDS } from "./db.ts";
 import type { Mark, MarkKind } from "./db.ts";
 import { resolveSession } from "./session.ts";
+import { listCells, applyCells, isValidCell } from "./terrain.ts";
+import type { TerrainCell } from "./terrain.ts";
+import { subscribe, broadcast } from "./realtime.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const PUBLIC_DIR = new URL("../public/", import.meta.url).pathname;
@@ -129,6 +132,56 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     }
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  // /world/ is the in-development terrain-painting feature. It's served
+  // alongside the existing Isle, not instead of it, until it's verified
+  // working - see ADR.md and CLAUDE.md.
+  if ((url.pathname === "/world" || url.pathname === "/world/") && req.method === "GET") {
+    const file = await serveStatic("/world/index.html");
+    if (file) {
+      res.writeHead(200, { "Content-Type": file.type });
+      res.end(file.body);
+      return;
+    }
+  }
+
+  if (url.pathname === "/api/terrain" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(listCells()));
+    return;
+  }
+
+  if (url.pathname === "/api/terrain/cells" && req.method === "POST") {
+    let payload: unknown;
+    try {
+      payload = await readJsonBody(req);
+    } catch {
+      res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(JSON.stringify({ error: "invalid JSON body" }));
+      return;
+    }
+    const { cells } = (payload ?? {}) as Record<string, unknown>;
+    if (!Array.isArray(cells) || cells.length === 0 || !cells.every(isValidCell)) {
+      res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
+      res.end(
+        JSON.stringify({
+          error: "cells must be a non-empty array of {x, y, elevation} within grid bounds",
+        }),
+      );
+      return;
+    }
+    const validCells = cells as TerrainCell[];
+    applyCells(validCells);
+    broadcast("terrain:update", { cells: validCells });
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
+  if (url.pathname === "/api/events" && req.method === "GET") {
+    subscribe(res);
     return;
   }
 
