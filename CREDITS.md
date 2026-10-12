@@ -44,3 +44,40 @@ the browser with no build step, no attribution required by either licence.
 | [d3-array](https://github.com/d3/d3-array) | 3.x | ISC | dependency of d3-contour |
 | [d3-contour](https://github.com/d3/d3-contour) | 4.x | ISC | marching-squares coastline extraction from the elevation grid |
 | [simplex-noise](https://github.com/jwagner/simplex-noise.js) by Jonas Wagner | 4.0.3 | MIT | deterministic ridged-noise mountain folds in the terrain shading (see `terrain-renderer.js`) |
+| [three.js](https://github.com/mrdoob/three.js) | r169 (`three.module.js`) | MIT | the WebGL2 heightfield mesh renderer behind the Oblique view (see `terrain-renderer-3d.js`); vendored unminified (current three.js releases ship no minified build) |
+
+### Considered and not used, for the 3D renderer
+
+- **[THREE.Terrain](https://github.com/IceCreamYou/THREE.Terrain)** (npm
+  `three.terrain.js`) — a *procedural* terrain generator (diamond-square,
+  Perlin heightmaps). This app already has an authoritative heightfield from
+  SQLite; there's nothing for a generator to generate.
+- **[@interverse/three-terrain-lod](https://www.npmjs.com/package/@interverse/three-terrain-lod)**
+  — does almost exactly what the ground shader below does (slope-based
+  grass/rock/snow blending, on-the-fly normals from a heightmap), but on
+  Three.js's newer TSL/WebGPU shading path - a second, less-mature dependency
+  axis on top of adopting Three.js itself in a repo with no bundler. The
+  *technique* is reused (hand-written against a standard `ShaderMaterial`
+  instead); the package is not.
+- **Kenney's Nature Kit** (CC0, real low-poly 3D tree/rock models, GLB-ready)
+  — good fidelity, but needs `GLTFLoader` and binary asset fetching, a second
+  piece of infrastructure on top of this change. Left for a later pass if the
+  project wants real 3D tree models (see "Forest canopy" below for what
+  shipped instead).
+- CC0/CC-BY forest-stamp icon packs on OpenGameArt/itch.io (e.g. "Fantasy
+  Icons Ink", and the same eysselia "Brush and element for drawing a map"
+  pack `research/prototypes/README.md` already used and moved away from) —
+  all ink/line-art style, which CLAUDE.md already steers away from
+  ("not another ink-sketch renderer"); pixel-art tree tile packs read as a
+  retro tile game, not painted cartography.
+
+### Forest canopy texture
+
+`public/world/assets/tree-{deciduous,conifer}.png` are not sourced art —
+they're small painted textures authored directly for this renderer (soft
+overlapping gradient canopy blobs over a tapered trunk, generated with
+Canvas2D, the same category of procedural-colour work `terrain-renderer.js`
+already does for terrain shading), used as alpha-tested billboard sprites
+in `terrain-renderer-3d.js`. No licence to record; no asset pack fit the
+target style closely enough to be worth the integration cost over authoring
+these directly (see "Considered and not used" above).

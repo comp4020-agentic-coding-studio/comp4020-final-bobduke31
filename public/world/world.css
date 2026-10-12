@@ -101,7 +101,8 @@ main {
   width: 100%;
 }
 
-#stage {
+#stage,
+#stage-3d {
   max-width: 90vw;
   max-height: 65vh;
   width: 768px;
@@ -109,5 +110,12 @@ main {
   border: 1px solid #2a333b;
   cursor: crosshair;
   touch-action: none;
+}
+
+#stage {
   image-rendering: pixelated;
+}
+
+.hidden {
+  display: none;
 }

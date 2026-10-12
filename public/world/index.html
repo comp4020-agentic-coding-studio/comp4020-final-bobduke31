@@ -67,7 +67,7 @@
         <button
           type="button"
           data-view="oblique"
-          title="Elevation shears upward so mountains show real height and a visible side. Still editable, but redraws the whole map on every stroke, so it's less responsive than top-down."
+          title="A real 3D heightfield view with lighting and shadow (falls back to a flatter column view if your browser has no WebGL2). Still fully editable."
         >
           Oblique
         </button>
@@ -80,6 +80,7 @@
 
     <main>
       <canvas id="stage"></canvas>
+      <canvas id="stage-3d" class="hidden"></canvas>
     </main>
     <script src="/world/vendor/d3-array.js"></script>
     <script src="/world/vendor/d3-contour.js"></script>

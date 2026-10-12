@@ -267,7 +267,13 @@ function addSmoothedRing(path, ring, cellPx, offset) {
   path.closePath();
 }
 
-function buildCoastlinePath(elevationGrid, cellPx) {
+// Raw ring point data (real grid coordinates, padding already undone),
+// before any canvas-specific drawing - shared by buildCoastlinePath below
+// and by the 3D renderer, which needs the same coastline geometry as a line
+// mesh rather than a canvas Path2D. Computing this is the only part that
+// actually needs d3-contour; everything downstream of it is just "how to
+// draw a ring," which differs between the two renderers.
+export function computeCoastlineRings(elevationGrid) {
   const { padded, paddedSize } = buildPaddedGrid(elevationGrid);
   // d3-contour's threshold is inclusive (value >= threshold counts as
   // "inside"), but this app's own rule everywhere else is strictly greater
@@ -277,11 +283,17 @@ function buildCoastlinePath(elevationGrid, cellPx) {
   // contour around nearly the whole grid instead of just what's painted.
   // Nudging the threshold a hair above SEA_LEVEL makes the two agree.
   const contour = d3.contours().size([paddedSize, paddedSize]).smooth(true).contour(padded, SEA_LEVEL + 1e-6);
-  const path = new Path2D();
+  const rings = [];
   for (const polygon of contour.coordinates) {
-    // 1 undoes the one-cell padding, back to real grid coordinates.
-    for (const ring of polygon) addSmoothedRing(path, ring, cellPx, 1);
+    // -1 undoes the one-cell padding, back to real grid coordinates.
+    for (const ring of polygon) rings.push(ring.map(([x, y]) => [x - 1, y - 1]));
   }
+  return rings;
+}
+
+function buildCoastlinePath(elevationGrid, cellPx) {
+  const path = new Path2D();
+  for (const ring of computeCoastlineRings(elevationGrid)) addSmoothedRing(path, ring, cellPx, 0);
   return path;
 }
 

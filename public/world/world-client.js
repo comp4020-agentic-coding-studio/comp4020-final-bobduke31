@@ -15,6 +15,7 @@ import {
   setTypesFromList,
 } from "./terrain-model.js";
 import { renderTerrain, renderTerrainOblique, obliqueRise, OBLIQUE_MAX_RISE } from "./terrain-renderer.js";
+import { createTerrainScene3D, isWebGL2Available } from "./terrain-renderer-3d.js";
 
 // Canvas footprint stays the same (256 * 3 = 768, same as the old 128 * 6)
 // - resolution doubles by making cells smaller, not the map physically
@@ -46,6 +47,20 @@ const ctx = canvas.getContext("2d");
 
 const elevationGrid = createElevationGrid();
 const typeGrid = createTypeGrid();
+
+// The WebGL2 heightfield renderer (terrain-renderer-3d.js) needs its own
+// canvas - a canvas can only ever hand out one kind of rendering context in
+// its lifetime, so it can't share #stage with the 2D top-down renderer.
+// `scene3d` stays null (the existing column-extrusion oblique renderer on
+// `canvas`/`ctx` keeps working unchanged) on any browser without WebGL2.
+const canvas3d = document.getElementById("stage-3d");
+canvas3d.width = GRID_SIZE * CELL_PX;
+canvas3d.height = GRID_SIZE * CELL_PX;
+const scene3d = isWebGL2Available() ? createTerrainScene3D(canvas3d, elevationGrid, typeGrid) : null;
+
+function activeCanvas() {
+  return viewMode === "oblique" && scene3d ? canvas3d : canvas;
+}
 
 let currentTool = "raise";
 // Doubled from the 128-grid default (5) so the brush covers the same
@@ -85,19 +100,35 @@ function markDirty(x, y) {
   if (y > dirty.maxY) dirty.maxY = y;
 }
 
+// Pushes the current grids into the 3D renderer and draws one frame. Both
+// texture uploads are of the whole 256x256 grid (a few hundred KB total) -
+// cheap enough to redo in full on every batched update rather than tracking
+// a sub-rectangle, the same "small enough that simple is fine" call
+// terrain-renderer.js already makes for its own coastline recompute.
+function render3D() {
+  scene3d.updateHeight(elevationGrid);
+  scene3d.updateType(elevationGrid, typeGrid);
+  scene3d.render();
+}
+
 function scheduleRender() {
   if (renderScheduled) return;
   renderScheduled = true;
   requestAnimationFrame(() => {
     renderScheduled = false;
     if (!dirty) return;
-    // The oblique view has no safe "just the changed cells" shortcut: a
-    // column's height can newly cover (or uncover) rows several steps
-    // farther away on screen, not just the cells a brush stroke actually
-    // touched - see renderTerrainOblique's doc comment. So it always
-    // repaints the whole grid, batched to one redraw per animation frame
-    // the same way the partial redraw below is, rather than once per
-    // pointer event.
+    if (viewMode === "oblique" && scene3d) {
+      dirty = null;
+      render3D();
+      return;
+    }
+    // The canvas-column oblique fallback has no safe "just the changed
+    // cells" shortcut: a column's height can newly cover (or uncover) rows
+    // several steps farther away on screen, not just the cells a brush
+    // stroke actually touched - see renderTerrainOblique's doc comment. So
+    // it always repaints the whole grid, batched to one redraw per
+    // animation frame the same way the partial redraw below is, rather
+    // than once per pointer event.
     if (viewMode === "oblique") {
       dirty = null;
       renderTerrainOblique(ctx, elevationGrid, typeGrid, CELL_PX, OBLIQUE_MARGIN);
@@ -113,6 +144,10 @@ function scheduleRender() {
 
 function redrawAll() {
   dirty = null;
+  if (viewMode === "oblique" && scene3d) {
+    render3D();
+    return;
+  }
   if (viewMode === "oblique") renderTerrainOblique(ctx, elevationGrid, typeGrid, CELL_PX, OBLIQUE_MARGIN);
   else renderTerrain(ctx, elevationGrid, typeGrid, CELL_PX);
 }
@@ -357,9 +392,17 @@ function obliqueScreenToGrid(px, py) {
 }
 
 function canvasToGrid(event) {
-  const rect = canvas.getBoundingClientRect();
-  const px = ((event.clientX - rect.left) / rect.width) * canvas.width;
-  const py = ((event.clientY - rect.top) / rect.height) * canvas.height;
+  const el = activeCanvas();
+  const rect = el.getBoundingClientRect();
+  const px = ((event.clientX - rect.left) / rect.width) * el.width;
+  const py = ((event.clientY - rect.top) / rect.height) * el.height;
+  if (viewMode === "oblique" && scene3d) {
+    // The 3D renderer's own ray-heightfield march (against the same
+    // elevationGrid this file paints into) is the single source of truth
+    // for picking in that view - see terrain-renderer-3d.js.
+    const hit = scene3d.pick(px, py, elevationGrid);
+    return hit ?? { x: -1, y: -1 };
+  }
   if (viewMode === "oblique") return obliqueScreenToGrid(px, py - OBLIQUE_MARGIN);
   return { x: Math.floor(px / CELL_PX), y: Math.floor(py / CELL_PX) };
 }
@@ -373,22 +416,22 @@ function isOffTerrain(pos) {
   return pos.x < 0 || pos.y < 0;
 }
 
-canvas.addEventListener("pointerdown", (event) => {
+function handlePointerDown(event) {
   painting = true;
-  canvas.setPointerCapture(event.pointerId);
+  event.currentTarget.setPointerCapture(event.pointerId);
   const pos = canvasToGrid(event);
   lastGridPos = isOffTerrain(pos) ? null : pos;
   if (!isOffTerrain(pos)) paintAt(pos.x, pos.y);
-});
+}
 
-canvas.addEventListener("pointermove", (event) => {
+function handlePointerMove(event) {
   if (!painting) return;
   const pos = canvasToGrid(event);
   if (isOffTerrain(pos)) return;
   if (lastGridPos) paintAlong(lastGridPos.x, lastGridPos.y, pos.x, pos.y);
   else paintAt(pos.x, pos.y);
   lastGridPos = pos;
-});
+}
 
 function stopPainting() {
   if (!painting) return;
@@ -397,9 +440,17 @@ function stopPainting() {
   flush();
 }
 
-canvas.addEventListener("pointerup", stopPainting);
-canvas.addEventListener("pointercancel", stopPainting);
-canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+// Listeners are on both canvases - only the one `activeCanvas()` has made
+// visible ever receives pointer events (a `display: none` element is never
+// hit-tested), so `event.currentTarget` in the handlers above is always the
+// right one to capture the pointer on.
+for (const el of [canvas, canvas3d]) {
+  el.addEventListener("pointerdown", handlePointerDown);
+  el.addEventListener("pointermove", handlePointerMove);
+  el.addEventListener("pointerup", stopPainting);
+  el.addEventListener("pointercancel", stopPainting);
+  el.addEventListener("contextmenu", (event) => event.preventDefault());
+}
 
 function wireToolbar() {
   const buttons = document.querySelectorAll("[data-tool]");
@@ -431,15 +482,23 @@ function wireViewToggle() {
       viewMode = mode;
       for (const other of buttons) other.classList.remove("active");
       button.classList.add("active");
-      // The oblique view needs extra canvas height so a peak near row 0
-      // has room to rise into without being clipped (see OBLIQUE_MARGIN);
-      // top-down doesn't, so this only grows the canvas when switching in,
-      // not permanently. world.css gives #stage a fixed CSS height, which
-      // would otherwise squash this taller backing store back down and
-      // throw off its aspect ratio - overriding it inline keeps a 1:1
-      // pixel mapping (and canvasToGrid's px/py math correct) either way.
-      canvas.height = GRID_SIZE * CELL_PX + (viewMode === "oblique" ? OBLIQUE_MARGIN : 0);
-      canvas.style.height = `${canvas.height}px`;
+      const show3D = viewMode === "oblique" && scene3d;
+      canvas3d.classList.toggle("hidden", !show3D);
+      canvas.classList.toggle("hidden", show3D);
+      if (!show3D) {
+        // The canvas-column fallback oblique view needs extra canvas height
+        // so a peak near row 0 has room to rise into without being clipped
+        // (see OBLIQUE_MARGIN); top-down doesn't, so this only grows the
+        // canvas when switching in, not permanently. world.css gives
+        // #stage a fixed CSS height, which would otherwise squash this
+        // taller backing store back down and throw off its aspect ratio -
+        // overriding it inline keeps a 1:1 pixel mapping (and
+        // canvasToGrid's px/py math correct) either way. The 3D canvas's
+        // size is fixed (the camera frustum handles rise, not canvas
+        // height), so it never needs this.
+        canvas.height = GRID_SIZE * CELL_PX + (viewMode === "oblique" ? OBLIQUE_MARGIN : 0);
+        canvas.style.height = `${canvas.height}px`;
+      }
       redrawAll();
     });
   }
