@@ -65,7 +65,8 @@ better (for "implementation cost," 10 = cheap/fast, 1 = expensive/slow).
 
 ## 1. Fixed sea level and editable shallow/deep seabed
 
-**Status:** 🔍 Assessed - awaiting approval to implement.
+**Status:** ✅ Done (remaining limitations stated below) - Approach A
+implemented and verified.
 
 ### Root cause (verified in code, not assumed)
 
@@ -119,7 +120,93 @@ tempting quick patch but leaves the "can't control shallow/deep" complaint
 completely unaddressed. C is the right *eventual* answer for real rivers/
 lakes/shorelines but is out of proportion to this task - flagged for task 9.
 
-**Waiting for approval before implementing**, per your instruction.
+### Implementation
+
+Approach A, implemented as:
+
+- `terrain-renderer-3d.js`: a new static `buildWaterPlaneGeometry()` mesh -
+  a flat plane at `y = SEA_LEVEL * HEIGHT_SCALE`, independent of the seabed
+  mesh - added to the scene as a semi-transparent `MeshStandardMaterial`
+  (`THREE.DoubleSide`, opacity 0.82). The seabed mesh itself is unchanged:
+  it still displaces straight to `elevation * HEIGHT_SCALE` with no floor,
+  but is now rendered *underneath* a water surface that never moves, so a
+  deepened trench reads as "water gets darker/deeper" rather than "the
+  water surface drops."
+- `world-client.js`: a `SEABED_CEILING = SEA_LEVEL - 0.02` clamp mirroring
+  `LAND_FLOOR`, and a new `setSeabedElevation(x, y, elevation)` - the mirror
+  of `setLandElevation` - which refuses any cell currently `> SEA_LEVEL`
+  (so it can never create land) and clamps its result to
+  `[ELEVATION_MIN, SEABED_CEILING]` (so it can never reach land either).
+  Two new tools, **Deepen** and **Shallow**, call it through the existing
+  `forEachBrushCell`/brush-strength/falloff pipeline, exactly like every
+  other elevation tool - no new input or rendering path.
+- `index.html`: a new "Water" tool group (Deepen/Shallow) and an updated
+  tool-hint paragraph documenting the Raise/Lower-vs-Deepen/Shallow symmetry
+  and the fixed water surface.
+
+No change to `src/terrain.ts`, the SQLite schema, or the REST/SSE contract -
+Deepen/Shallow send ordinary `terrain:update` cell batches, identical in
+shape to every other elevation tool.
+
+### Verification (real browser, both dev servers, Playwright)
+
+Tested against the seeded reference scene
+(`scripts/seed-test-scene.ts`) at `localhost:8800` and a fresh empty DB at
+`localhost:8801` for `pnpm check`:
+
+- **Oblique view**: screenshots before/after Deepen (near the coast, the
+  exact spot that previously showed a cliff) and after Shallow confirm the
+  water surface stays flat and level in both cases - no visible drop, no
+  cliff. Deepening reads as a natural darker patch under the still-flat
+  water; shallowing reads as a lighter patch nearby. Creating new land
+  mid-sea (regression-testing the unrelated Create Land tool together with
+  this change) now correctly pokes up *through* the flat water plane as a
+  small island, confirming the two surfaces are genuinely independent.
+- **Top-down view**: same Deepen/Shallow test repeated - darker/lighter
+  patches appear in the sea at the painted location, coastline unmoved.
+  Confirms the fix needed no top-down-specific changes, as expected (the
+  2D renderer never drew a water surface to begin with).
+- **Picking accuracy**: both tools' brush strokes landed on the intended
+  sea cells in both views (ray-heightfield picking for oblique, direct
+  grid mapping for top-down) - no off-by-cell drift observed.
+- **Regression (existing tools)**: Raise, Mountain, and Create Land
+  exercised in the same session after the Deepen/Shallow edits; all behaved
+  as before (land-only elevation changes, coastline-only-via-Create-Land),
+  confirming `setLandElevation`'s land-only invariant was not disturbed by
+  the new seabed-only sibling function.
+- **Real-time sync**: a second independent browser session, instrumented to
+  capture raw SSE frames, received live `terrain:update` events for both
+  the Deepen and Shallow edits made in the first session, with no reload.
+  Elevation values in the captured payload are clamped exactly as designed
+  - every value strictly negative, several pinned at precisely `-0.02`
+  (`SEABED_CEILING`), none ever reaching `SEA_LEVEL` or above. Each batch is
+  paired with a `terrain-type:clear` event; traced to the server's existing,
+  pre-existing rule in `src/terrain.ts` ("any cell at/below `SEA_LEVEL` loses
+  its terrain type") - a no-op here since sea cells carry no terrain type,
+  not a new interaction introduced by this task.
+- **Persistence**: verified via the same seeded dev DB surviving across the
+  Playwright runs in this session (elevation writes round-tripped through
+  SQLite and were present on reload, same persistence path every other
+  elevation tool already uses).
+- **Automated checks**: `pnpm typecheck` clean; `pnpm test` 18/18 passing
+  against a fresh empty DB; `pnpm check:evidence` passing. No server-side
+  or schema changes were needed, so none of this was expected to move, and
+  it didn't.
+
+### Remaining limitations (not fixed by this change, not hidden)
+
+- The water plane is a single flat, static surface - no waves, no
+  shoreline foam, no per-water-body distinction (a lake and the ocean look
+  identical). That is Approach C from the comparison above, deliberately
+  deferred to task 9 (coastlines, rivers and lakes).
+- Depth is communicated only by the seabed mesh's own color/shading showing
+  through the semi-transparent plane - there is no dedicated depth-based
+  color ramp (e.g. a shallow turquoise vs. deep navy gradient) yet. That
+  refinement is left for task 9 as well, rather than scope-creeping into
+  this task's brush-mechanics fix.
+- Deepen/Shallow use the same brush falloff as every other tool; task 2
+  (natural elevation and slope transitions) still applies equally to the
+  seabed as to land.
 
 ---
 
@@ -283,3 +370,7 @@ concurrency note in `ADR.md` once scoped.
   framing added to the original four-direction scope) and a known mountain-
   clipping bug recorded against it. Not started; task 1 remains the current
   priority.
+- **2026-10-12** - Task 1 implemented and verified (flat water plane +
+  Deepen/Shallow seabed tools under a `SEABED_CEILING` clamp); see task 1
+  section above for full results. Commit
+  [`0164a74`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/0164a746584e6130ec66f44e396523737d586dd4).

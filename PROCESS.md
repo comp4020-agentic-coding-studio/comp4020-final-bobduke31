@@ -212,3 +212,81 @@ same cell at the same instant silently clobber each other, per the accepted
 cost in `ADR.md`. None of this is a C9 blocker — C9's bar is the real-time
 loop and a documented concurrency decision, both in place — but all of it
 is real, outstanding work for C10 and the Final visual pass.
+
+## Crit 10 / Final: visual development on `c10-3d-terrain` (in progress)
+
+C9 shipped deliberately behind on visuals (above). This work happens on a
+local branch, never pushed or deployed without separate approval — see
+`ROADMAP.md`, which now tracks it as an ordered, scored list of twelve
+remaining tasks rather than as freeform chat history, and is the
+authoritative live status for this phase; this section records the actual
+decisions and findings behind entries there, not a duplicate of it.
+
+**3D heightfield renderer.** The oblique view's original column-extrusion
+canvas renderer — flat-shaded rectangles shifted up by `elevation * 70px`,
+no real geometry — was replaced with a Three.js/WebGL2 heightfield
+(`terrain-renderer-3d.js`): real vertex displacement, GPU ridged-noise detail
+added to actual geometry (not just lighting), slope/elevation-based material
+blending, and ray-heightfield picking against the authoritative elevation
+grid rather than the visual mesh. The first version of this plan proposed
+primitive cone/cylinder trees and noise-only-in-lighting mountains; both were
+rejected on review before implementation (noise needed to reach real
+geometry, not just shading; trees needed an authored billboard texture, not
+primitives) and the revised plan was what got built. Top-down is unchanged;
+WebGL2-unavailable browsers fall back to the original canvas renderer
+unmodified.
+
+**Checkpoint ([`0164a74`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/0164a746584e6130ec66f44e396523737d586dd4)):**
+ROADMAP.md task 1, a fixed water surface and independently editable seabed.
+The actual bug, traced in code rather than assumed: this app has no water
+surface at all, only a single elevation scalar per cell — a "sea" cell is
+just one whose elevation is `<= SEA_LEVEL`. `detailedHeight()` passes sea
+cells' elevation straight through, and the vertex shader displaces the mesh
+to `elevation * HEIGHT_SCALE` with no floor underneath, so **the geometry
+rendered as "water" was the seabed itself**. That one fact explained two
+complaints at once: deepening a seabed cell visibly dropped "the water,"
+and a beach next to a trench was a real ~25-unit vertical wall in the mesh —
+not two separate problems needing two separate fixes.
+
+Three approaches were compared in `ROADMAP.md` (a static flat water plane
+decoupled from the seabed mesh; a visual-only depth-compression curve with
+no new tool; a full per-water-body hydrology model with waves and foam).
+The middle option was the easy patch but left "can't control shallow vs.
+deep" completely unaddressed; the hydrology model is the right *eventual*
+answer for rivers and lakes (deferred to task 9) but far out of proportion
+to this task. The flat-plane approach was implemented: a static mesh at
+`y = SEA_LEVEL * HEIGHT_SCALE`, decoupled from the seabed, plus a
+`setSeabedElevation()` mirroring the existing `setLandElevation()` — same
+shape, opposite direction, same reason: a cell that's already land is left
+alone, and the result is clamped below a new `SEABED_CEILING` so no amount
+of sculpting tips sea into land (only Create Land / Paint Sea still cross
+that boundary). This reuses the exact pattern the Crit 9 coastline-erosion
+fix established, deliberately, rather than inventing a new clamp shape.
+
+Verified in-browser, not assumed from the diff: Playwright screenshots of
+the oblique view before and after Deepen/Shallow strokes at the same
+coastline spot that previously showed a cliff confirm the water stays flat
+and level, with depth now reading as a colour change rather than a drop in
+the surface; a `Create Land` stroke mid-sea now correctly pokes a new
+island up *through* the still-flat water, which is only possible if the two
+surfaces are genuinely independent. Top-down needed no changes and was
+re-tested to confirm that empirically rather than by assumption. A second
+browser session was instrumented to capture raw SSE frames rather than just
+compared by screenshot: it received live `terrain:update` batches for both
+tools with elevation values clamped exactly as designed (strictly negative,
+several pinned at precisely `-0.02`, the `SEABED_CEILING` value, never at or
+above `SEA_LEVEL`). Each batch arrived paired with a `terrain-type:clear`
+event; traced to `src/terrain.ts`'s existing, unrelated rule that any cell at
+or below sea level loses its terrain type — a no-op here, not a new
+interaction this task introduced. `pnpm typecheck`, all 18 tests, and
+`pnpm check:evidence` pass unmodified; no server, schema, or API change was
+needed or made.
+
+**Known limitations, named rather than hidden:** the water plane is a
+single flat, static surface — no waves, no shoreline foam, and a lake looks
+identical to the ocean; depth is communicated only through the seabed's own
+colour showing through the semi-transparent plane, with no dedicated depth
+colour ramp yet. Both are deliberately deferred to task 9
+(coastlines/rivers/lakes) rather than folded into this task's scope. None of
+this is a C10/Final blocker on its own — it is exactly the kind of gap
+`ROADMAP.md` exists to keep visible rather than let quietly slide.
