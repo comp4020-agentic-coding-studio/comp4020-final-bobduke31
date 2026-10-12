@@ -15,12 +15,22 @@ import {
   setTypesFromList,
 } from "./terrain-model.js";
 import { renderTerrain, renderTerrainOblique, obliqueRise, OBLIQUE_MAX_RISE } from "./terrain-renderer.js";
-import { createTerrainScene3D, isWebGL2Available } from "./terrain-renderer-3d.js";
+import { createTerrainScene3D, isWebGL2Available, MAX_DEVICE_PIXEL_RATIO } from "./terrain-renderer-3d.js";
 
 // Canvas footprint stays the same (256 * 3 = 768, same as the old 128 * 6)
 // - resolution doubles by making cells smaller, not the map physically
 // bigger, which is what actually makes individual cells less noticeable.
+// CELL_PX stays the CSS/logical pixel size (matches world.css's fixed
+// 768px display box and everything UI-facing); PIXEL_SCALE is what the top-
+// down canvas's backing store, renderer, and pixel<->grid picking math
+// actually use - CELL_PX scaled up by the device pixel ratio (Task 4,
+// ROADMAP.md) so the canvas's own pixel buffer matches the screen's real
+// pixel density instead of being upscaled and softened by the browser.
+// Capped the same way the 3D renderer caps it, for the same reason (bound
+// the cost of a much denser backing store on a 3x+ display).
 const CELL_PX = 3;
+const DEVICE_PIXEL_RATIO = Math.min(window.devicePixelRatio || 1, MAX_DEVICE_PIXEL_RATIO);
+const PIXEL_SCALE = CELL_PX * DEVICE_PIXEL_RATIO;
 const FLUSH_INTERVAL_MS = 100;
 const LAND_PUSH = 0.35; // how far "create land" / "paint sea" push past sea level
 
@@ -47,8 +57,8 @@ const PEAK_TARGET = 0.95;
 const SEABED_CEILING = SEA_LEVEL - 0.02;
 
 const canvas = document.getElementById("stage");
-canvas.width = GRID_SIZE * CELL_PX;
-canvas.height = GRID_SIZE * CELL_PX;
+canvas.width = GRID_SIZE * PIXEL_SCALE;
+canvas.height = GRID_SIZE * PIXEL_SCALE;
 const ctx = canvas.getContext("2d");
 
 const elevationGrid = createElevationGrid();
@@ -59,10 +69,13 @@ const typeGrid = createTypeGrid();
 // its lifetime, so it can't share #stage with the 2D top-down renderer.
 // `scene3d` stays null (the existing column-extrusion oblique renderer on
 // `canvas`/`ctx` keeps working unchanged) on any browser without WebGL2.
+// Its backing-store sizing is handled internally by createTerrainScene3D
+// (renderer.setPixelRatio/setSize), not set directly here, since Three.js
+// owns that relationship between logical size and device pixel ratio.
 const canvas3d = document.getElementById("stage-3d");
-canvas3d.width = GRID_SIZE * CELL_PX;
-canvas3d.height = GRID_SIZE * CELL_PX;
-const scene3d = isWebGL2Available() ? createTerrainScene3D(canvas3d, elevationGrid, typeGrid) : null;
+const scene3d = isWebGL2Available()
+  ? createTerrainScene3D(canvas3d, elevationGrid, typeGrid, GRID_SIZE * CELL_PX)
+  : null;
 
 function activeCanvas() {
   return viewMode === "oblique" && scene3d ? canvas3d : canvas;
@@ -137,14 +150,14 @@ function scheduleRender() {
     // than once per pointer event.
     if (viewMode === "oblique") {
       dirty = null;
-      renderTerrainOblique(ctx, elevationGrid, typeGrid, CELL_PX, OBLIQUE_MARGIN);
+      renderTerrainOblique(ctx, elevationGrid, typeGrid, PIXEL_SCALE, OBLIQUE_MARGIN * DEVICE_PIXEL_RATIO);
       return;
     }
     // Padded by 1: the coastline stroke has width, so it can cover a
     // sliver of a cell just outside the cells that actually changed.
     const region = { minX: dirty.minX - 1, minY: dirty.minY - 1, maxX: dirty.maxX + 1, maxY: dirty.maxY + 1 };
     dirty = null;
-    renderTerrain(ctx, elevationGrid, typeGrid, CELL_PX, region);
+    renderTerrain(ctx, elevationGrid, typeGrid, PIXEL_SCALE, region);
   });
 }
 
@@ -154,8 +167,8 @@ function redrawAll() {
     render3D();
     return;
   }
-  if (viewMode === "oblique") renderTerrainOblique(ctx, elevationGrid, typeGrid, CELL_PX, OBLIQUE_MARGIN);
-  else renderTerrain(ctx, elevationGrid, typeGrid, CELL_PX);
+  if (viewMode === "oblique") renderTerrainOblique(ctx, elevationGrid, typeGrid, PIXEL_SCALE, OBLIQUE_MARGIN * DEVICE_PIXEL_RATIO);
+  else renderTerrain(ctx, elevationGrid, typeGrid, PIXEL_SCALE);
 }
 
 function queueElevation(x, y, elevation) {
@@ -531,12 +544,22 @@ function stampAlong(x0, y0, x1, y1) {
 // really looking at under their cursor, not just whatever row the y pixel
 // would land on in a flat top-down reading.
 function obliqueScreenToGrid(px, py) {
-  const gx = Math.floor(px / CELL_PX);
+  // px/py arrive in the canvas's own backing-store pixel space (see
+  // canvasToGrid), which is PIXEL_SCALE per cell now, not CELL_PX - must
+  // match whatever renderTerrainOblique was actually called with above.
+  const gx = Math.floor(px / PIXEL_SCALE);
   if (gx < 0 || gx >= GRID_SIZE) return { x: -1, y: -1 };
   for (let gy = GRID_SIZE - 1; gy >= 0; gy--) {
-    const baseY = gy * CELL_PX;
+    const baseY = gy * PIXEL_SCALE;
+    // obliqueRise's result is NOT itself DPR-scaled (OBLIQUE_HEIGHT_SCALE is
+    // a fixed constant in terrain-renderer.js, independent of cellPx) -
+    // matching renderTerrainOblique's own unscaled call exactly, so picking
+    // agrees with whatever was actually drawn. A pre-existing, documented
+    // limitation of this WebGL2-less fallback path only (ROADMAP.md task 4):
+    // its mountain-rise-to-cell-width proportion isn't DPR-invariant the way
+    // the primary WebGL oblique renderer now is.
     const top = baseY - obliqueRise(elevationGrid[gy * GRID_SIZE + gx]);
-    if (py >= top && py <= baseY + CELL_PX) return { x: gx, y: gy };
+    if (py >= top && py <= baseY + PIXEL_SCALE) return { x: gx, y: gy };
   }
   return { x: -1, y: -1 };
 }
@@ -549,12 +572,16 @@ function canvasToGrid(event) {
   if (viewMode === "oblique" && scene3d) {
     // The 3D renderer's own ray-heightfield march (against the same
     // elevationGrid this file paints into) is the single source of truth
-    // for picking in that view - see terrain-renderer-3d.js.
+    // for picking in that view - see terrain-renderer-3d.js. Its own
+    // canvas.width/height already reflect the device pixel ratio (see
+    // createTerrainScene3D), and px/py above are already computed in that
+    // same backing-store space via the el.width/el.height ratio, so no
+    // extra scaling is needed here.
     const hit = scene3d.pick(px, py, elevationGrid);
     return hit ?? { x: -1, y: -1 };
   }
-  if (viewMode === "oblique") return obliqueScreenToGrid(px, py - OBLIQUE_MARGIN);
-  return { x: Math.floor(px / CELL_PX), y: Math.floor(py / CELL_PX) };
+  if (viewMode === "oblique") return obliqueScreenToGrid(px, py - OBLIQUE_MARGIN * DEVICE_PIXEL_RATIO);
+  return { x: Math.floor(px / PIXEL_SCALE), y: Math.floor(py / PIXEL_SCALE) };
 }
 
 // -1,-1 means the pointer isn't over any drawn terrain column at all - only
@@ -651,9 +678,14 @@ function wireViewToggle() {
         // overriding it inline keeps a 1:1 pixel mapping (and
         // canvasToGrid's px/py math correct) either way. The 3D canvas's
         // size is fixed (the camera frustum handles rise, not canvas
-        // height), so it never needs this.
-        canvas.height = GRID_SIZE * CELL_PX + (viewMode === "oblique" ? OBLIQUE_MARGIN : 0);
-        canvas.style.height = `${canvas.height}px`;
+        // height), so it never needs this. The backing-store attribute
+        // (canvas.height) is in PIXEL_SCALE units (device-pixel-ratio
+        // aware, Task 4); the CSS override must stay in logical/CELL_PX
+        // units, or the display box itself would grow with the device
+        // pixel ratio instead of just the resolution behind it.
+        const marginPx = viewMode === "oblique" ? OBLIQUE_MARGIN : 0;
+        canvas.height = GRID_SIZE * PIXEL_SCALE + marginPx * DEVICE_PIXEL_RATIO;
+        canvas.style.height = `${GRID_SIZE * CELL_PX + marginPx}px`;
       }
       redrawAll();
     });

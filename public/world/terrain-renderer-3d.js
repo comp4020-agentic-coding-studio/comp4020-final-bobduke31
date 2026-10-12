@@ -22,7 +22,7 @@
 //    KB covering the whole 256x256 grid, re-uploaded in full since that's
 //    already cheap at this size), not touch any CPU-side vertex buffer.
 import * as THREE from "./vendor/three/three.module.js";
-import { GRID_SIZE, ELEVATION_MIN, ELEVATION_MAX, SEA_LEVEL, TERRAIN_TYPES } from "./terrain-model.js";
+import { GRID_SIZE, ELEVATION_MIN, ELEVATION_MAX, SEA_LEVEL, TERRAIN_TYPES, sampleBilinear } from "./terrain-model.js";
 import { computeCoastlineRings } from "./terrain-renderer.js";
 
 // World units: one grid cell = one unit in X/Z, so picking math and the
@@ -64,21 +64,11 @@ function texelToElevationRange() {
 
 // Bilinearly samples the authoritative (un-detailed) grid directly - used by
 // both tree placement and picking, which must agree with what's actually
-// stored, not the GPU-only ridge detail.
+// stored, not the GPU-only ridge detail. Shared with the top-down renderer
+// via terrain-model.js's sampleBilinear - both views interpolate the stored
+// data the same way.
 function sampleElevationBilinear(elevationGrid, x, y) {
-  const cx = Math.min(GRID_SIZE - 1.001, Math.max(0, x));
-  const cy = Math.min(GRID_SIZE - 1.001, Math.max(0, y));
-  const x0 = Math.floor(cx);
-  const y0 = Math.floor(cy);
-  const x1 = Math.min(GRID_SIZE - 1, x0 + 1);
-  const y1 = Math.min(GRID_SIZE - 1, y0 + 1);
-  const fx = cx - x0;
-  const fy = cy - y0;
-  const a = elevationGrid[y0 * GRID_SIZE + x0];
-  const b = elevationGrid[y0 * GRID_SIZE + x1];
-  const c = elevationGrid[y1 * GRID_SIZE + x0];
-  const d = elevationGrid[y1 * GRID_SIZE + x1];
-  return a * (1 - fx) * (1 - fy) + b * fx * (1 - fy) + c * (1 - fx) * fy + d * fx * fy;
+  return sampleBilinear(elevationGrid, x, y);
 }
 
 // --- GLSL noise -------------------------------------------------------
@@ -237,6 +227,7 @@ const FRAGMENT_SHADER = `
   varying vec3 vNormal;
   varying float vElevation;
 
+  uniform sampler2D uHeight;
   uniform sampler2D uType;
   uniform float uGridSize;
   uniform vec3 uLightDir;
@@ -254,6 +245,53 @@ const FRAGMENT_SHADER = `
     vec3 base = lerp3(bare, high, toHigh);
     float toSnow = smoothstep(0.78, 0.95, elevation);
     return lerp3(base, snow, toSnow);
+  }
+
+  float rawElevationFS(vec2 cell) {
+    vec2 uv = (cell + 0.5) / uGridSize;
+    float t = texture2D(uHeight, uv).r;
+    return ${texelToElevationRange()};
+  }
+
+  // Task 4 (ROADMAP.md): the raw per-cell type lookup below is a crisp,
+  // deliberately un-interpolated index (texture2D on uType uses
+  // NearestFilter - an interpolated index like 1.5 isn't a real type), which
+  // is why the terrain-type boundary used to read as a hard, axis-aligned
+  // blocky edge regardless of mesh density. This blends four whole, already-
+  // resolved CORNER COLOURS instead of the raw index - standard bilinear
+  // filtering applied one level up, after the categorical lookup rather than
+  // before it, so it only ever produces a colour that's a real mix of real
+  // neighbouring colours, never a meaningless fractional type. "fallback" is
+  // always this fragment's own already-land-side colour (computed by the
+  // caller before this runs): any corner that turns out to be sea-side is
+  // replaced by it rather than contributing its own colour, so a coastal
+  // fragment's blend degrades to fallback-only (today's exact behaviour) and
+  // never actually mixes a land colour with a sea colour.
+  vec3 paintColorForCell(vec2 cell, vec3 fallback) {
+    float e = rawElevationFS(cell);
+    if (e <= uSeaLevel) return fallback;
+    vec2 uv = (cell + 0.5) / uGridSize;
+    float typeRaw = texture2D(uType, uv).r;
+    int ti = int(typeRaw * 255.0 + 0.5);
+    vec3 grass = vec3(107.0, 142.0, 68.0) / 255.0;
+    vec3 sand = vec3(222.0, 201.0, 148.0) / 255.0;
+    vec3 forest = vec3(45.0, 86.0, 54.0) / 255.0;
+    if (ti == 1) return sand;
+    if (ti == 2) return forest;
+    if (ti == 3) return rockColor(e);
+    return grass;
+  }
+
+  vec3 blendedTypeColor(vec3 selfColor) {
+    vec2 p = vec2(vWorldPos.x, vWorldPos.z);
+    vec2 q = p - 0.5;
+    vec2 c0 = floor(q);
+    vec2 f = clamp(q - c0, 0.0, 1.0);
+    vec3 c00 = paintColorForCell(c0, selfColor);
+    vec3 c10 = paintColorForCell(c0 + vec2(1.0, 0.0), selfColor);
+    vec3 c01 = paintColorForCell(c0 + vec2(0.0, 1.0), selfColor);
+    vec3 c11 = paintColorForCell(c0 + vec2(1.0, 1.0), selfColor);
+    return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
   }
 
   void main() {
@@ -274,6 +312,12 @@ const FRAGMENT_SHADER = `
       if (typeIndex == 1) base = sand;
       else if (typeIndex == 2) base = forest;
       else if (typeIndex == 3) base = rockColor(vElevation);
+
+      // Soften the raw per-cell type edge into a blended boundary (Task 4,
+      // ROADMAP.md) - "base" above is also this blend's domain-safe
+      // fallback, so a fragment right at the coastline degrades to exactly
+      // today's crisp self-colour rather than pulling in a sea-side sample.
+      base = blendedTypeColor(base);
 
       // Slope-based rock bleed-through: steep ground reads as scree/rock
       // regardless of painted type, the way a real relief map doesn't let
@@ -602,7 +646,18 @@ function pickAgainstHeightfield(origin, direction, elevationGrid) {
   return null;
 }
 
-export function createTerrainScene3D(canvas, elevationGrid, typeGrid) {
+// Task 4 (ROADMAP.md): capped device-pixel-ratio rendering. Without this,
+// the renderer's drawing buffer stayed at `logicalSize` physical pixels
+// regardless of the display, so on any HiDPI screen (devicePixelRatio > 1,
+// most laptops/phones) the browser had to upscale the rendered frame to
+// fill the CSS box - producing a soft/blurry oblique view. `antialias: true`
+// alone doesn't fix this: that's MSAA smoothing triangle edges *within* the
+// undersized buffer, a different concern from the buffer itself being too
+// small for the screen. Capped at 2x (not raw devicePixelRatio, which can be
+// 3+) to bound the fill-rate/shader cost of a much denser backing store.
+export const MAX_DEVICE_PIXEL_RATIO = 2;
+
+export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSize) {
   let renderer;
   try {
     renderer = new THREE.WebGLRenderer({ canvas, antialias: true, context: canvas.getContext("webgl2") });
@@ -610,6 +665,13 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid) {
     return null;
   }
   if (!renderer) return null;
+
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, MAX_DEVICE_PIXEL_RATIO);
+  renderer.setPixelRatio(pixelRatio);
+  // `false` = don't touch canvas.style - world.css already fixes the CSS
+  // display size; only the backing-store resolution (canvas.width/height)
+  // should change with pixelRatio.
+  renderer.setSize(logicalSize, logicalSize, false);
 
   renderer.setClearColor(0x11161b, 1);
   renderer.shadowMap.enabled = true;

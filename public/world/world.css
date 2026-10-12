@@ -112,9 +112,12 @@ main {
   touch-action: none;
 }
 
-#stage {
-  image-rendering: pixelated;
-}
+/* Task 4 (ROADMAP.md), by explicit request: Top-down no longer forces a
+   blocky pixel-art look - its renderer now shades continuously per pixel
+   instead of per grid cell (see terrain-renderer.js), so letting the
+   browser's default smooth scaling apply (removing the nearest-neighbour
+   override that used to live here) is what actually looks crisp instead of
+   chunky at the canvas's own device-pixel-ratio-aware resolution. */
 
 .hidden {
   display: none;
