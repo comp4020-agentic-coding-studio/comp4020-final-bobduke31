@@ -138,16 +138,43 @@ already there. Depends partly on task 1's seabed work being settled first
 address the slope-gating logic once that shader area is stable rather than
 twice.
 
-## 3. Four-direction 3D camera views (N→S, S→N, E→W, W→E)
+## 3. Camera controls: four viewing directions, adjustable tilt/zoom/pan, automatic framing
 
-**Status:** ⬜ Not started.
+**Status:** ⬜ Not started. Scope expanded 2026-10-12 (originally just the
+four directions) - see below.
 
-Scope: the oblique camera is currently fixed at one azimuth. Needs a camera
-rotation control (likely four fixed presets rather than free orbit, to keep
-picking/UI simple) and re-verification that ray-heightfield picking,
-shadows, and tree billboard facing all still behave correctly from each
-angle - billboards in particular currently assume a fixed view direction
-(see "Already completed" above).
+**Known bug motivating this task:** the oblique camera's tilt, distance, and
+orthographic frustum size are all fixed constants chosen for one test scene
+(`terrain-renderer-3d.js`: `distance = 260`, `tiltFromVertical = 58°`,
+`viewSize = GRID_SIZE * 0.62`). A tall enough mountain can rise outside that
+fixed frustum and get clipped at the top of the canvas - the frustum doesn't
+adapt to what's actually been painted. This needs fixing as part of this
+task, not worked around by just picking different fixed constants, since any
+fixed framing fails again on a different map.
+
+Scope now covers four related controls, not just direction:
+
+- **Four fixed azimuth presets** (N→S, S→N, E→W, W→E) - as originally
+  scoped. Needs re-verification that ray-heightfield picking, shadow
+  direction, and tree-billboard facing (currently assumes one fixed view
+  direction - see "Already completed" above) all stay correct from each.
+- **Adjustable tilt**, from near-top-down down to a low, more dramatic side
+  perspective - a slider or similar, not just the azimuth presets. Picking
+  (`pickAgainstHeightfield`) and billboard facing need to keep working
+  continuously across the tilt range, not just at the current one fixed
+  angle.
+- **Zoom and panning** - currently the orthographic frustum is a fixed size
+  centred on the map; needs real camera movement/zoom controls while
+  preserving accurate click-to-cell picking at any zoom/pan state.
+- **Automatic framing** - the frustum (and plausibly the camera distance)
+  should size itself to what's actually painted (fixing the clipping bug
+  above as a side effect of always framing correctly, rather than as a
+  one-off constant tweak), and re-frame sensibly when terrain is edited
+  rather than requiring a manual zoom-out.
+
+Will be scored (2-3 approaches per control, per this file's usual format)
+when this task is reached in order; recorded here now so the clipping bug
+and the full scope aren't lost before then.
 
 ## 4. Overall rendering resolution, pixelation and anti-aliasing
 
@@ -252,3 +279,7 @@ concurrency note in `ADR.md` once scoped.
   and verified; see "Already completed" above.
 - **2026-10-12** - Task 1 assessed (this file); awaiting approval to
   implement.
+- **2026-10-12** - Task 3 scope expanded (adjustable tilt/zoom/pan/automatic
+  framing added to the original four-direction scope) and a known mountain-
+  clipping bug recorded against it. Not started; task 1 remains the current
+  priority.
