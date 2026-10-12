@@ -412,8 +412,9 @@ on unedited terrain while still measurably damping pathological slopes.
 
 ## 3. Camera controls: four viewing directions, adjustable tilt/zoom/pan, automatic framing
 
-**Status:** 🔍 Assessed - awaiting approval to implement. Scope expanded
-2026-10-12 (originally just the four directions) - see below.
+**Status:** ✅ Done. Scope expanded 2026-10-12 (originally just the four
+directions) - see below. Implemented and verified 2026-10-13 using
+Approach A.
 
 **Known bug motivating this task:** the oblique camera's tilt, distance, and
 orthographic frustum size are all fixed constants chosen for one test scene
@@ -514,7 +515,127 @@ missing piece (auto-framing) would have to be hand-built regardless,
 meaning B pays an integration cost for less reuse benefit than it first
 appears to offer.
 
-**Waiting for approval before implementing.**
+**Approved 2026-10-13 using Approach A**, with two explicit requirements:
+auto-framing must not unexpectedly reset the camera while the user is
+editing terrain (a dedicated Reset/Fit View control instead), and terrain
+picking and tree billboards must keep working correctly from all four
+directions, especially at low camera (dramatic, near-horizontal) angles.
+
+### Implementation
+
+- **`camView` state object** (`terrain-renderer-3d.js`) replaces the old
+  fixed `center`/`viewSize`/`distance`/`tiltFromVertical` constants:
+  `azimuthIndex`, `tiltDeg`, `zoom`, `panX`/`panZ`, `baseViewSize`.
+  `applyCameraState()` recomputes camera position/look-at/frustum from this
+  state every time any control changes; `AZIMUTH_PRESETS` defines the four
+  direction presets (N→S, S→N, E→W, W→E), `DEFAULT_AZIMUTH_INDEX = 1`
+  (S→N) preserves the exact original camera look as the default.
+- **Automatic framing** (`fitView()`): scans the actual painted elevation
+  range (not just the static grid footprint), resets zoom/pan to defaults,
+  then projects the 8 corners of that data's 3D bounding box onto the
+  camera's own right/up axes (read from `camera.matrixWorld`) to compute
+  the frustum size that fits it with a small margin. This directly fixes
+  the clipping bug named in the assessment (a tall peak rising outside a
+  fixed frustum) for any azimuth/tilt, not just the one direction the old
+  fixed constants happened to be tuned for.
+- **`fitView()` is called only from three places, by design**: initial
+  terrain load, the explicit "Reset / Fit view" button, and
+  `setAzimuth()`/`setTilt()` (an intentional auto-refit tied to changing
+  the direction/tilt controls themselves). It is never called from
+  `setZoom()`, `panBy()`, painting, or switching between Top-down/Oblique -
+  satisfying the "must not unexpectedly reset while editing" requirement by
+  construction, not just by accident of timing.
+- **Zoom and pan**: `setZoom(factor)` scales `camView.baseViewSize` and
+  reapplies the camera state without refitting. `panBy(dRight, dUp)` offsets
+  `camView.panX`/`panZ` along the camera's own current right/up vectors
+  (so panning direction is always screen-relative, correct at any
+  azimuth/tilt), scaled by the current zoom.
+- **Real tree billboarding** (fixing the pre-existing bug named in the
+  assessment): `buildTreeLayer` now exposes `updateFacing(camera)`, called
+  once per frame before render, which recomputes every tree instance's full
+  transform matrix with a Y-rotation from `Math.atan2(camera.x - tree.x,
+  camera.z - tree.z)`, via `THREE.Matrix4.compose`. Previously each
+  instance's matrix only ever set position/scale, leaving a fixed
+  world-space orientation that only looked correct by coincidence of the
+  camera's original fixed position.
+- **UI**: a second toolbar (`#camera-toolbar`, shown only in Oblique view)
+  with four direction buttons (`[data-azimuth]`), a tilt slider (12°-82°),
+  a zoom slider (0.4x-3x), a 4-button pan pad, and a "Reset / Fit view"
+  button. Wired in `world-client.js`'s `wireCameraControls()`; every handler
+  calls the renderer directly and re-renders once, bypassing the
+  dirty-rect `scheduleRender()` system since camera moves aren't terrain
+  edits.
+
+### Verification (real browser, Playwright, against localhost:8800)
+
+- All four azimuth presets (N→S, E→W, W→E, and back to S→N) screenshot-
+  confirmed: each correctly rotates the view and auto-frames the rotated
+  scene, confirming the bounding-box-projection fit math is not
+  direction-specific (only two of the four were worked out analytically
+  during implementation).
+- Tilt slider screenshot-confirmed at both extremes: 80° (near-horizontal)
+  renders a dramatic, mountains-above-a-horizon-strip silhouette view; 14°
+  (near-top-down) renders a flattened plan-like view. **Caught and fixed
+  during this verification**: the first implementation had `sin`/`cos`
+  swapped in the tilt-to-camera-position formula (and the corresponding
+  min/max comments inverted), so tilt=80 initially rendered near-top-down
+  and tilt=14 rendered the dramatic low angle - exactly backwards from the
+  intended slider semantics. Fixed and re-verified.
+- Zoom slider screenshot-confirmed in both directions: zoomed-in fills the
+  frame with terrain detail (individual tree billboards visible as distinct
+  textured canopy shapes within the forest patch, not a flat green fill);
+  zoomed-out shrinks the whole scene with black letterboxing, no clipping
+  or distortion.
+- Pan buttons screenshot-confirmed: four clicks left + two up moved the
+  framed scene accordingly; "Reset / Fit view" correctly returned to the
+  default full-scene framing.
+- **Auto-framing-does-not-reset-while-editing, tested decisively** (the
+  explicit approval requirement): rather than relying on the ambiguous
+  case where a fit-view had *just* been clicked before painting, a
+  dedicated test set the camera to a deliberately unusual state (E→W
+  azimuth, zoom=2, panned right+down), read back the exact
+  zoom/tilt/azimuth slider state, painted a Mountain stroke on an unrelated
+  part of the map while on the Top-down view, switched back to Oblique, and
+  re-read the state. Zoom/tilt/azimuth values and the rendered frame
+  (pixel-for-pixel) were identical before and after the edit, confirming
+  the camera is never silently refit by painting or by toggling between
+  Top-down and Oblique.
+- **Picking accuracy at a low, dramatic tilt, explicitly tested** (the
+  requirement's specific emphasis): with tilt set to 78° and a non-default
+  W→E azimuth, a Peak stroke was clicked at a known screen coordinate in
+  open grassland near the coastline. The resulting peak rose up exactly at
+  that screen location (confirmed with an on-screen crosshair marker
+  overlaid on the click point in the verification screenshot), not drifted
+  to a neighbouring cell - confirming `pickAgainstHeightfield`'s
+  direction-agnostic ray-march holds up in practice at a grazing camera
+  angle, not just in the code-reading argument made in the assessment.
+- Tree billboard facing verified qualitatively across multiple azimuths and
+  a close zoom: forest patches read as a textured block of overlapping
+  canopy shapes from S→N, N→S, E→W, W→E, and the 78°-tilt/W→E picking test,
+  with no edge-on/invisible-sliver appearance at any tested direction - the
+  per-frame `Math.atan2` facing fix holds across the tested range.
+- `pnpm typecheck`, `pnpm test` (18/18 passing, against a fresh dev DB),
+  and `pnpm check:evidence` all pass unmodified - no server/API contract
+  changes, consistent with the plan.
+
+### Remaining limitations (not fixed by this change, not hidden)
+
+- The sun remains fixed in world space (named in the assessment, not
+  addressed here) - some azimuths render visibly more backlit/flatter than
+  others, since the lit side of a ridge doesn't rotate with the camera.
+  Scoped to task 6 (oblique art quality), not this task.
+- `fitView()`'s auto-refit on every azimuth/tilt change is a deliberate
+  design choice (re-frame when the direction/angle itself changes) but
+  means a user who has manually zoomed/panned loses that adjustment the
+  moment they switch direction or drag the tilt slider - only zoom/pan
+  themselves, and editing, are guaranteed not to trigger a refit. Not
+  reported as a bug by the approval requirement (which named editing
+  specifically), but worth naming as a UX trade-off.
+- Camera-state is view-local, in-memory only (not persisted per-user or
+  synced between simultaneous editors) - each browser tab keeps its own
+  camera independent of what other connected clients are looking at, which
+  is consistent with how this prototype has not persisted any other
+  client-local UI state either.
 
 ## 4. Overall rendering resolution, pixelation and anti-aliasing
 
@@ -636,3 +757,9 @@ concurrency note in `ADR.md` once scoped.
   implement. Confirmed in code that picking needs no changes for any new
   camera state, and that tree billboards (fixed-orientation planes, not
   true billboards) need a real fix as part of this task, not a separate one.
+- **2026-10-13** - Task 3 implemented and verified in the same session
+  (parametric camera with direction/tilt/zoom/pan/auto-fit, true per-frame
+  tree billboarding, and a sin/cos tilt-direction bug caught and fixed
+  during verification - see task 3 section above for the full trail and
+  evidence). Commit
+  [`e07061b`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/e07061b30b84ceea0051c569353e02d67009ec4c).

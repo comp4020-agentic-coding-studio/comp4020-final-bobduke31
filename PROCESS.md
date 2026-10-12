@@ -356,3 +356,61 @@ extra cells sync live; a reload confirmed persistence. `pnpm typecheck`,
 all 18 tests, and `pnpm check:evidence` pass; no server, schema, or API
 change. Full detail, scoring, and the stated remaining limitations are in
 `ROADMAP.md`, not duplicated here.
+
+**Checkpoint ([`e07061b`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/e07061b30b84ceea0051c569353e02d67009ec4c)):**
+ROADMAP.md task 3, camera controls. The user's approval added two concrete
+constraints beyond the original four-direction/tilt/zoom/pan/auto-fit scope:
+auto-framing must never surprise-reset the camera mid-edit (a dedicated
+Reset/Fit View button instead), and picking/tree billboards must keep
+working at low, dramatic camera angles specifically, not just at the one
+tilt the renderer happened to ship with originally.
+
+The fixed `center`/`viewSize`/`distance`/`tiltFromVertical` constants became
+a live `camView` state object, with `fitView()` doing real work: it scans
+the actual painted elevation range, then projects that bounding box's 8
+corners onto the camera's own right/up axes to size the frustum — this
+directly fixed the tall-mountain clipping bug the task 3 assessment named,
+for any direction, not just whichever one the old constants were tuned
+against. `fitView()` is wired to run from exactly three places (initial
+load, the explicit fit button, and an azimuth/tilt change) and nowhere
+else, so the "don't reset while editing" requirement holds by construction
+rather than by coincidence of test ordering.
+
+One genuine bug was caught during verification, not before it: the first
+tilt implementation had `sin`/`cos` swapped (and the corresponding min/max
+tilt comments inverted to match), so the slider's two extremes rendered
+backwards from their intended meaning — tilt=80° showed a near-top-down
+view, tilt=14° showed the dramatic low angle. Caught by actually looking at
+the rendered screenshots against what the slider was supposed to mean, not
+by reading the formula and assuming it was right; fixed and re-verified at
+both extremes.
+
+A second, pre-existing bug named in the task 3 assessment itself (not a
+regression from this work) was fixed as planned: tree billboards had never
+actually been billboards — each instance's matrix set position and scale
+only, never rotation, so the planes kept one fixed world-space orientation
+that only looked right because the original fixed camera happened to sit on
+the one side that orientation faced. They now recompute a full camera-facing
+transform every frame from the live camera position.
+
+**Verification:** all four azimuth presets, both tilt extremes, both zoom
+directions, and the pan pad were each screenshotted and visually confirmed
+correct in the browser against `localhost:8800`. Two of the approval's
+specific requirements were tested in a way designed to actually
+discriminate a pass from a false positive, not just re-confirm the happy
+path: the "must not reset while editing" requirement was tested by setting
+a deliberately unusual camera state (non-default azimuth, zoom, pan),
+reading back the exact slider values, painting on an unrelated part of the
+map from a different view, and confirming the state and the rendered frame
+were pixel-identical afterward — not by relying on the coincidence that an
+earlier fit-view click would have left the same framing either way. The
+"picking at low angles" requirement was tested by painting a Peak stroke at
+a known screen coordinate at a 78° tilt and a non-default W→E azimuth, with
+an on-screen crosshair overlaid on the click point in the verification
+screenshot confirming the resulting peak rose up exactly there, not at a
+neighbouring cell. `pnpm typecheck`, all 18 tests (against a fresh dev DB),
+and `pnpm check:evidence` pass unmodified; no server, schema, or API
+change. Full detail, scoring, and the stated remaining limitations (the sun
+stays fixed in world space; manual zoom/pan resets on an azimuth/tilt
+change by design; camera state is per-tab, not synced between editors) are
+in `ROADMAP.md`, not duplicated here.
