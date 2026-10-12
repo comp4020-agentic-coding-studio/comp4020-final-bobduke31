@@ -72,7 +72,7 @@ const pendingElevation = new Map();
 const pendingTypes = new Map();
 let flushHandle = null;
 let painting = false;
-let lastGridPos = null;
+let lastStampPos = null;
 
 function smoothstep(t) {
   const clamped = Math.min(1, Math.max(0, t));
@@ -358,17 +358,41 @@ function paintAt(cx, cy) {
   scheduleFlush();
 }
 
-// Paints along the segment from the last known pointer position to the new
-// one, not just at the new point - without this, a fast drag leaves gaps
-// between sampled positions instead of a continuous stroke.
-function paintAlong(x0, y0, x1, y1) {
-  const dist = Math.hypot(x1 - x0, y1 - y0);
-  const step = Math.max(1, brushRadius / 2);
-  const steps = Math.max(1, Math.ceil(dist / step));
+// How far the pointer must actually travel (in grid cells) before the next
+// stamp is placed, regardless of how many pointermove events fire along the
+// way. This - not the falloff shape - is what makes a stroke's total effect
+// depend on distance travelled, not on event frequency: a slow drag can fire
+// pointermove dozens of times over a few cells, and without a minimum
+// spacing each of those was its own full-strength stamp, so the same
+// physical gesture could apply 1 stamp or 30 depending only on mouse
+// polling rate. Scales with brush radius (a tiny brush needs tight spacing
+// to paint a continuous line at all) but never below a hard floor.
+function stampSpacing() {
+  return Math.max(0.4, brushRadius * 0.5);
+}
+
+// Walks the segment from (x0, y0) - the last cell a stamp actually landed
+// on - to (x1, y1) - where the pointer is now - placing a stamp every
+// stampSpacing() cells. Returns the exact fractional position just past the
+// last stamp placed, not (x1, y1) itself: the caller carries that forward as
+// the new "last stamp" origin, so leftover sub-spacing distance accumulates
+// across calls instead of being discarded. Without that carry-over, a slow
+// drag - many pointermove events, each covering less than one spacing unit
+// - would place its first stamp and then never place another, since every
+// individual call would see "not far enough yet" and reset to zero.
+function stampAlong(x0, y0, x1, y1) {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const dist = Math.hypot(dx, dy);
+  const spacing = stampSpacing();
+  const steps = Math.floor(dist / spacing);
   for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    paintAt(Math.round(x0 + (x1 - x0) * t), Math.round(y0 + (y1 - y0) * t));
+    const t = (i * spacing) / dist;
+    paintAt(Math.round(x0 + dx * t), Math.round(y0 + dy * t));
   }
+  if (steps === 0) return { x: x0, y: y0 };
+  const consumedT = (steps * spacing) / dist;
+  return { x: x0 + dx * consumedT, y: y0 + dy * consumedT };
 }
 
 // In the oblique view, a screen point doesn't map to one grid cell by
@@ -420,7 +444,9 @@ function handlePointerDown(event) {
   painting = true;
   event.currentTarget.setPointerCapture(event.pointerId);
   const pos = canvasToGrid(event);
-  lastGridPos = isOffTerrain(pos) ? null : pos;
+  // lastStampPos is fractional (the exact point stampAlong last walked to),
+  // not the integer cell paintAt was actually called with - see stampAlong.
+  lastStampPos = isOffTerrain(pos) ? null : pos;
   if (!isOffTerrain(pos)) paintAt(pos.x, pos.y);
 }
 
@@ -428,15 +454,17 @@ function handlePointerMove(event) {
   if (!painting) return;
   const pos = canvasToGrid(event);
   if (isOffTerrain(pos)) return;
-  if (lastGridPos) paintAlong(lastGridPos.x, lastGridPos.y, pos.x, pos.y);
-  else paintAt(pos.x, pos.y);
-  lastGridPos = pos;
+  if (lastStampPos) lastStampPos = stampAlong(lastStampPos.x, lastStampPos.y, pos.x, pos.y);
+  else {
+    paintAt(pos.x, pos.y);
+    lastStampPos = pos;
+  }
 }
 
 function stopPainting() {
   if (!painting) return;
   painting = false;
-  lastGridPos = null;
+  lastStampPos = null;
   flush();
 }
 
