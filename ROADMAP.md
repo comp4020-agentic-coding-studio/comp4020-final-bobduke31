@@ -412,8 +412,8 @@ on unedited terrain while still measurably damping pathological slopes.
 
 ## 3. Camera controls: four viewing directions, adjustable tilt/zoom/pan, automatic framing
 
-**Status:** ⬜ Not started. Scope expanded 2026-10-12 (originally just the
-four directions) - see below.
+**Status:** 🔍 Assessed - awaiting approval to implement. Scope expanded
+2026-10-12 (originally just the four directions) - see below.
 
 **Known bug motivating this task:** the oblique camera's tilt, distance, and
 orthographic frustum size are all fixed constants chosen for one test scene
@@ -444,9 +444,77 @@ Scope now covers four related controls, not just direction:
   one-off constant tweak), and re-frame sensibly when terrain is edited
   rather than requiring a manual zoom-out.
 
-Will be scored (2-3 approaches per control, per this file's usual format)
-when this task is reached in order; recorded here now so the clipping bug
-and the full scope aren't lost before then.
+### Root cause / preconditions (verified in code, not assumed)
+
+- **Picking needs no new algorithm.** `pickAgainstHeightfield` (confirmed
+  by reading it) is a pure ray-march in world space - it takes whatever
+  `origin`/`direction` the camera's own `raycaster.setFromCamera` produces
+  and has no assumption about viewing direction baked in anywhere. Every
+  approach below gets accurate picking "for free" in any azimuth/tilt/zoom/
+  pan state, *as long as the camera object's transform is correctly updated
+  before `pick()` runs* - the real risk is wiring, not the picking math
+  itself.
+- **Tree billboards are NOT real billboards today.** Confirmed in
+  `buildTreeLayer`: each instance's matrix sets only position and scale,
+  never rotation - the planes keep one fixed world-space orientation
+  (`PlaneGeometry`'s default +Z-facing normal), which happens to face
+  roughly toward the camera only because today's camera sits on the +Z
+  side of the map. Viewed from a different azimuth (or even just a very
+  different tilt), these would render edge-on - nearly invisible 2D
+  cutouts. This is a real, required fix bundled into this task (not a new
+  one), already named in this file's scope above.
+- **The sun is fixed in world space** (`sun.position.set(-80, 160, 60)`),
+  independent of camera azimuth - physically correct (the sun doesn't move
+  because the viewer turns around) but means some azimuths will look
+  backlit/flatter than others, since the lit side of a ridge doesn't
+  rotate with the camera. Named as a limitation below, not solved here -
+  revisiting light direction per-azimuth is a material/lighting-quality
+  question better scoped to task 6 (oblique art quality).
+
+### Approaches compared
+
+| | A. Unified parametric camera (hand-rolled) | B. Three.js `OrbitControls`/`MapControls` adapted to 4 snapped azimuths | C. Four independent fixed presets, no real auto-framing |
+|---|---|---|---|
+| **Summary** | Generalise the existing fixed camera math (`distance`, `tiltFromVertical`, `viewSize`, a fixed `center`) into live state: `azimuth` (snapped to 4 presets by the direction buttons), `tilt` (continuous, slider-driven), `zoomFactor` (scales `viewSize`, reusing `setAspect`'s existing frustum-resize code), and `panOffset` (added to `center`). One position/frustum formula serves every state. Auto-framing is a bespoke function (no library does this): project the painted elevation range's bounding box into the current camera's view space and size `viewSize`/`distance` to fit it, re-run on view-direction/tilt change and after significant edits. Also fixes tree billboards (rotate each instance to face the camera every frame, the real "billboard" technique) as part of this same work. | Vendor Three.js's official `OrbitControls` or `MapControls` addon (MIT, same family already vendored) for the zoom/pan/orbit mechanics, constrained to 4 snapped azimuths and a bounded tilt range via its own angle-limit options, instead of hand-rolling that math. Still needs the exact same bespoke auto-framing function as A (no library solves "fit this heightfield's painted extent"), and the same billboard fix. | Four separate, independently-tuned blocks of fixed camera constants (one per direction), a simple global zoom scalar and pan offset layered uniformly on top, and tilt as a shared slider. No real auto-fit: framing stays a tuned-by-hand constant per direction, same category of fix as today's single fixed `viewSize` - just four of them instead of one. |
+| Visual quality | 9 | 8 | 4 |
+| Feasibility | 8 | 6 | 9 |
+| Style consistency | 9 | 5 | 6 |
+| Impl. cost (10=cheap) | 6 | 5 | 9 |
+| Performance | 9 | 7 | 9 |
+
+**Risks:** Continuous tilt is a genuinely new kind of surface to verify (a
+range of angles, not a fixed handful of presets) - picking, shadow
+plausibility, and billboard facing all need checking across that range, not
+just at the extremes, regardless of which approach is chosen. Approach A's
+auto-framing function needs to project the *actual* painted bounding box
+(not just the static grid footprint) through the current camera transform,
+or it under/over-frames exactly the way today's single fixed constant does
+for an unusual map - this is the one piece of real new geometry math in the
+whole task. Approach B still carries this same risk unreduced (the library
+doesn't help with it at all) while adding integration risk of its own:
+`OrbitControls`/`MapControls` are built around continuous drag-to-orbit
+input, not button-triggered snapping to four cardinal directions, so most
+of the library's own input handling would need overriding or disabling to
+match the UX this task actually asks for - the "reuse" benefit is real but
+partial, and is recorded here per `CLAUDE.md`'s reuse discipline even
+though it's not the pick. Approach C's core problem isn't risk, it's that
+it doesn't do what was asked: "automatic framing" was explicit in this
+task's scope, and four more fixed constants is the same category of fix
+already identified as insufficient (that's *why* this task exists) - it's
+included here as the cheap baseline that makes the cost/quality trade-off
+concrete, not a serious contender.
+
+**Recommendation:** Approach A. It's the only option that actually
+implements automatic framing as asked (C doesn't, by its own design) and it
+reuses this renderer's own existing camera-math shape rather than adopting
+a drag-to-orbit library built for a different interaction model than the
+button/slider UX this task calls for (B) - the library's real strength
+(robust continuous orbit input) isn't what's needed here, and its one
+missing piece (auto-framing) would have to be hand-built regardless,
+meaning B pays an integration cost for less reuse benefit than it first
+appears to offer.
+
+**Waiting for approval before implementing.**
 
 ## 4. Overall rendering resolution, pixelation and anti-aliasing
 
@@ -564,3 +632,7 @@ concurrency note in `ADR.md` once scoped.
   renderer change, after two tried-and-reverted shader approaches along the
   way - see task 2 section above for the full trail and evidence). Commit
   [`693f475`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/693f475e6fbf5600a04f5d885f0b97b7177ff4c2).
+- **2026-10-13** - Task 3 assessed (this file); awaiting approval to
+  implement. Confirmed in code that picking needs no changes for any new
+  camera state, and that tree billboards (fixed-orientation planes, not
+  true billboards) need a real fix as part of this task, not a separate one.
