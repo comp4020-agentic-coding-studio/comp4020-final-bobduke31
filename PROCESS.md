@@ -290,3 +290,69 @@ colour ramp yet. Both are deliberately deferred to task 9
 (coastlines/rivers/lakes) rather than folded into this task's scope. None of
 this is a C10/Final blocker on its own — it is exactly the kind of gap
 `ROADMAP.md` exists to keep visible rather than let quietly slide.
+
+**Checkpoint ([`693f475`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/693f475e6fbf5600a04f5d885f0b97b7177ff4c2)):**
+ROADMAP.md task 2, natural elevation and slope transitions. Two real,
+visually-caught failures happened while implementing this, not just a clean
+path to the final design, and both are worth recording because they were
+only caught by actually rendering the result next to an unmodified baseline
+— exactly the discipline `CLAUDE.md` names and the earlier oblique-view
+section above already illustrates once.
+
+The task had two parts: a brush/data-side fix (a bounded relaxation pass
+that softens abrupt adjacent-cell jumps, scoped tightly to each stroke's own
+footprint so it can't expand a deliberately small brush or erase an
+intentional feature — the user's own correction before implementation), and
+a render-side fix (don't let the GPU ridge-detail noise pile extra
+jaggedness onto a slope that's already extreme — the user's second
+correction). The brush-side fix went cleanly. The render-side fix did not:
+
+- **First attempt** replaced the existing elevation-based noise gate
+  outright with a local-slope gate (steeper terrain = more detail, flatter
+  = less). Screenshotting the oblique view immediately showed the coastline
+  itself — an intentional, by-design discontinuity, not an artefact, per
+  `ADR.md` — rendered as a jagged, spiky line. A slope-only gate has no way
+  to distinguish "a real mountain face" from "the coastline," since both
+  are steep in the same way.
+- **Second attempt** narrowed the slope band and widened the sampling
+  radius to try to exclude coastline-level slopes specifically (calculated
+  against the actual seed-data profile, not guessed). This mostly fixed the
+  coastline, but a *new*, different artefact appeared: isolated spikes
+  partway down otherwise-smooth hillsides that hadn't been there before.
+  Tracing it (by computing the actual slope profile of an isolated seed
+  bump in plain Node, not just reasoning about the shader) found the cause:
+  a pure local-slope gate is zero at a dome's flat summit and *peaks in a
+  ring partway down the flank* instead — a shape the original elevation-
+  based gate never had — and the ridged-noise function's own occasional
+  sharp crests showed through as visible pokes wherever that ring happened
+  to cross one.
+- **What shipped instead:** keep the original, already-good elevation-based
+  envelope completely unchanged (confirmed via a direct screenshot
+  comparison against the pre-task-2 formula on identical seed data — pixel-
+  equivalent), and add a *damping ceiling only* — ordinary terrain is
+  untouched, and only a local slope beyond what the relaxation pass ever
+  leaves in the data gets its noise amplitude reduced. This is the version
+  that matched the untouched baseline exactly while still measurably
+  protecting against a genuinely pathological slope.
+
+A separate, real bug surfaced during this same work, unrelated to the
+shader: Mountain and Peak had never been wired to the Strength slider at
+all — a single click at the brush centre jumped straight to
+`MOUNTAIN_TARGET`/`PEAK_TARGET` regardless of Strength. This was the actual
+reason a small, modest-radius stroke still read as an instant narrow cone
+even with the relaxation pass in place: there was no gradual build-up for
+the relaxation pass to smooth between. Fixed by multiplying the lerp factor
+by `brushStrength`, the same integration every other elevation tool already
+had.
+
+**Verification:** direct A/B screenshot comparisons against the unmodified
+baseline (zero regression confirmed, not assumed); new Mountain/Peak
+features built up over several strokes read as rounded domes, not cones;
+the actual post-relaxation elevation data queried directly from SQLite to
+confirm a quantitative bound (max adjacent-cell difference 0.143, under the
+0.15 threshold); a tiny radius-1 brush stroke confirmed still precise; a
+second session's raw SSE frames captured to confirm the relaxation pass's
+extra cells sync live; a reload confirmed persistence. `pnpm typecheck`,
+all 18 tests, and `pnpm check:evidence` pass; no server, schema, or API
+change. Full detail, scoring, and the stated remaining limitations are in
+`ROADMAP.md`, not duplicated here.

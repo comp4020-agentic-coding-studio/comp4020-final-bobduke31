@@ -212,7 +212,8 @@ Tested against the seeded reference scene
 
 ## 2. Natural elevation and slope transitions
 
-**Status:** 🔍 Assessed - awaiting approval to implement.
+**Status:** ✅ Done (remaining limitations stated below) - Approach B
+implemented and verified.
 
 Scope: mountains/hills should read as naturally-formed landforms (broad
 bases, gradual slopes, occasional sharp ridgelines where geologically
@@ -294,7 +295,120 @@ The slope-based noise-gating fix is shared across A and B regardless, since
 it was already identified as part of this task's root cause in the
 original combined assessment - B does not raise its cost further.
 
-**Waiting for approval before implementing.**
+### Implementation
+
+Approach B, implemented with two corrections from review before coding
+(keep the smallest brushes precise - natural falloff must not expand the
+selected radius; don't amplify already-extreme slopes with ridge noise)
+folded in, as:
+
+- **Relaxation pass (`world-client.js`)**: `relaxRegion`/`relaxPair`, run
+  once per stamp, scoped to that stamp's own brush footprint plus a fixed
+  1-cell `RELAX_PADDING` (not scaled with brush radius - the first
+  correction above rules out anything that widens the effective brush).
+  Only nudges adjacent-cell pairs whose difference exceeds
+  `MAX_NATURAL_SLOPE = 0.15`, moving a fraction (`RELAX_FACTOR = 0.25`) of
+  the excess between them per iteration (`RELAX_ITERATIONS = 2`). Never
+  touches a pair straddling the coastline (one land, one sea) - that
+  boundary stays the one intentionally sharp edge in this model, per
+  `ADR.md` - and reuses the existing `LAND_FLOOR`/`SEABED_CEILING` bounds
+  so it can never itself push a cell across that boundary either.
+- **Mountain/Peak Strength fix (`world-client.js`)**: these two tools were
+  found, while implementing, to ignore the Strength slider entirely -
+  `lerpTowards(current, TARGET, falloff)` with no `brushStrength` factor at
+  all, so a single click at the brush centre jumped straight to
+  `MOUNTAIN_TARGET`/`PEAK_TARGET` regardless of Strength. This turned out
+  to be the main reason a small, modest-radius stroke still read as an
+  instant narrow cone even after the relaxation pass above: there was no
+  "build up gradually" path for the relaxation pass to work with. Fixed by
+  multiplying the lerp factor by `brushStrength`, the same integration
+  every other elevation tool already has.
+- **Renderer noise gating (`terrain-renderer-3d.js`, `detailedHeight()`)**:
+  kept the original, already-good elevation-based envelope
+  (`slopeGate`/`amplitude`) unchanged - verified by direct screenshot
+  comparison that it already produces smooth, well-tapered mountains with
+  no changes at all - and added `extremeDamping`, a ceiling that only
+  reduces amplitude on local slopes beyond what the relaxation pass (or
+  this scene's own natural terrain) ever produces. Local slope is measured
+  at a wider sampling radius (`slopeEps = 2.2`, versus the vertex shader's
+  own `eps = 0.6` used for normals) specifically because a narrow sampling
+  window reads the *pointwise* gradient, which spikes at any sharp kink in
+  the data - not just a genuinely steep face, but also the seam where this
+  app's seed data (or repeated overlapping brush strokes) combine two
+  bumps with `max()`.
+
+**Two false starts along the way, kept in git history rather than erased**
+(commit history on this branch shows the iteration; the final shader code
+above is the only version shipped): a first attempt replaced the elevation
+gate outright with a pure slope gate, which visibly turned the coastline -
+an intentional, by-design discontinuity, not an artifact - into a jagged
+line, since a slope-only gate has no way to tell a genuine mountain face
+from the coastline at a similar local gradient. Narrowing the slope band
+and widening the sampling `eps` reduced but didn't fix this, and introduced
+a second, different regression: new isolated spikes appeared partway down
+otherwise-smooth hillsides, traced to a pure slope gate being zero at a
+dome's flat summit and peaking in a "halo ring" partway down the flank
+instead - a shape the original elevation-based envelope never had, which
+let the ridged-noise function's own occasional sharp crests show through
+as visible pokes. Both were caught by rendering the actual result next to
+the unmodified baseline on identical seed data, not assumed from the shader
+code alone - the fix described above (keep the proven envelope, add only a
+top-end damping ceiling) was the version that matched the baseline exactly
+on unedited terrain while still measurably damping pathological slopes.
+
+### Verification (real browser, Playwright, against the proven baseline)
+
+- **No regression on existing terrain**: the seeded mountain range and
+  coastline render pixel-for-pixel consistent with the unmodified pre-task-2
+  formula (direct screenshot A/B comparison) - confirms the renderer change
+  is a pure ceiling, inert for any terrain within normal bounds.
+- **New Mountain/Peak features**: built up over several repeated strokes
+  (not one click), both features read as rounded domes with a soft,
+  gradient falloff in top-down - visually consistent with the existing
+  seeded domes - rather than the narrow cone a single full-target click
+  produced before the Strength fix.
+- **Per-cell slope bound confirmed quantitatively**, not just visually:
+  queried the actual post-relaxation elevation data directly from SQLite
+  for a freshly-painted Peak feature - maximum adjacent-cell difference
+  0.143, under the `MAX_NATURAL_SLOPE = 0.15` threshold, confirming no
+  literal cliff survived relaxation.
+- **Smallest-brush precision preserved**: a radius-1, strength-0.05 Raise
+  click produced a single, barely-visible precise mark, confirming the
+  fixed (not radius-scaled) `RELAX_PADDING` doesn't expand or blur a tiny,
+  deliberate edit.
+- **Real-time sync**: a second session, instrumented to capture raw SSE
+  frames, received the relaxation pass's extra queued cells (226 cells
+  across 2 batches for one Mountain feature, well beyond the brush's own
+  footprint) live, with no reload.
+- **Persistence**: reloaded the painting session and confirmed the new
+  features and their relaxed surroundings survived exactly as painted.
+- **Automated checks**: `pnpm typecheck` clean, 18/18 tests pass against a
+  fresh DB, `pnpm check:evidence` passes. No server, schema, or API change.
+
+### Remaining limitations (not fixed by this change, not hidden)
+
+- A small-radius Peak/Mountain stroke pushed to full target still reads as
+  a proportionally steep, spire-like landform in the oblique view (not a
+  gentle rounded hill), even though its per-cell slope is now bounded and
+  graded, not a cliff. This is an inherent consequence of a small footprint
+  plus a high target elevation plus this renderer's strong vertical
+  exaggeration (`HEIGHT_SCALE = 46`) - the same math that makes the seed
+  scene's large dominant peak read as an appropriately sharp summit. Fixing
+  it would require either widening the brush's effective footprint (ruled
+  out by this task's own correction) or reducing the vertical exaggeration
+  generally (a task 4 "overall rendering" concern affecting all terrain,
+  out of scope here).
+- Two strokes painted far enough apart that their relaxation regions
+  (brush radius + 1 cell) never overlap still meet at whatever step their
+  two target elevations leave - this pass only graduates transitions
+  *within* a radius-plus-one-cell neighbourhood of where painting actually
+  happened, by design (correction 1), not between arbitrarily distant
+  features.
+- `MAX_NATURAL_SLOPE`, `RELAX_FACTOR`, and `RELAX_ITERATIONS` were tuned
+  against this app's own seed scene and the two corrections above, not
+  derived from a general principle - they may need revisiting once task 7
+  (material blending) or a larger, more varied map surfaces cases this
+  scene didn't.
 
 ## 3. Camera controls: four viewing directions, adjustable tilt/zoom/pan, automatic framing
 
@@ -445,3 +559,8 @@ concurrency note in `ADR.md` once scoped.
   Deepen/Shallow seabed tools under a `SEABED_CEILING` clamp); see task 1
   section above for full results. Commit
   [`0164a74`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/0164a746584e6130ec66f44e396523737d586dd4).
+- **2026-10-13** - Task 2 assessed and implemented and verified in the same
+  session (relaxation pass + Mountain/Peak Strength fix + a damping-only
+  renderer change, after two tried-and-reverted shader approaches along the
+  way - see task 2 section above for the full trail and evidence). Commit
+  [`693f475`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/693f475e6fbf5600a04f5d885f0b97b7177ff4c2).
