@@ -414,3 +414,73 @@ change. Full detail, scoring, and the stated remaining limitations (the sun
 stays fixed in world space; manual zoom/pan resets on an azimuth/tilt
 change by design; camera state is per-tab, not synced between editors) are
 in `ROADMAP.md`, not duplicated here.
+
+**Checkpoint ([`5d519da`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/5d519da7be0f503598f5b8f957d98728813ec614)):**
+ROADMAP.md task 4, rendering resolution, pixelation and anti-aliasing. The
+assessment traced "looks rough" in both views to four separate causes
+rather than one, and the approval added a real correction to the
+recommended approach: Top-down's pixelated look was not to be kept as an
+intentional style choice - "precise editing does not require visibly
+blocky graphics" - so both views needed genuine smoothing, not just a
+higher-resolution version of the same flat fill.
+
+The fix that actually mattered for top-down wasn't the device-pixel-ratio
+sizing alone (that only stops the browser *upscaling* an already-blocky
+image) - it was replacing the renderer's per-cell flat `fillRect` with a
+true per-pixel continuous evaluation: bilinear elevation, finite-difference
+relief, and terrain-type colour bilinearly blended between neighbouring
+cells. The one constraint the correction named explicitly - don't blend
+incorrectly across coastlines or between terrain types - shaped the
+design directly rather than being bolted on afterward: the land/sea
+boundary is never colour-blended at all (a hard formula switch keyed off
+the same continuous elevation field the vector coastline itself reads),
+and any terrain-type blend that would otherwise reach across that boundary
+falls back to the pixel's own land-side colour instead of pulling in a
+sea-side sample. The oblique WebGL shader's analogous fix (blending
+already-resolved corner colours rather than a raw type index, which would
+be meaningless as a fraction) uses the identical technique for the
+identical reason, not a second ad hoc solution.
+
+Two things were checked rather than assumed, and the numbers didn't match
+the first guess in both directions - worth recording as real process
+evidence, not just a clean result. First, the mountain-fold noise needed a
+precomputed lookup table to stay fast at per-pixel-continuous sampling
+rates; a numerical check (20,000 random fractional positions against
+direct calls) confirmed the table's bilinear resampling error (~0.005 mean,
+~0.054 worst case) was small enough to be invisible, and exact at integer
+grid coordinates - so existing per-cell callers got the swap for free with
+no behaviour change. Second, an initial assumption that a full-canvas
+redraw would cost "low tens of ms" was wrong: measured directly, it costs
+~330-415ms at the default 2x-capped pixel ratio - slower than expected,
+though the case that actually matters for painting responsiveness
+(interactive per-stroke partial redraws) measured at ~4ms, unaffected. The
+higher number was corrected in the code comment and reported honestly in
+ROADMAP.md as a named limitation rather than left as the original
+optimistic guess.
+
+**Verification:** terrain-type boundary blending was checked
+quantitatively, not just by eye, in top-down - decoding the actual
+screenshot PNG's pixel data across the seed scene's known forest-patch
+boundary (`x=150`) shows a real intermediate colour between pure grass and
+pure forest, not an instant jump. The oblique view's blend was confirmed
+by zooming the live WebGL view 3x directly onto the same forest patch's
+edges, after an automated `gl.readPixels`-based pixel scan was tried and
+abandoned - correctly locating a known grid cell's exact screen position
+through the oblique camera's projection math for an automated assertion
+turned out to add more risk of a false result than the direct zoomed
+screenshot already resolved by inspection. Coastline domain-safety was
+checked the same way: a pixel scan straight across a real coastline
+crossing showed sand, a short genuine strip of grassland (confirmed
+against the seed script's own type-painting rule, not a rendering
+artefact), the vector coastline's ink stroke, then sea - never a muddy
+intermediate colour. Picking accuracy was re-verified after the pixel-scale
+change specifically because that change touches the exact pixel<->grid
+conversion math it depends on: a Peak stroke landed within 1 cell at
+`devicePixelRatio: 1` and exactly on target at `devicePixelRatio: 2`,
+confirmed via `/api/terrain` diffing, not by eye. SSE sync to a second
+browser context and reload persistence were both re-confirmed rendering
+identically with the new renderer. `pnpm typecheck`, all 18 tests, and
+`pnpm check:evidence` pass unmodified; no server, schema, or API change.
+Full detail, scoring, and the stated remaining limitations (the ~330-415ms
+full-redraw cost; the WebGL2-less 2D oblique fallback not getting a
+DPR-consistent shear) are in `ROADMAP.md`, not duplicated here.
