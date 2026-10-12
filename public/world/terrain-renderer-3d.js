@@ -135,17 +135,52 @@ const HEIGHT_SAMPLE_GLSL = `
   }
 
   // Detail displacement added on top of the painted (authoritative)
-  // elevation: ridged noise at sub-cell frequency, scaled by slope and
-  // elevation-above-sea-level so plains/sea stay smooth and only
-  // slopes/peaks get real jagged relief (correction: this perturbs actual
-  // geometry, not just a lighting term).
+  // elevation: ridged noise at sub-cell frequency, scaled by elevation-
+  // above-sea-level - this envelope (slopeGate/amplitude below) is the
+  // ORIGINAL formula, kept as-is: it already produces smooth, well-tapered,
+  // good-looking mountains (verified against research/ and this app's own
+  // seed scene - see ROADMAP.md task 2), varying smoothly and monotonically
+  // from a mountain's summit down to its base, which a from-scratch slope-
+  // based envelope could not reproduce (tried and reverted here - a pure
+  // local-slope gate is zero at a dome's flat summit and peaks partway down
+  // the flank instead, a "halo ring" shape that let the noise function's own
+  // occasional sharp crests show through as isolated new spikes partway down
+  // otherwise-smooth hillsides - confirmed via a direct before/after
+  // screenshot comparison against the unmodified formula on the same seed
+  // data, visible proof this was a regression and not pre-existing).
+  //
+  // What this task's correction actually needs is narrower than a full
+  // re-gate: don't let this noise pile extra jaggedness onto a slope that's
+  // *already* extreme (a leftover narrow spike/cliff the relaxation pass in
+  // world-client.js hasn't caught, or data painted before that pass
+  // existed) - not a reason to change how normal terrain is textured.
+  // extremeDamping below is a ceiling only: 1.0 (no change at all) for any
+  // slope at or under what the relaxation pass already keeps painted
+  // terrain within, confirmed to cover this seed scene's steepest natural
+  // feature (the dominant peak, ~0.066) and the coastline itself (~0.05 at
+  // this sampling width) with room to spare - it only engages above that,
+  // on genuinely pathological terrain.
   float detailedHeight(vec2 cell, float base) {
     float aboveSea = max(0.0, base - ${SEA_LEVEL.toFixed(6)});
     if (aboveSea <= 0.0001) return base;
     float slopeGate = smoothstep(0.02, 0.18, aboveSea);
     float amplitude = 0.05 + 0.22 * smoothstep(0.1, 0.9, aboveSea);
+    // Wider than the vertex shader's own eps=0.6 (used for visual normals,
+    // a different job): a narrow sampling window reads the *pointwise*
+    // gradient, which spikes at any sharp kink in the data - not just a
+    // genuinely steep face, but also the seam where two overlapping
+    // terrain features meet (this app's own seed data combines bumps with
+    // max(), the same shape repeated overlapping brush strokes leave
+    // behind). Widened so this reads *regional* steepness instead.
+    float slopeEps = 2.2;
+    float hl = rawElevation(cell + vec2(-slopeEps, 0.0));
+    float hr = rawElevation(cell + vec2(slopeEps, 0.0));
+    float hd = rawElevation(cell + vec2(0.0, -slopeEps));
+    float hu = rawElevation(cell + vec2(0.0, slopeEps));
+    float slope = length(vec2(hr - hl, hu - hd)) / (2.0 * slopeEps);
+    float extremeDamping = 1.0 - 0.7 * smoothstep(0.15, 0.35, slope);
     float n = (fractalFold(cell * 1.0) - 0.5) * 2.0;
-    return base + n * amplitude * slopeGate;
+    return base + n * amplitude * slopeGate * extremeDamping;
   }
 
   float heightAt(vec2 cell) {

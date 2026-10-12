@@ -308,6 +308,86 @@ function setSeabedElevation(x, y, elevation) {
   markDirty(x, y);
 }
 
+// ROADMAP.md task 2: the root cause of "mountains read as narrow spikes with
+// a cliff at the edge" was traced to the brush/data layer, not just
+// rendering - Mountain/Peak converge every cell in their radius toward the
+// same fixed target, so a sustained stroke saturates to a near-uniform
+// plateau with a step right where the brush's influence hits zero, and two
+// separately-painted features simply meet at whatever step their two target
+// elevations happen to leave. This softens exactly that: a per-stamp pass,
+// scoped tightly to the stamp's own footprint, that nudges only the pairs of
+// adjacent cells that differ by more than a geologically-implausible amount
+// - everything within that amount (an intentional steep ridge or peak side)
+// is read as deliberate and left untouched.
+//
+// Deliberately NOT a wider/softer brush falloff: the correction that
+// prompted this ("keep the smallest brushes precise - natural falloff must
+// not significantly expand the selected brush radius") rules that out, so
+// RELAX_PADDING stays a small fixed amount rather than scaling with brush
+// size, and the brush's own falloff shape (forEachBrushCell) is untouched.
+const MAX_NATURAL_SLOPE = 0.15; // max "natural" per-adjacent-cell elevation step before this pass acts
+const RELAX_ITERATIONS = 2;
+const RELAX_FACTOR = 0.25; // fraction of the excess difference moved between a pair, per iteration
+const RELAX_PADDING = 1; // cells beyond the brush radius considered, so a stroke's edge can
+// blend with whatever (painted or not) already sits just outside it
+
+// Moves a fraction of the excess (beyond MAX_NATURAL_SLOPE) between one
+// adjacent pair of cells. Never touches a pair straddling the coastline
+// (one land, one sea) - that boundary is the one intentionally sharp edge
+// in this model (only Create Land / Paint Sea may move it, per ADR.md), not
+// an artifact for this pass to smooth over. Reuses the same LAND_FLOOR/
+// SEABED_CEILING bounds every other land/sea tool already respects, so this
+// can never itself push a cell across the coastline either.
+function relaxPair(x0, y0, x1, y1) {
+  const i0 = y0 * GRID_SIZE + x0;
+  const i1 = y1 * GRID_SIZE + x1;
+  const h0 = elevationGrid[i0];
+  const h1 = elevationGrid[i1];
+  const bothLand = h0 > SEA_LEVEL && h1 > SEA_LEVEL;
+  const bothSea = h0 <= SEA_LEVEL && h1 <= SEA_LEVEL;
+  if (!bothLand && !bothSea) return;
+  const diff = h1 - h0;
+  const excess = Math.abs(diff) - MAX_NATURAL_SLOPE;
+  if (excess <= 0) return;
+  const move = Math.sign(diff) * excess * RELAX_FACTOR;
+  const floor = bothLand ? LAND_FLOOR : ELEVATION_MIN;
+  const ceiling = bothLand ? ELEVATION_MAX : SEABED_CEILING;
+  const newH0 = clamp(h0 + move, floor, ceiling);
+  const newH1 = clamp(h1 - move, floor, ceiling);
+  if (newH0 === h0 && newH1 === h1) return;
+  elevationGrid[i0] = newH0;
+  elevationGrid[i1] = newH1;
+  queueElevation(x0, y0, newH0);
+  queueElevation(x1, y1, newH1);
+  markDirty(x0, y0);
+  markDirty(x1, y1);
+}
+
+// Runs the pass above over one stamp's own footprint (+ RELAX_PADDING),
+// a handful of bounded iterations - cheap because it's scoped to the brush,
+// not the whole grid, the same "local, not global" shape as every other
+// per-stamp operation here.
+function relaxRegion(cx, cy, radius) {
+  const minX = Math.max(0, cx - radius - RELAX_PADDING);
+  const maxX = Math.min(GRID_SIZE - 1, cx + radius + RELAX_PADDING);
+  const minY = Math.max(0, cy - radius - RELAX_PADDING);
+  const maxY = Math.min(GRID_SIZE - 1, cy + radius + RELAX_PADDING);
+  for (let iter = 0; iter < RELAX_ITERATIONS; iter++) {
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        if (x + 1 <= maxX) relaxPair(x, y, x + 1, y);
+        if (y + 1 <= maxY) relaxPair(x, y, x, y + 1);
+      }
+    }
+  }
+}
+
+// Every tool that can change elevation runs the relaxation pass above after
+// painting - terrain-type-only tools (grassland/sand/forest/rock) don't
+// touch elevationGrid at all, so they're excluded rather than running a
+// pass that would always find nothing to do.
+const ELEVATION_TOOLS = new Set(["raise", "lower", "smooth", "mountain", "peak", "land", "sea", "deepen", "shallow"]);
+
 function paintAt(cx, cy) {
   switch (currentTool) {
     case "raise":
@@ -330,10 +410,21 @@ function paintAt(cx, cy) {
       // Raises land toward a high ridge band and marks it rocky - a
       // mountain is height and material together, not a grey tint on flat
       // ground (see ADR.md / CLAUDE.md on not faking elevation with colour).
+      // ROADMAP.md task 2: this used to lerp by `falloff` alone, ignoring
+      // the Strength slider entirely - a single click at the brush centre
+      // jumped straight to MOUNTAIN_TARGET regardless of Strength, which is
+      // what made even a small, modest-radius stroke read as an instant
+      // narrow cone rather than something that builds up gradually like
+      // every other elevation tool. Multiplying by brushStrength (same as
+      // Raise/Lower/Smooth already do) fixes that without touching the
+      // brush's radius or falloff shape at all - still exactly the cells
+      // forEachBrushCell selects, just a smaller step toward the target per
+      // stamp, same "fine, bounded, predictable control" the brush-
+      // precision fix established for the additive tools.
       forEachBrushCell(cx, cy, (x, y, falloff) => {
         const current = elevationGrid[y * GRID_SIZE + x];
         if (current <= SEA_LEVEL) return;
-        setLandElevation(x, y, lerpTowards(current, MOUNTAIN_TARGET, falloff));
+        setLandElevation(x, y, lerpTowards(current, MOUNTAIN_TARGET, falloff * brushStrength));
         setRockType(x, y);
         markDirty(x, y);
       });
@@ -342,10 +433,11 @@ function paintAt(cx, cy) {
       // Same idea, pushed toward the elevation ceiling for a prominent
       // summit; the renderer tints the highest rock as snow, so a peak
       // reads as a peak even with colour turned off (hillshading alone).
+      // Same Strength fix as Mountain above, same reason.
       forEachBrushCell(cx, cy, (x, y, falloff) => {
         const current = elevationGrid[y * GRID_SIZE + x];
         if (current <= SEA_LEVEL) return;
-        setLandElevation(x, y, lerpTowards(current, PEAK_TARGET, falloff));
+        setLandElevation(x, y, lerpTowards(current, PEAK_TARGET, falloff * brushStrength));
         setRockType(x, y);
         markDirty(x, y);
       });
@@ -387,6 +479,7 @@ function paintAt(cx, cy) {
       });
       break;
   }
+  if (ELEVATION_TOOLS.has(currentTool)) relaxRegion(cx, cy, brushRadius);
   scheduleRender();
   scheduleFlush();
 }
