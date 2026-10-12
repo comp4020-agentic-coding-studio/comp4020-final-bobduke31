@@ -212,18 +212,89 @@ Tested against the seeded reference scene
 
 ## 2. Natural elevation and slope transitions
 
-**Status:** ⬜ Not started.
+**Status:** 🔍 Assessed - awaiting approval to implement.
 
 Scope: mountains/hills should read as naturally-formed landforms (broad
 bases, gradual slopes, occasional sharp ridgelines where geologically
-plausible) rather than narrow spikes. Root cause already identified in the
-prior combined assessment: Peak/Mountain push a *small-radius* area to a
-high target, and the GPU ridge-detail noise (gated by raw elevation, not by
-the painted data's own local slope) exaggerates whatever steepness is
-already there. Depends partly on task 1's seabed work being settled first
-(both touch the same displacement/detail shader path) - sequenced to
-address the slope-gating logic once that shader area is stable rather than
-twice.
+plausible) rather than narrow spikes, cliffs, or abrupt height changes -
+while fine brush control (small, predictable, subtle adjustments) stays
+intact. This is deliberately sequenced after task 1, since both touch the
+same displacement/detail shader path - the slope-gating logic below is
+addressed once, now that the water-surface work has settled that area,
+rather than twice.
+
+### Root cause (verified in code, not assumed)
+
+Two independent mechanisms both contribute, confirmed by reading the actual
+brush and shader code rather than from the prior visual impression alone:
+
+- **Brush mechanics (`world-client.js`):** `forEachBrushCell` (around line
+  224) gives every stroke a hard circular cutoff - `if (dist > r) continue`
+  - with a smoothstep falloff *inside* that radius but exactly zero
+  influence the instant a cell is outside it. Mountain and Peak
+  (`paintAt`, lines 329-352) don't add height proportional to brush
+  strength the way Raise/Lower do; they `lerpTowards(current, TARGET,
+  falloff)` toward a fixed target (`MOUNTAIN_TARGET = 0.6`,
+  `PEAK_TARGET = 0.95`). Repeated stamps along a drag (already
+  distance-paced since the brush-precision fix) keep pulling every cell in
+  radius closer to that same fixed target, including cells near the edge
+  where falloff is small but nonzero - so a sustained stroke doesn't
+  converge to a soft dome, it converges to a near-uniform plateau at the
+  target elevation, with a cliff exactly at the brush's radius where
+  influence hits zero. This is a data problem, not a rendering problem:
+  the authoritative `elevationGrid` itself ends up with the abrupt step,
+  so every view (top-down and oblique) shows it.
+- **Detail-shader gating (`terrain-renderer-3d.js`, `HEIGHT_SAMPLE_GLSL`,
+  `detailedHeight()`):** the ridged-noise amplitude is gated by
+  `aboveSea = base - SEA_LEVEL` - raw elevation above sea level - not by
+  the terrain's actual local steepness. A broad, gently-rising plateau at
+  high elevation gets just as much jagged ridge noise as a narrow, steep
+  spike at the same elevation, because the shader has no way to tell them
+  apart. This exaggerates whatever steepness the brush mechanics above
+  already produced, rather than independently causing it - fixing the
+  brush alone would still leave tall land looking jagged everywhere, and
+  fixing only this would still leave the underlying plateau-with-a-cliff
+  shape in the authoritative data.
+
+### Approaches compared
+
+| | A. Brush-mechanics rework + slope-based noise gating (no new data pass) | B. Local post-stroke relaxation pass + mechanics + noise gating | C. Full procedural erosion/weathering simulation |
+|---|---|---|---|
+| **Summary** | Replace Mountain/Peak's "lerp to fixed target" with an additive push scaled by brush strength and falloff, same model Raise/Lower already use (predictable, bounded per stamp, matches the brush-precision fix's philosophy). Extend `forEachBrushCell`'s falloff to taper smoothly to zero over a wider radius than the brush UI circle (a soft outer skirt) instead of a hard cutoff, so adjacent stamps and strokes blend at their edges. Separately, change `detailedHeight()`'s gate from raw elevation to an actual local-slope estimate (finite-difference gradient magnitude of the height texture, the same technique the vertex shader already uses for normals) so flat high ground stays smooth and only genuinely steep terrain gets jagged detail. | Everything in A, plus: after each stroke, run a small number of bounded diffusion/max-slope-limiting iterations restricted to the stroke's own dirty bounding box (already tracked by `markDirty`) plus a small padding ring - any two adjacent cells differing by more than a tunable max slope have some height redistributed between them. This directly reshapes the authoritative data so even two separately-painted, differently-targeted strokes next to each other get a graded transition, not just a single stroke's own edge. | A full terrain-simulation pass (simplified hydraulic/thermal erosion: simulate material transport downhill, talus-angle settling, iterative relaxation across the whole grid or large regions) run as a distinct, user-triggered "weathering" step, independent of individual brush strokes - closer to procedural terrain generation than a painting-tool fix. |
+| Visual quality | 7 | 9 | 9 |
+| Feasibility | 9 | 7 | 4 |
+| Style consistency | 8 | 9 | 8 |
+| Impl. cost (10=cheap) | 8 | 6 | 2 |
+| Performance | 9 | 7 | 4 |
+
+**Risks:** Approach A only fixes the shape of a *single* stroke's own
+boundary - two separate strokes painted next to each other at very
+different target elevations (e.g. a mountain stroke directly beside an
+untouched plain) still meet at a real step in the data, just a softer one
+than today. Approach B's relaxation pass needs the same care Task 1's
+`SEABED_CEILING`/`LAND_FLOOR` clamps required: it must never pull a land
+cell below `SEA_LEVEL` or a sea cell above it (reusing those existing
+clamps when redistributing height, not inventing a new boundary rule), and
+its iteration count must stay small and bounded to a local region or it
+risks the same per-stroke performance problem the brush-precision fix was
+about - a slow drag triggering expensive repeated full passes. Approach C
+is a genuine terrain-generation feature in its own right (region selection,
+convergence tuning, likely a progress/preview step since it could visibly
+reshape a large area in one action) - worth recording here as the
+"procedural generation" direction already scoped as task 11, not attempted
+as part of a painting-tool fix.
+
+**Recommendation:** Approach B. It fixes the actual root cause (the
+authoritative data, not just how it's shaded) rather than Approach A's
+partial fix, which would still show steps between independently-painted
+features; it stays bounded and local by reusing the dirty-region tracking
+`markDirty` already maintains, rather than Approach C's grid-wide
+simulation, which is a far larger undertaking better scoped to task 11.
+The slope-based noise-gating fix is shared across A and B regardless, since
+it was already identified as part of this task's root cause in the
+original combined assessment - B does not raise its cost further.
+
+**Waiting for approval before implementing.**
 
 ## 3. Camera controls: four viewing directions, adjustable tilt/zoom/pan, automatic framing
 
