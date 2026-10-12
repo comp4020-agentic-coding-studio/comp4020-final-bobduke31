@@ -56,6 +56,15 @@
         <button type="button" data-tool="sea" title="The only tool that turns land into sea.">Paint sea</button>
       </div>
       <div class="tool-group">
+        <span class="tool-group-label">Water</span>
+        <button type="button" data-tool="deepen" title="Deepens existing sea. Has no effect on land - it never turns water into land.">
+          Deepen
+        </button>
+        <button type="button" data-tool="shallow" title="Shallows existing sea, but stops short of the coastline - it never turns water into land.">
+          Shallow
+        </button>
+      </div>
+      <div class="tool-group">
         <label>Brush size <input id="brush-size" type="range" min="1" max="28" step="1" value="10" /></label>
         <label>Strength <input id="brush-strength" type="range" min="0.01" max="0.3" step="0.01" value="0.15" /></label>
       </div>
@@ -74,8 +83,9 @@
       </div>
     </div>
     <p class="tool-hint">
-      Raise / Lower / Smooth / Mountain / Peak only ever reshape existing land - they can't turn it into sea. Create
-      Land and Paint Sea are the only tools that change the coastline itself.
+      Raise / Lower / Smooth / Mountain / Peak only ever reshape existing land, and Deepen / Shallow only ever
+      reshape existing sea - neither side can turn into the other. Create Land and Paint Sea are the only tools
+      that change the coastline itself. The water surface stays level no matter how deep the seabed gets.
     </p>
 
     <main>

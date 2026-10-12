@@ -268,6 +268,25 @@ const FRAGMENT_SHADER = `
   }
 `;
 
+// A flat, static plane at sea level (Task 1, ROADMAP.md) - fixing the root
+// cause of both "lowering the seabed lowers the water" and "coastlines form
+// cliffs": there was no surface distinct from the seabed mesh itself. This
+// plane never moves and never needs updating when elevation changes (that's
+// the whole point); the seabed underneath can now be sculpted to any depth
+// by Deepen/Shallow without the visible "water" ever dropping; the actual
+// depth still reads visually through its transparency and the ground
+// shader's own existing depth-based colour gradient. A real sunk coastline
+// cliff is now simply occluded by this plane rather than exposed as bare
+// mesh wall - standard depth-tested transparency, no special-casing needed
+// since every land cell's displayed height is by definition above sea level
+// and every sea cell's is at or below it.
+function buildWaterPlaneGeometry() {
+  const geometry = new THREE.PlaneGeometry(GRID_SIZE - 1, GRID_SIZE - 1, 1, 1);
+  geometry.rotateX(-Math.PI / 2);
+  geometry.translate((GRID_SIZE - 1) / 2, 0, (GRID_SIZE - 1) / 2);
+  return geometry;
+}
+
 function buildGroundGeometry() {
   const geometry = new THREE.PlaneGeometry(
     GRID_SIZE - 1,
@@ -554,6 +573,20 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid) {
   const groundMesh = new THREE.Mesh(groundGeometry, groundMaterial);
   scene.add(groundMesh);
 
+  const waterGeometry = buildWaterPlaneGeometry();
+  const waterMaterial = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(0.16, 0.34, 0.52),
+    transparent: true,
+    opacity: 0.82,
+    roughness: 0.4,
+    metalness: 0.05,
+    side: THREE.DoubleSide,
+  });
+  const waterMesh = new THREE.Mesh(waterGeometry, waterMaterial);
+  waterMesh.position.y = SEA_LEVEL * HEIGHT_SCALE;
+  waterMesh.receiveShadow = true;
+  scene.add(waterMesh);
+
   // A real DirectionalLight (not baked into the ground shader's own light
   // term) exists purely to cast shadows - the ground shader computes its own
   // diffuse term from uLightDir for consistent shading, but shadow-casting
@@ -654,6 +687,8 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid) {
   function dispose() {
     groundGeometry.dispose();
     groundMaterial.dispose();
+    waterGeometry.dispose();
+    waterMaterial.dispose();
     heightTexture.dispose();
     typeTexture.dispose();
     renderer.dispose();

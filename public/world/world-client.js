@@ -40,6 +40,12 @@ const LAND_FLOOR = SEA_LEVEL + 0.02;
 const MOUNTAIN_TARGET = 0.6;
 const PEAK_TARGET = 0.95;
 
+// Mirrors LAND_FLOOR on the other side of the coastline (Task 1, ROADMAP.md):
+// Deepen/Shallow sculpt existing sea and must never cross into land, the
+// same invariant Raise/Lower/etc. enforce for land. Create Land / Paint Sea
+// remain the only tools that move the coastline itself.
+const SEABED_CEILING = SEA_LEVEL - 0.02;
+
 const canvas = document.getElementById("stage");
 canvas.width = GRID_SIZE * CELL_PX;
 canvas.height = GRID_SIZE * CELL_PX;
@@ -285,6 +291,23 @@ function setRockType(x, y) {
   queueType(x, y, "rock");
 }
 
+// The mirror image of setLandElevation, for Deepen/Shallow (ROADMAP.md
+// Task 1): sculpts existing sea and must never cross into land by accident,
+// the same invariant for the same reason - a cell that's currently land is
+// left alone (these tools don't create sea - Paint Sea does), and the
+// result is always clamped below SEABED_CEILING, so no amount of shallowing
+// can tip it into land. The rendered water *surface* stays flat regardless
+// of how deep this makes a cell - see terrain-renderer-3d.js's water plane;
+// this only ever changes the seabed, never anything above it.
+function setSeabedElevation(x, y, elevation) {
+  const index = y * GRID_SIZE + x;
+  if (elevationGrid[index] > SEA_LEVEL) return;
+  const clamped = clamp(elevation, ELEVATION_MIN, SEABED_CEILING);
+  elevationGrid[index] = clamped;
+  queueElevation(x, y, clamped);
+  markDirty(x, y);
+}
+
 function paintAt(cx, cy) {
   switch (currentTool) {
     case "raise":
@@ -340,6 +363,16 @@ function paintAt(cx, cy) {
       forEachBrushCell(cx, cy, (x, y, falloff) => {
         const current = elevationGrid[y * GRID_SIZE + x];
         setElevation(x, y, lerpTowards(current, SEA_LEVEL - LAND_PUSH, falloff));
+      });
+      break;
+    case "deepen":
+      forEachBrushCell(cx, cy, (x, y, falloff) => {
+        setSeabedElevation(x, y, elevationGrid[y * GRID_SIZE + x] - brushStrength * falloff);
+      });
+      break;
+    case "shallow":
+      forEachBrushCell(cx, cy, (x, y, falloff) => {
+        setSeabedElevation(x, y, elevationGrid[y * GRID_SIZE + x] + brushStrength * falloff);
       });
       break;
     default:
