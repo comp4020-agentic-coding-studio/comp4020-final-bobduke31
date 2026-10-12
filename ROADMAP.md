@@ -639,7 +639,7 @@ directions, especially at low camera (dramatic, near-horizontal) angles.
 
 ## 4. Overall rendering resolution, pixelation and anti-aliasing
 
-**Status:** ⬜ Not started.
+**Status:** 🔍 Assessed - awaiting approval to implement.
 
 Scope: top-down is deliberately pixelated (`image-rendering: pixelated`,
 `CELL_PX=3`) for precise editing; oblique is a 384-segment antialiased
@@ -647,6 +647,147 @@ WebGL mesh. Whether these should visually match, and what resolution/AA
 settings actually read as "crisp fantasy map" vs. "blocky" at each zoom
 level, needs a dedicated look once tasks 1-2 stop changing the geometry
 underneath it.
+
+### Root causes (verified in code, not assumed)
+
+Four separate things are bundled under one "looks rough" complaint, and
+they need separate fixes - conflating them would mean "fixing" one and
+leaving the others exactly as visible as before.
+
+1. **No `devicePixelRatio` handling anywhere, in either renderer.** Both
+   canvases are sized in `world-client.js` as `canvas.width = canvas.height
+   = GRID_SIZE * CELL_PX` (768 physical pixels) with no DPR multiplier, and
+   `world.css` displays both at a fixed `768px` CSS size. On a non-retina
+   (DPR=1) display these match exactly. On any HiDPI display (DPR 1.25-3,
+   which is most laptops and phones sold in the last several years), the
+   actual device pixel count behind that 768 CSS px box is `768 * DPR` -
+   larger than the canvas's own backing store - so the browser upscales the
+   rendered image to fill it. For the **top-down** canvas this upscale is
+   forced to nearest-neighbour by `image-rendering: pixelated` (`world.css`
+   line 116, applied only to `#stage`), so it reads as *chunkier*, not
+   blurry - each already-coarse cell block gets stretched into an even
+   bigger flat square. For the **oblique** canvas (`#stage-3d` has no such
+   CSS rule, confirmed in `world.css`), the browser's default smooth
+   upscaling applies, which is the direct cause of a soft/blurry oblique
+   view on exactly the displays where top-down looks blocky instead - two
+   different-looking symptoms from the same one root cause.
+   `THREE.WebGLRenderer` is also constructed with no
+   `renderer.setPixelRatio(...)` call (confirmed by reading
+   `createTerrainScene3D`), so even the `antialias: true` MSAA setting that
+   *is* already on only smooths triangle edges within that undersized
+   backing store - it does nothing about the whole-image upscale on top of
+   it. These are two genuinely different kinds of "anti-aliasing" that this
+   task's own title conflates, and the codebase currently has one but not
+   the other.
+2. **The oblique terrain-type boundary is a hard-edged texture lookup,
+   independent of mesh density.** `createTypeTexture()` deliberately uses
+   `THREE.NearestFilter` (so a terrain-type index is never hardware-
+   interpolated into a meaningless fractional value), and the fragment
+   shader (`FRAGMENT_SHADER`) looks this up once per fragment with no
+   blending logic of its own at the boundary itself. The renderer already
+   does real material blending elsewhere (slope-based rock bleed-through,
+   altitude-based snow) - but the raw grass/sand/forest/rock type edge is
+   not one of them, so it renders as a sharp, axis-aligned, blocky line
+   regardless of how dense the mesh is. This is a distinct artifact from
+   (1): it would still look blocky at a perfectly DPR-correct resolution,
+   since it comes from the 256x256 *data* texture's own cell boundaries,
+   not from screen-pixel density.
+3. **The top-down fill has no sub-cell shading or interpolation at all,
+   independent of resolution.** `renderTerrain` (`terrain-renderer.js`)
+   computes one `light`/`curvature` value per cell and draws it as one flat
+   `ctx.fillRect` of solid colour at `cellPx` size - there is no per-pixel
+   gradient or blending between a cell and its neighbours anywhere in this
+   path (the coastline is the one exception: it's a true vector contour,
+   already smoothed with quadratic curves and independently anti-aliased by
+   the canvas 2D stroke). This means top-down's "blockiness" is not
+   primarily a resolution problem that a bigger `CELL_PX` would fix on its
+   own - two adjacent cells with different elevation/type will always meet
+   at a hard, flat-coloured edge, just a differently-sized one. This is
+   also genuinely intentional today (the Top-down tooltip says "accurate
+   shapes - best for precise editing") and worth treating as a style
+   decision to preserve or deliberately change, not an accident to quietly
+   "fix away."
+4. **Mesh density itself (the question's other named suspect) is NOT the
+   dominant cause, checked rather than assumed.** `MESH_SEGMENTS = 384`
+   over `GRID_SIZE - 1 = 255` world units is already finer than the 256
+   authoritative data cells (confirmed by the file's own comment: "~1.5
+   visual vertices per authoritative cell edge"), and at the canvas's
+   default 768px size that's roughly 2 screen pixels per mesh vertex -
+   dense enough that per-vertex geometric faceting isn't what's visible;
+   the smooth `LinearFilter` height sampling and on-the-fly finite-
+   difference normals already produce continuous-looking slopes between
+   data cells. Named here explicitly because the task's prompt called out
+   mesh density as a suspect - it was checked and ruled out as the primary
+   cause, not skipped.
+5. **The 8-bit single-channel height texture (`UnsignedByteType`) quantizes
+   elevation to 256 discrete levels across the full `[-1, 1]` range** -
+   checked as a plausible banding source, found low-risk in practice: the
+   texture's own `LinearFilter` interpolates *between* those 256 stored
+   values continuously in screen space, so the displacement a vertex
+   actually receives still varies smoothly even though each stored texel is
+   quantized. Noted as a minor latent precision ceiling worth keeping in
+   mind if elevation range or `HEIGHT_SCALE` grow later, not a currently
+   visible artifact - included for completeness since the task asked about
+   texture quality specifically, not because it's driving today's
+   complaints.
+
+### Approaches compared
+
+| | A. Targeted fixes per diagnosed cause | B. Unify top-down into the same continuous WebGL renderer | C. Brute-force resolution bump only |
+|---|---|---|---|
+| **Summary** | Fix each of the four causes above directly, independently: DPR-aware canvas sizing (`renderer.setPixelRatio`, matching backing-store resolution for both canvases, capped at 2x to bound cost) so neither view is ever upscaled by the browser; soften the oblique terrain-type edge with a small shader-side blend near cell boundaries (reusing the same hand-written blending technique already used for slope/altitude, not a new technique); leave the top-down flat-cell fill and its `image-rendering: pixelated` as-is by default (it's a named, intentional "precise editing" style, not a bug), but render it at native device resolution instead of an upscaled one so the *intended* crisp pixel-art look is actually crisp instead of smeared by interpolation. | Replace `terrain-renderer.js`'s 2D canvas top-down path entirely with the same Three.js heightfield scene already built for Oblique, just viewed from a steep/near-vertical camera angle (the camera system already supports this via `tiltDeg` near its `MIN_TILT_DEG`) - one continuous GPU-shaded pipeline for both views instead of two. | Leave every filter/DPR/shading choice exactly as-is; just raise the two existing resolution constants (`CELL_PX` and `MESH_SEGMENTS`) substantially and rely on sheer pixel/vertex density to mask the artifacts. |
+| Visual quality | 9 | 9 | 4 |
+| Feasibility | 9 | 6 | 9 |
+| Style consistency | 9 | 6 | 6 |
+| Impl. cost (10=cheap) | 8 | 4 | 10 |
+| Performance | 8 | 6 | 4 |
+
+**Risks:** Approach A's DPR cap (2x) is a deliberate trade-off - a 3x+
+display will still see a small residual mismatch, chosen because
+uncapped DPR scaling on a dense enough panel could meaningfully raise
+fill-rate and shader cost per frame for a resolution gain past the point
+of visible benefit; this is a tunable constant, not a hard limit, and can
+be revisited if it reads as insufficient once actually tested. Approach
+B's real risk is scope and regression surface, not an unknown: Top-down's
+whole reason to exist is being "accurate shapes - best for precise
+editing," and routing it through the same ridge-noise-displaced, GPU-
+shaded mesh used for Oblique's painterly look means either disabling that
+detail noise specifically at near-top-down tilt (more special-casing
+layered onto an already-parametric camera) or accepting that precise
+top-down editing now shows GPU-added micro-detail that isn't exactly the
+stored data - a real tension with the view's stated purpose, not a
+cosmetic concern. It would also mean deleting the entire, currently-
+working 2D canvas renderer and its already-smoothed vector coastline path
+as a side effect of a resolution-quality task, a much larger blast radius
+than what was asked. Approach C is included as the cheap baseline that
+makes the cost/quality trade-off concrete, per this file's established
+practice (see tasks 1 and 3's rejected option C) - it doesn't touch
+either of the two genuinely resolution-*independent* causes (2 and 3
+above), so it would look marginally crisper at real cost (4x the top-down
+canvas's pixel count and fill cost at `CELL_PX=6`, roughly 4x the oblique
+triangle count at `MESH_SEGMENTS=768`) while leaving the oblique terrain-
+type hard edge and the top-down flat-cell fill exactly as blocky as
+today, relative to their own cell size.
+
+**Recommendation:** Approach A. It is the only option that maps one fix
+to each of the four causes actually found in the code, rather than either
+leaving two of the four causes completely unaddressed (C) or taking on a
+disproportionate rewrite - and a real tension with Top-down's own stated
+purpose - to fix a resolution problem that doesn't need one (B). It also
+directly supports the long-term fantasy map editor goal this file already
+tracks: tasks 5 and 6 (top-down and oblique art quality) are the next
+items in this list, and both depend on first having a rendering pipeline
+that displays whatever art/shading work goes into them at the device's
+actual resolution, with material boundaries that blend rather than snap -
+otherwise any art-quality improvement made next would be judged against,
+and partly undone by, the same DPR and boundary-hardness issues diagnosed
+here. Approach A is corrective groundwork for those tasks, not a
+competing alternative to them. At continent scale (this file's noted
+later milestone) the same DPR-aware sizing and capped pixel ratio remain
+the right approach unchanged - it scales with screen resolution, not with
+map size, so nothing here needs revisiting when the map itself grows.
+
+**Waiting for approval before implementing.**
 
 ## 5. Top-down fantasy-map art quality
 
@@ -763,3 +904,12 @@ concurrency note in `ADR.md` once scoped.
   during verification - see task 3 section above for the full trail and
   evidence). Commit
   [`e07061b`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/e07061b30b84ceea0051c569353e02d67009ec4c).
+- **2026-10-13** - Task 4 assessed (this file); awaiting approval to
+  implement. Traced the "looks rough" complaint in both views to four
+  separate, independently-confirmed causes rather than one: missing
+  `devicePixelRatio` handling in both canvases (opposite symptoms in each
+  view - chunkier top-down, blurrier oblique, from the same root cause),
+  a hard-edged nearest-filter terrain-type texture boundary in the oblique
+  shader, and top-down's flat per-cell fill having no sub-cell shading at
+  all. Mesh density and 8-bit height-texture quantization were both
+  checked and ruled out as the dominant cause, not skipped.
