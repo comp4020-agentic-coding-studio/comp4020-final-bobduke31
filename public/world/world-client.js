@@ -629,6 +629,7 @@ function wireToolbar() {
 
 function wireViewToggle() {
   const buttons = document.querySelectorAll("[data-view]");
+  const cameraToolbar = document.getElementById("camera-toolbar");
   for (const button of buttons) {
     button.addEventListener("click", () => {
       const mode = button.dataset.view;
@@ -639,6 +640,7 @@ function wireViewToggle() {
       const show3D = viewMode === "oblique" && scene3d;
       canvas3d.classList.toggle("hidden", !show3D);
       canvas.classList.toggle("hidden", show3D);
+      cameraToolbar.classList.toggle("hidden", !show3D);
       if (!show3D) {
         // The canvas-column fallback oblique view needs extra canvas height
         // so a peak near row 0 has room to rise into without being clipped
@@ -658,6 +660,72 @@ function wireViewToggle() {
   }
 }
 
+// ROADMAP.md task 3: wires the direction/tilt/zoom/pan/fit-view controls to
+// the 3D renderer's camera. Every handler here calls `renderOnce()` directly
+// rather than going through `scheduleRender()`/`markDirty()` - a camera move
+// isn't a terrain edit, so it has nothing to do with the dirty-rect tracking
+// those use, and a UI click/drag is already a single discrete event with no
+// need for rAF-batching the way a flood of pointermove events does.
+function wireCameraControls() {
+  if (!scene3d) return; // no WebGL2 - this toolbar never leaves "hidden"
+
+  function renderOnce() {
+    if (viewMode === "oblique") scene3d.render();
+  }
+
+  const zoomInput = document.getElementById("camera-zoom");
+  // Direction and tilt both trigger an automatic refit *of the current
+  // view* inside the renderer (azimuth/tilt genuinely change what needs to
+  // fit in frame) - which resets zoom/pan, so the zoom slider's displayed
+  // value is kept in sync here rather than drifting from the real state.
+  function syncZoomSlider() {
+    zoomInput.value = String(scene3d.getCameraState().zoom);
+  }
+
+  const azimuthButtons = document.querySelectorAll("[data-azimuth]");
+  for (const button of azimuthButtons) {
+    button.addEventListener("click", () => {
+      for (const other of azimuthButtons) other.classList.remove("active");
+      button.classList.add("active");
+      scene3d.setAzimuth(Number(button.dataset.azimuth));
+      syncZoomSlider();
+      renderOnce();
+    });
+  }
+
+  const tiltInput = document.getElementById("camera-tilt");
+  tiltInput.addEventListener("input", () => {
+    scene3d.setTilt(Number(tiltInput.value));
+    syncZoomSlider();
+    renderOnce();
+  });
+
+  zoomInput.addEventListener("input", () => {
+    scene3d.setZoom(Number(zoomInput.value));
+    renderOnce();
+  });
+
+  // Dedicated pan buttons, not click-and-drag on the canvas - that gesture
+  // is already reserved for painting on this same canvas (see the
+  // pointerdown/pointermove handlers below), so camera panning needs its
+  // own, unambiguous input.
+  const PAN_STEP = 0.18; // fraction of the current view size, per click
+  const PAN_DELTAS = { up: [0, 1], down: [0, -1], left: [-1, 0], right: [1, 0] };
+  for (const button of document.querySelectorAll("[data-pan]")) {
+    button.addEventListener("click", () => {
+      const [dRight, dUp] = PAN_DELTAS[button.dataset.pan];
+      scene3d.panBy(dRight * PAN_STEP, dUp * PAN_STEP);
+      renderOnce();
+    });
+  }
+
+  document.getElementById("camera-fit").addEventListener("click", () => {
+    scene3d.fitView();
+    syncZoomSlider();
+    renderOnce();
+  });
+}
+
 async function loadTerrain() {
   const [elevationRes, typesRes] = await Promise.all([
     fetch("/api/terrain"),
@@ -665,6 +733,11 @@ async function loadTerrain() {
   ]);
   setElevationFromList(elevationGrid, await elevationRes.json());
   setTypesFromList(typeGrid, await typesRes.json());
+  // The 3D scene auto-fit once already at construction time, against the
+  // locally-created blank starting grid (before this real data arrived) -
+  // redone here so the first Oblique view is framed for the actual loaded
+  // terrain, not an empty map.
+  if (scene3d) scene3d.fitView();
   redrawAll();
 }
 
@@ -711,5 +784,6 @@ function connectEvents() {
 
 wireToolbar();
 wireViewToggle();
+wireCameraControls();
 loadTerrain();
 connectEvents();

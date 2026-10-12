@@ -119,3 +119,37 @@ main {
 .hidden {
   display: none;
 }
+
+.pan-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 1.9rem);
+  grid-template-rows: repeat(2, 1.9rem);
+  gap: 0.2rem;
+}
+
+.pan-pad button {
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pan-up {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.pan-left {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.pan-right {
+  grid-column: 3;
+  grid-row: 2;
+}
+
+.pan-down {
+  grid-column: 2;
+  grid-row: 2;
+}

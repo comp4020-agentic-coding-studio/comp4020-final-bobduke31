@@ -82,6 +82,33 @@
         </button>
       </div>
     </div>
+    <div class="toolbar hidden" id="camera-toolbar">
+      <div class="tool-group">
+        <span class="tool-group-label">Direction</span>
+        <button type="button" data-azimuth="0" title="View looking from north toward south.">N&rarr;S</button>
+        <button type="button" data-azimuth="1" class="active" title="View looking from south toward north.">S&rarr;N</button>
+        <button type="button" data-azimuth="2" title="View looking from east toward west.">E&rarr;W</button>
+        <button type="button" data-azimuth="3" title="View looking from west toward east.">W&rarr;E</button>
+      </div>
+      <div class="tool-group">
+        <label>Tilt <input id="camera-tilt" type="range" min="12" max="82" step="1" value="58" /></label>
+        <label>Zoom <input id="camera-zoom" type="range" min="0.4" max="3" step="0.05" value="1" /></label>
+      </div>
+      <div class="tool-group">
+        <span class="tool-group-label">Pan</span>
+        <div class="pan-pad">
+          <button type="button" class="pan-up" data-pan="up" title="Pan up">&uarr;</button>
+          <button type="button" class="pan-left" data-pan="left" title="Pan left">&larr;</button>
+          <button type="button" class="pan-right" data-pan="right" title="Pan right">&rarr;</button>
+          <button type="button" class="pan-down" data-pan="down" title="Pan down">&darr;</button>
+        </div>
+      </div>
+      <div class="tool-group">
+        <button type="button" id="camera-fit" title="Frame the camera to fit everything that's currently painted, at the current direction and tilt.">
+          Reset / Fit view
+        </button>
+      </div>
+    </div>
     <p class="tool-hint">
       Raise / Lower / Smooth / Mountain / Peak only ever reshape existing land, and Deepen / Shallow only ever
       reshape existing sea - neither side can turn into the other. Create Land and Paint Sea are the only tools

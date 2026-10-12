@@ -421,13 +421,21 @@ function buildTreeLayer(scene, textureLoader) {
     });
     const mesh = new THREE.InstancedMesh(geometry, material, 1);
     mesh.count = 0;
+    mesh.castShadow = true;
     scene.add(mesh);
     return mesh;
   });
 
+  // Placement data (world position/scale) is kept here, outside rebuild(),
+  // so updateFacing() below can re-orient every instance toward a moving
+  // camera without recomputing the (expensive, seeded-random) placement
+  // pass itself - placement only changes on a terrain-type edit, facing
+  // changes on every camera move, and they're deliberately decoupled.
+  let placements = [[], []];
+
   function rebuild(elevationGrid, typeGrid) {
     const forestIndex = TERRAIN_TYPES.indexOf("forest");
-    const placements = [[], []];
+    placements = [[], []];
     const rand = mulberry32(90125);
     // A tree per forest cell would crowd them into a solid dark mass at
     // TREE_WORLD_WIDTH's footprint (cells are 1 world unit apart, trees are
@@ -448,7 +456,6 @@ function buildTreeLayer(scene, textureLoader) {
       }
     }
 
-    const matrix = new THREE.Matrix4();
     for (let v = 0; v < meshes.length; v++) {
       const mesh = meshes[v];
       const list = placements[v];
@@ -457,20 +464,45 @@ function buildTreeLayer(scene, textureLoader) {
         meshes[v] = new THREE.InstancedMesh(mesh.geometry, mesh.material, Math.max(1, list.length));
         scene.remove(mesh);
         scene.add(meshes[v]);
+        meshes[v].castShadow = true;
       }
-      const active = meshes[v];
-      for (let i = 0; i < list.length; i++) {
-        const p = list[i];
-        matrix.makeScale(p.scale, p.scale, p.scale);
-        matrix.setPosition(p.x, p.y, p.z);
-        active.setMatrixAt(i, matrix);
-      }
-      active.count = list.length;
-      active.instanceMatrix.needsUpdate = true;
+      meshes[v].count = list.length;
     }
   }
 
-  return { meshes, rebuild };
+  // ROADMAP.md task 3: these were never real billboards (see the comment on
+  // the material above) - each instance kept one fixed world orientation,
+  // which only ever happened to face the camera because there used to be
+  // exactly one fixed camera position. Now that the camera can sit at any
+  // of 4 azimuths (or anywhere continuously via tilt), every instance's
+  // rotation is recomputed here, each time the camera moves - a real
+  // (Y-axis-only, so trees stay upright) billboard rotation, cheap enough
+  // to redo in full every call since tree counts are bounded by forest-cell
+  // count, same reasoning as the full-grid texture re-uploads elsewhere.
+  const matrix = new THREE.Matrix4();
+  const position = new THREE.Vector3();
+  const quaternion = new THREE.Quaternion();
+  const scaleVec = new THREE.Vector3();
+  const euler = new THREE.Euler();
+  function updateFacing(camera) {
+    for (let v = 0; v < meshes.length; v++) {
+      const active = meshes[v];
+      const list = placements[v];
+      for (let i = 0; i < list.length; i++) {
+        const p = list[i];
+        const rotY = Math.atan2(camera.position.x - p.x, camera.position.z - p.z);
+        euler.set(0, rotY, 0);
+        quaternion.setFromEuler(euler);
+        position.set(p.x, p.y, p.z);
+        scaleVec.set(p.scale, p.scale, p.scale);
+        matrix.compose(position, quaternion, scaleVec);
+        active.setMatrixAt(i, matrix);
+      }
+      if (list.length > 0) active.instanceMatrix.needsUpdate = true;
+    }
+  }
+
+  return { meshes, rebuild, updateFacing };
 }
 
 // --- Coastline ------------------------------------------------------------
@@ -653,51 +685,201 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid) {
   const textureLoader = new THREE.TextureLoader();
   const trees = buildTreeLayer(scene, textureLoader);
   trees.rebuild(elevationGrid, typeGrid);
-  for (const mesh of trees.meshes) {
-    mesh.castShadow = true;
-  }
 
   const coastline = buildCoastlineLine(scene);
   coastline.rebuild(elevationGrid);
 
-  // Fixed orthographic camera: a genuinely inclined 3D view, not a shear.
-  // Angle/distance tuned empirically against research/visual-references/.
-  const center = new THREE.Vector3((GRID_SIZE - 1) / 2, 0, (GRID_SIZE - 1) / 2);
-  const aspect = canvas.width / canvas.height || 1;
-  const viewSize = GRID_SIZE * 0.62;
-  const camera = new THREE.OrthographicCamera(
-    (-viewSize * aspect) / 2,
-    (viewSize * aspect) / 2,
-    viewSize / 2,
-    -viewSize / 2,
-    0.1,
-    800,
-  );
-  const distance = 260;
-  const tiltFromVertical = (58 * Math.PI) / 180;
-  camera.position.set(
-    center.x,
-    center.y + distance * Math.cos(tiltFromVertical),
-    center.z + distance * Math.sin(tiltFromVertical),
-  );
-  camera.lookAt(center);
-  camera.updateMatrixWorld();
+  // --- Camera (ROADMAP.md task 3) -----------------------------------------
+  // A parametric orthographic camera - azimuth (4 fixed presets), tilt
+  // (continuous), zoom and pan - replacing what used to be a handful of
+  // fixed constants. `azimuthIndex 1` ("s-n", angleDeg 0) reproduces the
+  // exact camera position this renderer always had, so nothing about the
+  // default look changes unless a control is touched.
+  const GRID_CENTER = new THREE.Vector3((GRID_SIZE - 1) / 2, 0, (GRID_SIZE - 1) / 2);
+  // Orthographic - distance only matters for near/far planes and shadow
+  // setup, never apparent size (that's viewSize/zoom below), so this stays
+  // a fixed constant generous enough for any zoom level.
+  const DISTANCE = 260;
+  // Degrees from vertical (0 = directly overhead/top-down, 90 = fully
+  // horizontal/grazing) - matches the original fixed camera's own
+  // convention exactly, just made continuous. Kept off exactly 0/90 so the
+  // ray-march's bounding-box math never degenerates.
+  const MIN_TILT_DEG = 12; // near-top-down
+  const MAX_TILT_DEG = 82; // near-horizontal, a low dramatic side view
+  const DEFAULT_TILT_DEG = 58; // matches the original fixed camera's angle
+  const MIN_ZOOM = 0.4;
+  const MAX_ZOOM = 3;
+  const FIT_MARGIN = 1.12; // breathing room beyond the tightest possible fit
+  const AZIMUTH_PRESETS = [
+    { id: "n-s", label: "N→S", angleDeg: 180 },
+    { id: "s-n", label: "S→N", angleDeg: 0 },
+    { id: "e-w", label: "E→W", angleDeg: 90 },
+    { id: "w-e", label: "W→E", angleDeg: 270 },
+  ];
+  const DEFAULT_AZIMUTH_INDEX = 1; // "s-n" - today's unchanged default
 
-  function setAspect(width, height) {
-    const a = width / height;
+  const camView = {
+    azimuthIndex: DEFAULT_AZIMUTH_INDEX,
+    tiltDeg: DEFAULT_TILT_DEG,
+    zoom: 1,
+    panX: 0,
+    panZ: 0,
+    baseViewSize: GRID_SIZE * 0.62, // overwritten by fitView() before first render
+  };
+
+  const aspect = canvas.width / canvas.height || 1;
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 800);
+
+  function clamp(v, lo, hi) {
+    return Math.min(hi, Math.max(lo, v));
+  }
+
+  // Recomputes camera position/orientation/frustum from camView - the one
+  // function every control below goes through, so "the camera" is always
+  // fully determined by that one small state object.
+  function applyCameraState() {
+    const angleRad = (AZIMUTH_PRESETS[camView.azimuthIndex].angleDeg * Math.PI) / 180;
+    const tiltRad = (camView.tiltDeg * Math.PI) / 180;
+    // Degrees-from-vertical convention (see MIN_TILT_DEG above): vertical
+    // offset shrinks and horizontal offset grows as tilt increases from 0
+    // (overhead) toward 90 (grazing) - cos/sin, not swapped.
+    const horizontal = DISTANCE * Math.sin(tiltRad);
+    const vertical = DISTANCE * Math.cos(tiltRad);
+    const center = new THREE.Vector3(GRID_CENTER.x + camView.panX, GRID_CENTER.y, GRID_CENTER.z + camView.panZ);
+    camera.position.set(
+      center.x + horizontal * Math.sin(angleRad),
+      center.y + vertical,
+      center.z + horizontal * Math.cos(angleRad),
+    );
+    camera.lookAt(center);
+    camera.updateMatrixWorld();
+
+    const viewSize = camView.baseViewSize / camView.zoom;
     const halfH = viewSize / 2;
-    camera.left = -halfH * a;
-    camera.right = halfH * a;
+    camera.left = -halfH * aspect;
+    camera.right = halfH * aspect;
     camera.top = halfH;
     camera.bottom = -halfH;
     camera.updateProjectionMatrix();
   }
 
+  // Sizes baseViewSize so the *actually painted* elevation range (not the
+  // theoretical min/max) fits the current azimuth/tilt with margin, fixing
+  // the known clipping bug as a side effect of always framing correctly
+  // rather than as a one-off constant tweak. Projects the data's bounding
+  // box into the camera's own right/up axes (read directly off its world
+  // matrix, which applyCameraState() above already keeps current) - the
+  // standard way to size an orthographic frustum around a 3D box, not
+  // guessed from the grid footprint alone, since a low tilt needs much more
+  // vertical frustum room for the same mountain than a near-top-down one
+  // does.
+  function fitView(currentElevationGrid) {
+    let minE = Infinity;
+    let maxE = -Infinity;
+    for (let i = 0; i < currentElevationGrid.length; i++) {
+      const e = currentElevationGrid[i];
+      if (e < minE) minE = e;
+      if (e > maxE) maxE = e;
+    }
+    if (!Number.isFinite(minE)) {
+      minE = ELEVATION_MIN;
+      maxE = ELEVATION_MAX;
+    }
+    const minY = minE * HEIGHT_SCALE;
+    const maxY = maxE * HEIGHT_SCALE;
+
+    camView.zoom = 1;
+    camView.panX = 0;
+    camView.panZ = 0;
+    applyCameraState(); // so the right/up axes below reflect the current azimuth/tilt
+
+    const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+    const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+    let minR = Infinity;
+    let maxR = -Infinity;
+    let minU = Infinity;
+    let maxU = -Infinity;
+    const corner = new THREE.Vector3();
+    for (const x of [0, GRID_SIZE - 1]) {
+      for (const y of [minY, maxY]) {
+        for (const z of [0, GRID_SIZE - 1]) {
+          corner.set(x, y, z).sub(GRID_CENTER);
+          const r = corner.dot(right);
+          const u = corner.dot(up);
+          if (r < minR) minR = r;
+          if (r > maxR) maxR = r;
+          if (u < minU) minU = u;
+          if (u > maxU) maxU = u;
+        }
+      }
+    }
+    const neededHeight = (maxU - minU) * FIT_MARGIN;
+    const neededWidth = (maxR - minR) * FIT_MARGIN;
+    camView.baseViewSize = Math.max(neededHeight, neededWidth / aspect, GRID_SIZE * 0.1);
+    applyCameraState();
+  }
+
+  function setAzimuth(index) {
+    camView.azimuthIndex = clamp(index, 0, AZIMUTH_PRESETS.length - 1);
+    fitView(currentElevationGridRef);
+  }
+
+  function setTilt(deg) {
+    camView.tiltDeg = clamp(deg, MIN_TILT_DEG, MAX_TILT_DEG);
+    fitView(currentElevationGridRef);
+  }
+
+  function setZoom(factor) {
+    camView.zoom = clamp(factor, MIN_ZOOM, MAX_ZOOM);
+    applyCameraState();
+  }
+
+  // dx/dz are in the camera's own screen-aligned right/up directions (not
+  // raw world axes), so "pan right" means the same thing on screen
+  // regardless of which azimuth/tilt is currently active.
+  function panBy(dRight, dUp) {
+    const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+    const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+    const step = camView.baseViewSize / camView.zoom;
+    camView.panX += (right.x * dRight + up.x * dUp) * step;
+    camView.panZ += (right.z * dRight + up.z * dUp) * step;
+    applyCameraState();
+  }
+
+  function getCameraState() {
+    return {
+      azimuthIndex: camView.azimuthIndex,
+      azimuthPresets: AZIMUTH_PRESETS.map((p) => ({ id: p.id, label: p.label })),
+      tiltDeg: camView.tiltDeg,
+      minTiltDeg: MIN_TILT_DEG,
+      maxTiltDeg: MAX_TILT_DEG,
+      zoom: camView.zoom,
+      minZoom: MIN_ZOOM,
+      maxZoom: MAX_ZOOM,
+    };
+  }
+
+  // fitView() needs the current elevationGrid but is also called from
+  // setAzimuth/setTilt, which don't otherwise receive it - updateHeight()
+  // below keeps this reference current the same way it already does for
+  // the coastline rebuild.
+  let currentElevationGridRef = elevationGrid;
+  fitView(currentElevationGridRef);
+
   function render() {
+    trees.updateFacing(camera);
     renderer.render(scene, camera);
   }
 
+  function setAspect() {
+    // Canvas is always square (GRID_SIZE * CELL_PX on each side) in
+    // practice, so `aspect` above never actually changes after creation;
+    // kept as a no-op entry point (rather than removed) in case that
+    // changes later - re-deriving it would need re-running fitView() too.
+  }
+
   function updateHeight(currentElevationGrid) {
+    currentElevationGridRef = currentElevationGrid;
     fillHeightTexture(heightTexture, currentElevationGrid);
     coastline.rebuild(currentElevationGrid);
   }
@@ -711,7 +893,10 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid) {
   const ndc = new THREE.Vector2();
 
   // px, py in canvas backing-store pixels (same convention world-client.js
-  // already uses for the top-down/old-oblique pick functions).
+  // already uses for the top-down/old-oblique pick functions). Needs no
+  // change for any camera state: it reads whatever `camera`'s current
+  // position/orientation actually is, the same object every control above
+  // mutates in place.
   function pick(px, py, currentElevationGrid) {
     ndc.x = (px / canvas.width) * 2 - 1;
     ndc.y = -(py / canvas.height) * 2 + 1;
@@ -729,5 +914,18 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid) {
     renderer.dispose();
   }
 
-  return { render, updateHeight, updateType, pick, setAspect, dispose };
+  return {
+    render,
+    updateHeight,
+    updateType,
+    pick,
+    setAspect,
+    dispose,
+    setAzimuth,
+    setTilt,
+    setZoom,
+    panBy,
+    fitView: () => fitView(currentElevationGridRef),
+    getCameraState,
+  };
 }
