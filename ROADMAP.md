@@ -1174,14 +1174,234 @@ incorrectly between terrain types or across coastlines.
 
 ## 5. Top-down fantasy-map art quality
 
-**Status:** ⬜ Not started.
+**Status:** 🔍 Assessed - comparison written, awaiting approval to implement.
 
-Scope: flat per-cell fills (`TYPE_COLORS`), no forest stamps in 2D at all
-(only the 3D view got trees), hard-edged type boundaries. See the prior
-combined assessment's Issue 1 table for a first pass at approaches
-(procedural texture/dither + stamped forest icons vs. deriving top-down from
-the 3D scene vs. sourcing real painterly textures) - will be re-scored here
-on its own once reached.
+The user's own framing of this task named four complaints: isolated
+circular mountains, severe dark streaks toward the coast, rectangular
+forests, and flat/repetitive grassland - plus "unnatural terrain
+transitions" generally. Rather than treat these as one "looks artificial"
+problem, each was investigated separately against the real renderer and
+real painted data (not assumed), with an explicit instruction to
+distinguish terrain-data causes from rendering causes from art-direction
+gaps, and to not defer an obvious defect without a real reason. Findings,
+in the order the user listed the complaints:
+
+### 1. Circular mountain blobs - a brush/data shape problem, not rendering
+
+Confirmed directly, not inferred from the one screenshot already on file:
+a fresh dev DB was painted with two adjacent Mountain-tool strokes placed
+close enough that a user would expect one ridge, using the real browser
+UI via Playwright. Result: two distinct, fused circles - a "figure-8"
+silhouette
+(`research/roadmap/screenshots/2026-10-13-two-mountains-circular-blob.png`,
+captured this session). This traces to `forEachBrushCell`
+(`world-client.js`): every stamp is a radially-symmetric `smoothstep`
+falloff from a centre point, and Mountain/Peak both converge every cell in
+range toward one fixed target (`MOUNTAIN_TARGET`/`PEAK_TARGET`) - so the
+*only* shape a stamp (or several overlapping ones) can ever produce is a
+circle or a smooth union of circles. Task 2's relaxation pass softens the
+*step* between adjacent cells that differ too steeply; it does not and
+cannot change the underlying silhouette, which is circular by construction
+before relaxation ever runs. **This is a brush/data-shape problem, not a
+top-down-only rendering bug** - the same circular stamps would look
+circular in the Oblique view too (task 6's problem as much as this one).
+A full fix (irregular, noise-perturbed stamp footprints, or a different
+brush-accumulation model entirely) is a data/authoring-tool change outside
+a "renderer" task's scope as this file defines it, and risks reopening the
+brush-precision and relaxation work already locked in by tasks 2 and the
+"Already completed" brush-precision fix. What *is* fair game for a
+rendering-only fix, and genuinely helps: visually breaking up a silhouette
+with noise-perturbed edges at the type/slope boundary (detailed below)
+makes a circular outline read as a rougher, hand-painted range rather than
+a geometric circle, the same trick a hand-drawn map uses to disguise a
+simple underlying shape - a real improvement, but explicitly **not** a fix
+for the underlying circularity, which is named here as a limitation for
+this task rather than silently left unaddressed.
+
+### 2. Dark streaks toward the coast - a real rendering bug, confirmed quantitatively
+
+This is **not** a style complaint - it's a bug, and a cheap one to pin
+down. Directly evaluating `terrain-renderer.js`'s own shading formula
+against the seeded scene's real elevation data (not by eye): two
+horizontally-adjacent cells at `(97, 120)`/`(98, 120)`, whose real painted
+elevations differ by only **0.014** (0.678 vs. 0.664 - a gentle, unremarkable
+hillside slope, not a cliff), produce a hillshade brightness swing of
+**0.70** (1.24x vs. 0.54x multiplier) - visually, a near-black streak
+sitting right next to full-brightness grass with nothing resembling that
+contrast in the actual terrain shape. Root cause: `reliefAt`/
+`continuousReliefAt`'s curvature term (`(left + right + up + down - 4 *
+center) * RELIEF_EXAGGERATION`, `RELIEF_EXAGGERATION = 9`) is fed the
+*fold-noise-perturbed* elevation, not the raw painted elevation - and
+`fractalFold`'s ridged noise has its own local second-derivative spikes
+wherever two octaves' zero-crossings happen to land close together,
+independent of how gentle the real underlying slope is. `extremeDamping`
+in the 3D shader (`terrain-renderer-3d.js`) already exists to cap exactly
+this failure mode for the oblique view (ROADMAP.md task 2's own account of
+that fix); **the 2D top-down path (`terrain-renderer.js`'s `reliefAt`/
+`continuousReliefAt`) never got the equivalent clamp**, which is why the
+two views disagree so badly here. This is squarely this task's to fix, not
+deferred: it is a rendering bug, confirmed by direct computation against
+real data, with a precedent fix already shipped on the other renderer.
+
+### 3. Rectangular forests - confirmed NOT a renderer defect; no top-down code change needed
+
+Checked directly rather than assumed from the one screenshot on file: the
+rectangular forest patch in `research/roadmap/screenshots/2026-10-12-top-down-current-state.png`
+traces to `scripts/seed-test-scene.ts`'s own hardcoded test-data condition
+(`x > 150 && x < 220 && y > 90 && y < 160`) - a literal axis-aligned box in
+the *dev seed script used for QA screenshots*, not anything the renderer
+or the terrain-type brush does. Painting forest with the real brush tool
+in a live browser session (several overlapping dabs, not a filled
+rectangle) produces an organic, lumpy, rounded patch
+(`research/roadmap/screenshots/2026-10-13-forest-dabs-organic-shape.png`,
+captured this session) - confirming the brush itself already produces
+natural-looking footprints for terrain *type* painting (unlike Mountain's
+circular *elevation* stamps above, type-only tools have no fixed-target
+convergence problem to begin with). **No top-down rendering or brush
+change is needed for forest shape.** What forest painting still lacks is
+texture (addressed below) - the shape complaint and the texture complaint
+are two different things that happened to be visible in the same
+screenshot.
+
+### 4. Flat, repetitive grassland - confirmed, and the type-boundary part of this is already half-fixed
+
+Zoomed screenshots of real painted grass
+(`research/roadmap/screenshots/2026-10-13-flat-grass-zoom.png`) confirm
+the complaint directly: `TYPE_COLORS.grassland` is one flat RGB triple,
+varied only by hillshading brightness - no texture, speckle, or colour
+variation of any kind within a type. This is a real, in-scope gap for this
+task. One genuinely surprising finding worth stating plainly (the user
+asked not to defer things without justification, so this cuts the other
+way too - not deferring a fix that already landed): this task's original
+scope line called out "hard-edged type boundaries" as a defect, but
+re-reading `continuousColorAt`/`continuousTypeBlend` shows this was
+**already fixed as a side effect of Task 4's per-pixel rewrite** -
+`continuousTypeBlend` bilinearly blends four real neighbouring cell
+colours at every output pixel, and Task 4's own checkpoint already
+verified a real intermediate colour exists at a forest/grass boundary, not
+an instant jump. Re-confirmed visually this session (the forest-dabs
+screenshot above shows a soft, not hard, edge). So the remaining "flat"
+problem is purely the *lack of texture within* a type, not the boundary
+between types - which narrows this task's real work to "add texture," not
+"also re-solve blending Task 4 already solved."
+
+### What stays out of this task, and why (not silently deferred)
+
+- **Geological-scale material blending** (grass fading to scree fading to
+  bare rock on a real slope, not just a colour-interpolated pixel boundary
+  between two painted types) stays Task 7's, because it needs a designed
+  blend *rule per terrain-type pair* (what does sand-to-rock look like vs.
+  grass-to-rock), not a texture swap - solving it properly once in Task 7
+  avoids building two different ad-hoc blend rules in top-down now and
+  oblique later, which is exactly the "two separately-maintained copies"
+  trap `terrain-renderer.js`'s own module comment already warns against.
+- **3D tree geometry / real mesh vegetation** stays Task 8's - this task's
+  texture work covers the flat 2D top-down canvas only; the Oblique view's
+  billboard trees are a separate, already-scoped comparison (hand-rolled
+  billboards vs. Kenney's Nature Kit meshes).
+- **Rivers/lakes and the vector coastline's own shape** stay Task 9's -
+  the coastline contour itself (`computeCoastlineRings`, real
+  marching-squares extraction) is not named as broken by any of the four
+  complaints investigated here, and ROADMAP.md already records it as "a
+  relative strength of this renderer." What *does* belong to this task is
+  the sand band's flat, textureless fill right along that coastline -
+  covered under "flat, repetitive" above, not a coastline-shape problem.
+
+### Research: existing techniques, before building anything new (`CLAUDE.md`'s reuse discipline)
+
+- **Red Blob Games' mapgen4** (already partially adopted - see
+  `terrain-renderer.js`'s own credit comments for `mountain_folds` and the
+  oblique shear projection): its public write-ups describe the oblique
+  projection and ridged-fold techniques already reused here, but do not
+  document a specific top-down ground-texture technique beyond colour
+  ramps - nothing further to adopt from this source for *this* task.
+- **Azgaar's Fantasy Map Generator** (open source, Apache-2.0/MIT mixed,
+  `github.com/Azgaar/Fantasy-Map-Generator`): its "satellite" render mode
+  layers real-looking terrain colour/texture over a Voronoi-cell biome
+  model, confirming the general approach (texture/noise over a categorical
+  base, not per-cell flat fill) rather than offering a drop-in asset or
+  code module for a square-grid renderer like this one's.
+- **CC0/CC-BY painterly terrain texture packs** (OpenGameArt/itch.io):
+  checked again for this task specifically (not just re-citing
+  `CREDITS.md`'s prior search for *ink-stamp* packs, a different asset
+  class) - the same gap found before holds here: available free packs are
+  either seamless-but-generic (not keyed to this renderer's specific
+  palette/style) or low-resolution pixel-art tile sets that read as a
+  retro tile game, the exact style `CLAUDE.md` already steers away from.
+  Nothing found closely matched enough to adopt directly.
+- **The ANU course image-generation API** (`strproxy`'s
+  `/api/images/generations`, `$30` course budget, separate from the Claude
+  token budget): queried live - `recraft-v3` is the one allowlisted model
+  with a dedicated seamless-pattern generation mode, a closer fit to
+  "tileable ground texture" than a generic text-to-image call. This is a
+  genuinely new option (not available when `CREDITS.md`'s original texture
+  search ran) and is being evaluated as part of this task via a small,
+  separately-approved, reversible experiment (see below) rather than
+  assumed to work.
+
+### Approaches compared
+
+| | A. Procedural texture (hand-rolled noise/speckle, no new assets) | B. AI-generated seamless textures (course image API) | C. Source free CC0/CC-BY texture packs |
+|---|---|---|---|
+| **Summary** | Extend the existing `fractalFold`/value-noise machinery (already computed per-pixel for hillshading) into a second, finer-grained noise layer that perturbs each type's base colour - speckle/mottling for grass, grain for sand, fine cracks for rock - plus a noise-displaced silhouette edge at steep slopes/type boundaries to visually break up the circular-blob outline named in finding 1. Zero new assets, zero cost, fully deterministic/synced like the existing fold noise. | Generate a small set of seamless ground textures (grass/sand/rock) and tree/canopy billboard sprites via `recraft-v3`'s seamless-pattern mode, downloaded and committed as static assets (same model `CREDITS.md` already uses for the hand-authored tree PNGs), tiled as a `CanvasPattern` in top-down and a repeating `THREE.Texture` in the oblique ground shader/tree billboards. | Search OpenGameArt/itch.io again, this time specifically for *painted* (not ink-line) seamless terrain textures and tree sprites at this map's regional scale, reusing per `CLAUDE.md`'s discipline if a genuinely close match exists. |
+| Visual quality | 6 | 9 | 7 (if a match exists; untested) |
+| Feasibility | 10 | 7 | 5 |
+| Style consistency | 7 | 8 (style is directed by prompt, tunable) | 4 (whatever the pack's own style is, not this app's) |
+| Impl. cost (10=cheap) | 9 | 6 | 5 |
+| Performance | 10 | 9 (one extra texture sample per pixel/fragment) | 9 |
+
+**Risks:** Approach A's noise-perturbed silhouette is the only piece of
+this task that touches the circular-mountain complaint at all, and it is
+explicitly a visual disguise, not a fix (see finding 1) - must be reported
+as a named limitation, not oversold as "fixed," whichever approach is
+chosen for texture. Approach B is genuinely new since `CREDITS.md`'s last
+asset search (the API itself didn't exist then) and carries real
+unknowns: whether `recraft-v3`'s "seamless" style setting actually tiles
+losslessly at this map's cell size, whether a billboard sprite's style
+matches the hand-authored tree PNGs closely enough to sit side by side,
+and real dollar cost - all reasons a small, cheap ($0.60), explicitly
+reversible experiment is being run before committing to this approach
+over A, rather than assumed to work from the model's marketing copy.
+Approach C's risk is the same one `CREDITS.md` already recorded for ink
+packs: free packs tend to be either off-style or off-resolution, and a
+second search isn't guaranteed to find something new.
+
+**Recommendation (provisional, pending the approved experiment's
+results):** Approach B, *if* the small experiment confirms real seamless
+tiling and a style that sits comfortably next to this renderer's existing
+hillshading and the hand-authored tree PNGs - otherwise fall back to
+Approach A, which is strictly worse on visual quality but has no
+unknowns and no per-image cost. Approach A's noise-perturbation technique
+(silhouette disguise, finer colour-noise layers) is recommended regardless
+of which texture source wins, since it's cheap, reuses code already in the
+file, and is the only concrete mitigation available for the
+circular-silhouette complaint within this task's actual scope.
+
+### What this task will and will not visibly change for users
+
+- **Visible, if approved**: textured (not flat) grass/sand/rock fill in
+  Top-down; the dark-streak artifact (finding 2) gone, confirmed by
+  re-running the same brightness-delta check against the same data and
+  expecting a bounded result; mountain/forest silhouettes reading as
+  rougher and less perfectly circular (a visual disguise, not a shape
+  fix - see finding 1's limitation).
+  reads reasonably close to the hand-authored tree PNGs (if Approach B).
+- **Not visibly changed by this task**: the underlying circular shape of
+  Mountain/Peak brush strokes (still circular data, just less obviously so
+  on screen); any grass-to-rock geological transition beyond today's
+  colour-interpolated pixel boundary (Task 7); the Oblique view's own
+  shading/texture quality, except that any new textures generated here are
+  built with that reuse already in mind (Task 6, separately scoped and
+  separately approved before any Oblique-specific rendering change).
+
+### Small experiment (approved, in progress - see below for results)
+
+Approved: up to 6 images / $0.60 from the course image budget, prioritizing
+3 seamless ground textures (grass, sand, rock) and 3 tree/forest assets
+over decorative UI chrome. Results, actual cost, provenance, and before/
+after screenshots in both Top-down and Oblique will be recorded here once
+the experiment runs, ahead of any final implementation decision or further
+approval request.
 
 ## 6. Oblique fantasy-map art quality
 
@@ -1321,3 +1541,24 @@ concurrency note in `ADR.md` once scoped.
   above for the full comparison, implementation, and verification trail.
   Commit
   [`8893e71`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/8893e7129ebf66a60621ff036ae6844c5742311a).
+- **2026-10-13** - Task 5 assessed (this file), with an explicit
+  instruction to separate terrain-data causes, rendering causes, and
+  art-direction gaps rather than treat "looks artificial" as one problem.
+  Confirmed directly against real painted data (not assumed from the one
+  screenshot already on file): circular mountain blobs are a brush/data
+  shape problem (two adjacent live Mountain strokes fuse into a literal
+  figure-eight), not a rendering bug; the dark coastal streaks are a real
+  rendering bug, pinned to a specific formula and confirmed quantitatively
+  (two adjacent cells differing by 0.014 in real elevation produce a 0.70
+  hillshade-brightness swing); the rectangular forest in the reference
+  screenshot traces to the dev seed script's own hardcoded box, not the
+  renderer or the brush (a live-painted forest patch is already organic);
+  and the hard type-boundary complaint named in this task's original scope
+  line was found to already be fixed as a side effect of Task 4's
+  per-pixel rewrite. Also evaluated the ANU course image-generation API
+  ($30 budget, `recraft-v3`'s seamless-pattern mode) as a new option for
+  ground textures, queried live rather than assumed from docs, and scoped
+  a small ($0.60, 6-image) reversible experiment to test it before
+  committing to it over a hand-rolled procedural-texture fallback. Not yet
+  implemented; the image-generation experiment and final approach choice
+  are still pending.
