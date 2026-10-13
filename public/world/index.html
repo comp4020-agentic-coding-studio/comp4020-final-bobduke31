@@ -85,10 +85,31 @@
     <div class="toolbar hidden" id="camera-toolbar">
       <div class="tool-group">
         <span class="tool-group-label">Direction</span>
-        <button type="button" data-azimuth="0" title="View looking from north toward south.">N&rarr;S</button>
-        <button type="button" data-azimuth="1" class="active" title="View looking from south toward north.">S&rarr;N</button>
-        <button type="button" data-azimuth="2" title="View looking from east toward west.">E&rarr;W</button>
-        <button type="button" data-azimuth="3" title="View looking from west toward east.">W&rarr;E</button>
+        <div
+          class="compass"
+          id="camera-compass"
+          title="Drag anywhere on the dial to rotate the view freely, 360° - the camera position, tilt and zoom are never reset by this."
+        >
+          <svg viewBox="0 0 100 100" width="84" height="84" aria-hidden="true">
+            <circle cx="50" cy="50" r="46" class="compass-ring" />
+            <text x="50" y="13" class="compass-label">N</text>
+            <text x="89" y="54" class="compass-label">E</text>
+            <text x="50" y="95" class="compass-label">S</text>
+            <text x="11" y="54" class="compass-label">W</text>
+            <g id="compass-needle-group">
+              <line x1="50" y1="50" x2="50" y2="15" class="compass-needle" />
+              <circle cx="50" cy="15" r="6" class="compass-handle" />
+            </g>
+          </svg>
+        </div>
+        <div class="compass-presets">
+          <button type="button" data-azimuth-preset="0" title="Snap to looking from north toward south.">N&rarr;S</button>
+          <button type="button" data-azimuth-preset="1" class="active" title="Snap to looking from south toward north.">
+            S&rarr;N
+          </button>
+          <button type="button" data-azimuth-preset="2" title="Snap to looking from east toward west.">E&rarr;W</button>
+          <button type="button" data-azimuth-preset="3" title="Snap to looking from west toward east.">W&rarr;E</button>
+        </div>
       </div>
       <div class="tool-group">
         <label>Tilt <input id="camera-tilt" type="range" min="12" max="82" step="1" value="58" /></label>
@@ -96,15 +117,14 @@
       </div>
       <div class="tool-group">
         <span class="tool-group-label">Pan</span>
-        <div class="pan-pad">
-          <button type="button" class="pan-up" data-pan="up" title="Pan up">&uarr;</button>
-          <button type="button" class="pan-left" data-pan="left" title="Pan left">&larr;</button>
-          <button type="button" class="pan-right" data-pan="right" title="Pan right">&rarr;</button>
-          <button type="button" class="pan-down" data-pan="down" title="Pan down">&darr;</button>
-        </div>
+        <div
+          class="pan-trackpad"
+          id="camera-pan-trackpad"
+          title="Drag like a trackpad to pan precisely - the content follows your drag. Small drags give small, exact moves, even fully zoomed in."
+        ></div>
       </div>
       <div class="tool-group">
-        <button type="button" id="camera-fit" title="Frame the camera to fit everything that's currently painted, at the current direction and tilt.">
+        <button type="button" id="camera-fit" title="Frame the camera to fit everything that's currently painted, at the current direction and tilt. The only control that resets zoom/pan.">
           Reset / Fit view
         </button>
       </div>
@@ -113,6 +133,10 @@
       Raise / Lower / Smooth / Mountain / Peak only ever reshape existing land, and Deepen / Shallow only ever
       reshape existing sea - neither side can turn into the other. Create Land and Paint Sea are the only tools
       that change the coastline itself. The water surface stays level no matter how deep the seabed gets.
+    </p>
+    <p class="tool-hint hidden" id="camera-hint">
+      In Oblique view, the mouse wheel zooms in/out centred on the cursor. Dragging on the map itself always paints
+      - use the compass dial and pan trackpad above to look around instead.
     </p>
 
     <main>

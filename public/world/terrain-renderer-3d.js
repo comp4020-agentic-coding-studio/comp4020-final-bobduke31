@@ -781,11 +781,19 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
   const DEFAULT_AZIMUTH_INDEX = 1; // "s-n" - today's unchanged default
 
   const camView = {
-    azimuthIndex: DEFAULT_AZIMUTH_INDEX,
+    // Continuous now (ROADMAP.md task 3 revisit: free 360 deg rotation, not
+    // just 4 snapped presets) - degrees, wrapped into [0, 360). The 4 preset
+    // buttons remain as shortcuts (setAzimuthPreset below), not the only way
+    // to set this.
+    azimuthDeg: AZIMUTH_PRESETS[DEFAULT_AZIMUTH_INDEX].angleDeg,
     tiltDeg: DEFAULT_TILT_DEG,
     zoom: 1,
-    panX: 0,
-    panZ: 0,
+    // A full 3D offset (not two scalars decomposed back onto world X/Z) so
+    // panning along the camera's own "up" screen axis is exact at any tilt:
+    // that axis has a real world-Y component once the camera is tilted, and
+    // the previous panX/panZ-only representation silently dropped it. Kept
+    // as the camera's look-at center's offset from GRID_CENTER.
+    panOffset: new THREE.Vector3(0, 0, 0),
     baseViewSize: GRID_SIZE * 0.62, // overwritten by fitView() before first render
   };
 
@@ -800,14 +808,14 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
   // function every control below goes through, so "the camera" is always
   // fully determined by that one small state object.
   function applyCameraState() {
-    const angleRad = (AZIMUTH_PRESETS[camView.azimuthIndex].angleDeg * Math.PI) / 180;
+    const angleRad = (camView.azimuthDeg * Math.PI) / 180;
     const tiltRad = (camView.tiltDeg * Math.PI) / 180;
     // Degrees-from-vertical convention (see MIN_TILT_DEG above): vertical
     // offset shrinks and horizontal offset grows as tilt increases from 0
     // (overhead) toward 90 (grazing) - cos/sin, not swapped.
     const horizontal = DISTANCE * Math.sin(tiltRad);
     const vertical = DISTANCE * Math.cos(tiltRad);
-    const center = new THREE.Vector3(GRID_CENTER.x + camView.panX, GRID_CENTER.y, GRID_CENTER.z + camView.panZ);
+    const center = GRID_CENTER.clone().add(camView.panOffset);
     camera.position.set(
       center.x + horizontal * Math.sin(angleRad),
       center.y + vertical,
@@ -835,6 +843,16 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
   // guessed from the grid footprint alone, since a low tilt needs much more
   // vertical frustum room for the same mountain than a near-top-down one
   // does.
+  // Only ever called from three places (see createTerrainScene3D's return
+  // value and world-client.js's wireCameraControls): initial load and the
+  // explicit "Reset / Fit view" button. Revisited camera-controls task: an
+  // azimuth/tilt change used to call this too (auto-refit on every
+  // direction/tilt change), which the user explicitly asked to stop -
+  // rotating, tilting, zooming and panning must now preserve each other's
+  // state and never silently reset the camera. fitView() itself still needs
+  // to zero zoom/pan while it measures the fit, since "fit" means exactly
+  // "forget the current zoom/pan and reframe" - that's what the button is
+  // for.
   function fitView(currentElevationGrid) {
     let minE = Infinity;
     let maxE = -Infinity;
@@ -851,8 +869,7 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     const maxY = maxE * HEIGHT_SCALE;
 
     camView.zoom = 1;
-    camView.panX = 0;
-    camView.panZ = 0;
+    camView.panOffset.set(0, 0, 0);
     applyCameraState(); // so the right/up axes below reflect the current azimuth/tilt
 
     const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
@@ -881,14 +898,27 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     applyCameraState();
   }
 
-  function setAzimuth(index) {
-    camView.azimuthIndex = clamp(index, 0, AZIMUTH_PRESETS.length - 1);
-    fitView(currentElevationGridRef);
+  function wrapDeg(deg) {
+    return ((deg % 360) + 360) % 360;
+  }
+
+  // Free, continuous rotation (360 deg) - the compass dial in the toolbar
+  // drives this directly with the pointer's absolute angle around the dial.
+  // Deliberately does NOT call fitView(): see the comment on fitView above.
+  function setAzimuth(deg) {
+    camView.azimuthDeg = wrapDeg(deg);
+    applyCameraState();
+  }
+
+  // The four direction buttons remain as named shortcuts onto the same
+  // continuous azimuth the dial controls - not a separate discrete mode.
+  function setAzimuthPreset(index) {
+    setAzimuth(AZIMUTH_PRESETS[clamp(index, 0, AZIMUTH_PRESETS.length - 1)].angleDeg);
   }
 
   function setTilt(deg) {
     camView.tiltDeg = clamp(deg, MIN_TILT_DEG, MAX_TILT_DEG);
-    fitView(currentElevationGridRef);
+    applyCameraState();
   }
 
   function setZoom(factor) {
@@ -896,22 +926,59 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     applyCameraState();
   }
 
-  // dx/dz are in the camera's own screen-aligned right/up directions (not
-  // raw world axes), so "pan right" means the same thing on screen
-  // regardless of which azimuth/tilt is currently active.
+  // Cursor-centred zoom (wheel): keeps the world point under the pointer
+  // fixed on screen, rather than zooming about the view center the way the
+  // slider does. ndcX/ndcY are in [-1, 1] clip-space, the same convention
+  // THREE.Raycaster.setFromCamera uses. Derivation: for an orthographic
+  // camera, the world point under a clip-space offset (ndcX, ndcY) from the
+  // look-at center is `center + right*ndcX*halfWidth + up*ndcY*halfHeight`,
+  // where half-width/height scale linearly with viewSize (1/zoom). Solving
+  // for the new panOffset that keeps that same world point under the same
+  // ndcX/ndcY after zoom changes from `oldZoom` to `newZoom` reduces to
+  // shifting panOffset by `(right*offsetR + up*offsetU) * (1 - oldZoom/newZoom)`
+  // - i.e. only the *ratio* of old to new zoom matters, not the absolute
+  // view size.
+  function zoomAtCursor(zoomDeltaFactor, ndcX, ndcY) {
+    const oldZoom = camView.zoom;
+    const newZoom = clamp(oldZoom * zoomDeltaFactor, MIN_ZOOM, MAX_ZOOM);
+    if (newZoom === oldZoom) return;
+    const viewSize = camView.baseViewSize / oldZoom;
+    const halfWidth = (viewSize * aspect) / 2;
+    const halfHeight = viewSize / 2;
+    const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
+    const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
+    const offsetR = ndcX * halfWidth;
+    const offsetU = ndcY * halfHeight;
+    const ratio = 1 - oldZoom / newZoom;
+    camView.panOffset.addScaledVector(right, offsetR * ratio);
+    camView.panOffset.addScaledVector(up, offsetU * ratio);
+    camView.zoom = newZoom;
+    applyCameraState();
+  }
+
+  // dRight/dUp are fractions of the current view size, in the camera's own
+  // screen-aligned right/up directions (not raw world axes), so "pan right"
+  // means the same thing on screen regardless of which azimuth/tilt is
+  // currently active. Using the full 3D up vector (not just its X/Z, which
+  // an earlier version of this silently dropped) matters once the camera is
+  // tilted: screen-"up" then has a real world-Y component. Called
+  // continuously with small per-pointermove fractions by the toolbar's drag
+  // trackpad, which is what makes panning precise while zoomed in (the
+  // fraction is always relative to what's actually on screen right now)
+  // rather than a fixed-size nudge per click.
   function panBy(dRight, dUp) {
     const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
     const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
     const step = camView.baseViewSize / camView.zoom;
-    camView.panX += (right.x * dRight + up.x * dUp) * step;
-    camView.panZ += (right.z * dRight + up.z * dUp) * step;
+    camView.panOffset.addScaledVector(right, dRight * step);
+    camView.panOffset.addScaledVector(up, dUp * step);
     applyCameraState();
   }
 
   function getCameraState() {
     return {
-      azimuthIndex: camView.azimuthIndex,
-      azimuthPresets: AZIMUTH_PRESETS.map((p) => ({ id: p.id, label: p.label })),
+      azimuthDeg: camView.azimuthDeg,
+      azimuthPresets: AZIMUTH_PRESETS.map((p) => ({ id: p.id, label: p.label, angleDeg: p.angleDeg })),
       tiltDeg: camView.tiltDeg,
       minTiltDeg: MIN_TILT_DEG,
       maxTiltDeg: MAX_TILT_DEG,
@@ -984,8 +1051,10 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     setAspect,
     dispose,
     setAzimuth,
+    setAzimuthPreset,
     setTilt,
     setZoom,
+    zoomAtCursor,
     panBy,
     fitView: () => fitView(currentElevationGridRef),
     getCameraState,

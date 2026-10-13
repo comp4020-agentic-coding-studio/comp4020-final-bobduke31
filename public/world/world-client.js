@@ -657,6 +657,7 @@ function wireToolbar() {
 function wireViewToggle() {
   const buttons = document.querySelectorAll("[data-view]");
   const cameraToolbar = document.getElementById("camera-toolbar");
+  const cameraHint = document.getElementById("camera-hint");
   for (const button of buttons) {
     button.addEventListener("click", () => {
       const mode = button.dataset.view;
@@ -668,6 +669,7 @@ function wireViewToggle() {
       canvas3d.classList.toggle("hidden", !show3D);
       canvas.classList.toggle("hidden", show3D);
       cameraToolbar.classList.toggle("hidden", !show3D);
+      cameraHint.classList.toggle("hidden", !show3D);
       if (!show3D) {
         // The canvas-column fallback oblique view needs extra canvas height
         // so a peak near row 0 has room to rise into without being clipped
@@ -692,12 +694,23 @@ function wireViewToggle() {
   }
 }
 
-// ROADMAP.md task 3: wires the direction/tilt/zoom/pan/fit-view controls to
-// the 3D renderer's camera. Every handler here calls `renderOnce()` directly
-// rather than going through `scheduleRender()`/`markDirty()` - a camera move
-// isn't a terrain edit, so it has nothing to do with the dirty-rect tracking
-// those use, and a UI click/drag is already a single discrete event with no
-// need for rAF-batching the way a flood of pointermove events does.
+// ROADMAP.md task 3 (camera controls), revisited: wires the compass dial,
+// direction-preset shortcuts, tilt/zoom sliders, pan trackpad, wheel-zoom
+// and fit-view controls to the 3D renderer's camera. Every handler here
+// calls `renderOnce()` directly rather than going through
+// `scheduleRender()`/`markDirty()` - a camera move isn't a terrain edit, so
+// it has nothing to do with the dirty-rect tracking those use, and a UI
+// click/drag is already a single discrete event with no need for
+// rAF-batching the way a flood of pointermove events does.
+//
+// Every new drag surface here (the compass dial, the pan trackpad) lives in
+// `#camera-toolbar`, never on `#stage-3d` itself - the canvas's own
+// pointerdown/pointermove/pointerup listeners (above) are already fully
+// committed to painting, and keeping the new gestures on physically
+// separate elements means they can never be confused with a paint stroke,
+// by construction rather than by button/key-modifier convention. Only wheel
+// events are attached to the canvas (zoom has no existing canvas gesture to
+// conflict with - painting is pointer-drag-based, not wheel-based).
 function wireCameraControls() {
   if (!scene3d) return; // no WebGL2 - this toolbar never leaves "hidden"
 
@@ -705,30 +718,93 @@ function wireCameraControls() {
     if (viewMode === "oblique") scene3d.render();
   }
 
+  function angularDiff(a, b) {
+    return Math.abs((((a - b + 540) % 360) + 360) % 360 - 180);
+  }
+
   const zoomInput = document.getElementById("camera-zoom");
-  // Direction and tilt both trigger an automatic refit *of the current
-  // view* inside the renderer (azimuth/tilt genuinely change what needs to
-  // fit in frame) - which resets zoom/pan, so the zoom slider's displayed
-  // value is kept in sync here rather than drifting from the real state.
+  const tiltInput = document.getElementById("camera-tilt");
+  const compass = document.getElementById("camera-compass");
+  const needleGroup = document.getElementById("compass-needle-group");
+  const presetButtons = document.querySelectorAll("[data-azimuth-preset]");
+  const PRESET_MATCH_EPS_DEG = 0.5; // a free drag rarely lands exactly on a preset
+
+  // The dial's own visual angle (clockwise from N/top, matching the SVG's
+  // N/E/S/W label positions) is a different convention from azimuthDeg
+  // itself (which tracks the camera's own position in world space, not
+  // which way it's facing) - this converts between them. Derived directly
+  // from the camera-position formula in terrain-renderer-3d.js
+  // (`position = center + horizontal*(sin(angleRad), _, cos(angleRad))`,
+  // with +X = east and +Z = south): the view direction (opposite the
+  // camera's own position from center) works out to bearing-from-north
+  // `(360 - azimuthDeg) mod 360`, which both conversions below share since
+  // the map is self-inverse mod 360. Verified against all four presets:
+  // azimuthDeg 0 (S->N, looking north) maps to dial angle 0 (needle at N);
+  // 90 (E->W, looking west) to 270 (needle at W); 180 (N->S, looking south)
+  // to 180 (needle at S); 270 (W->E, looking east) to 90 (needle at E) -
+  // the needle always points the way the camera is actually looking, the
+  // intuitive reading of "which way is this compass facing".
+  function azimuthToDialDeg(azimuthDeg) {
+    return (360 - ((azimuthDeg % 360) + 360) % 360) % 360;
+  }
+  function dialDegToAzimuth(dialDeg) {
+    return azimuthToDialDeg(dialDeg);
+  }
+
   function syncZoomSlider() {
     zoomInput.value = String(scene3d.getCameraState().zoom);
   }
 
-  const azimuthButtons = document.querySelectorAll("[data-azimuth]");
-  for (const button of azimuthButtons) {
+  function syncCompass() {
+    const state = scene3d.getCameraState();
+    needleGroup.setAttribute("transform", `rotate(${azimuthToDialDeg(state.azimuthDeg)} 50 50)`);
+    for (const button of presetButtons) {
+      const preset = state.azimuthPresets[Number(button.dataset.azimuthPreset)];
+      button.classList.toggle("active", angularDiff(preset.angleDeg, state.azimuthDeg) < PRESET_MATCH_EPS_DEG);
+    }
+  }
+
+  for (const button of presetButtons) {
     button.addEventListener("click", () => {
-      for (const other of azimuthButtons) other.classList.remove("active");
-      button.classList.add("active");
-      scene3d.setAzimuth(Number(button.dataset.azimuth));
-      syncZoomSlider();
+      scene3d.setAzimuthPreset(Number(button.dataset.azimuthPreset));
+      syncCompass();
       renderOnce();
     });
   }
 
-  const tiltInput = document.getElementById("camera-tilt");
+  // Dragging the compass dial: continuous 360 deg rotation read directly
+  // from the pointer's own angle around the dial's centre, not a discrete
+  // set of steps - and never resets tilt/zoom/pan, since setAzimuth only
+  // ever calls applyCameraState() (see terrain-renderer-3d.js; this is the
+  // explicit "preserve each other's state" requirement for this revisit).
+  let compassDragging = false;
+  function dialDegFromPointer(event) {
+    const rect = compass.getBoundingClientRect();
+    const dx = event.clientX - (rect.left + rect.width / 2);
+    const dy = event.clientY - (rect.top + rect.height / 2);
+    return (((Math.atan2(dx, -dy) * 180) / Math.PI) + 360) % 360;
+  }
+  function rotateToPointer(event) {
+    scene3d.setAzimuth(dialDegToAzimuth(dialDegFromPointer(event)));
+    syncCompass();
+    renderOnce();
+  }
+  compass.addEventListener("pointerdown", (event) => {
+    compassDragging = true;
+    compass.setPointerCapture(event.pointerId);
+    rotateToPointer(event);
+  });
+  compass.addEventListener("pointermove", (event) => {
+    if (compassDragging) rotateToPointer(event);
+  });
+  function stopCompassDrag() {
+    compassDragging = false;
+  }
+  compass.addEventListener("pointerup", stopCompassDrag);
+  compass.addEventListener("pointercancel", stopCompassDrag);
+
   tiltInput.addEventListener("input", () => {
     scene3d.setTilt(Number(tiltInput.value));
-    syncZoomSlider();
     renderOnce();
   });
 
@@ -737,25 +813,80 @@ function wireCameraControls() {
     renderOnce();
   });
 
-  // Dedicated pan buttons, not click-and-drag on the canvas - that gesture
-  // is already reserved for painting on this same canvas (see the
-  // pointerdown/pointermove handlers below), so camera panning needs its
-  // own, unambiguous input.
-  const PAN_STEP = 0.18; // fraction of the current view size, per click
-  const PAN_DELTAS = { up: [0, 1], down: [0, -1], left: [-1, 0], right: [1, 0] };
-  for (const button of document.querySelectorAll("[data-pan]")) {
-    button.addEventListener("click", () => {
-      const [dRight, dUp] = PAN_DELTAS[button.dataset.pan];
-      scene3d.panBy(dRight * PAN_STEP, dUp * PAN_STEP);
-      renderOnce();
-    });
+  // Trackpad-style panning (replaces the old fixed-step pan-pad buttons):
+  // each pointermove's own screen-pixel delta maps directly to a fraction
+  // of the trackpad's own size, so a small drag is a small, exact move -
+  // precise at any zoom level (panBy's own step already scales by the
+  // current view size/zoom), not a fixed-speed nudge per click. Sign
+  // convention makes the rendered scene follow the drag directly (the
+  // direct-manipulation feel the trackpad metaphor implies): moving the
+  // camera+look-at-centre together along its own screen-right axis shifts
+  // the *content* the opposite way on screen (right => content left),
+  // hence the negated X term below; moving along its own screen-up axis
+  // shifts content the opposite way too (up => content down), which for Y
+  // already matches "drag down (positive dyFrac) => content follows,
+  // moving down" with no extra negation needed.
+  const trackpad = document.getElementById("camera-pan-trackpad");
+  let trackpadDragging = false;
+  let lastTrackpadX = 0;
+  let lastTrackpadY = 0;
+  trackpad.addEventListener("pointerdown", (event) => {
+    trackpadDragging = true;
+    lastTrackpadX = event.clientX;
+    lastTrackpadY = event.clientY;
+    trackpad.setPointerCapture(event.pointerId);
+  });
+  trackpad.addEventListener("pointermove", (event) => {
+    if (!trackpadDragging) return;
+    const rect = trackpad.getBoundingClientRect();
+    const dxFrac = (event.clientX - lastTrackpadX) / rect.width;
+    const dyFrac = (event.clientY - lastTrackpadY) / rect.height;
+    lastTrackpadX = event.clientX;
+    lastTrackpadY = event.clientY;
+    scene3d.panBy(-dxFrac, dyFrac);
+    renderOnce();
+  });
+  function stopTrackpadDrag() {
+    trackpadDragging = false;
   }
+  trackpad.addEventListener("pointerup", stopTrackpadDrag);
+  trackpad.addEventListener("pointercancel", stopTrackpadDrag);
+
+  // Cursor-centred wheel zoom: only wired to the 3D canvas (the painting
+  // pointer handlers above are unaffected - wheel is a separate event type
+  // they never listen for), and only acts while Oblique is actually the
+  // visible view, the same guard renderOnce() uses, so a wheel scroll over
+  // a hidden canvas can never silently move a camera the user can't see.
+  canvas3d.addEventListener(
+    "wheel",
+    (event) => {
+      if (viewMode !== "oblique") return;
+      event.preventDefault();
+      const rect = canvas3d.getBoundingClientRect();
+      const px = ((event.clientX - rect.left) / rect.width) * canvas3d.width;
+      const py = ((event.clientY - rect.top) / rect.height) * canvas3d.height;
+      const ndcX = (px / canvas3d.width) * 2 - 1;
+      const ndcY = -(py / canvas3d.height) * 2 + 1;
+      // Exponential so a steady scroll feels like a steady zoom *rate*
+      // (each wheel notch multiplies, rather than adds to, the zoom level) -
+      // the standard feel for scroll-to-zoom, and symmetric between
+      // zooming in and back out by the same notch count.
+      const factor = Math.exp(-event.deltaY * 0.0015);
+      scene3d.zoomAtCursor(factor, ndcX, ndcY);
+      syncZoomSlider();
+      renderOnce();
+    },
+    { passive: false },
+  );
 
   document.getElementById("camera-fit").addEventListener("click", () => {
     scene3d.fitView();
     syncZoomSlider();
+    syncCompass();
     renderOnce();
   });
+
+  syncCompass();
 }
 
 async function loadTerrain() {
