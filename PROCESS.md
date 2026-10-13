@@ -484,3 +484,87 @@ identically with the new renderer. `pnpm typecheck`, all 18 tests, and
 Full detail, scoring, and the stated remaining limitations (the ~330-415ms
 full-redraw cost; the WebGL2-less 2D oblique fallback not getting a
 DPR-consistent shear) are in `ROADMAP.md`, not duplicated here.
+
+**Checkpoint ([`8893e71`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/8893e7129ebf66a60621ff036ae6844c5742311a)):**
+ROADMAP.md task 3, revisited. The user asked to revisit the
+already-"done" camera controls directly against a concrete usability bar:
+smooth 360° rotation, wheel zoom, free panning while zoomed in, no
+unexpected camera resets or scene reloads, and no conflict with terrain
+painting. Reading the existing implementation surfaced a real, previously
+unflagged bug matching that complaint: `setAzimuth()`/`setTilt()` called
+`fitView()` internally, so simply changing direction or tilt silently
+discarded any zoom/pan the user had already set up - an unexpected camera
+reset, just not the specific one (painting-triggered) the original task 3
+had been tested against.
+
+A first implementation plan (mouse-only: right-drag rotate, middle-drag
+pan, wheel zoom) was proposed and then explicitly paused by the user before
+being built - button/modifier-based gestures were flagged as unintuitive,
+and the user asked for a visual navigation design (a compass/orbit
+control, pan control, zoom control) to be compared properly first rather
+than assumed. Three toolbar-based alternatives were compared (a draggable
+compass dial + pan trackpad; an on-canvas view-cube-style gizmo; a plain
+continuous azimuth slider) - the on-canvas gizmo scored well on
+discoverability but was flagged as carrying real risk of exactly the
+painting-conflict the user was trying to avoid, since it would be a second
+drag surface on the same canvas the paint handlers already own. The
+toolbar-dial approach was chosen for keeping every new drag gesture
+physically off the canvas by construction, and approved with three
+corrections: all camera controls must preserve each other's state (nothing
+resets except the explicit Reset/Fit View button), panning must support
+precise fine control while zoomed in (not just coarse nudging), and wheel
+zoom must be cursor-centred.
+
+The implementation fixed the root cause directly: `setAzimuth`/`setTilt`
+no longer call `fitView()` at all (matching `setZoom`/`panBy`, which never
+did), so `fitView()` is now reachable only from initial load and the
+explicit fit button. `camView.azimuthIndex` (4 discrete values) became a
+continuous `azimuthDeg`, driven either by the four preset buttons
+(unchanged as shortcuts) or by dragging a new SVG compass dial
+(`Math.atan2` of the pointer's position around the dial centre, mapped
+through a dial-angle/azimuth-angle conversion derived from and checked
+against the camera's own existing position formula). The two-scalar
+`panX`/`panZ` became one `THREE.Vector3 panOffset` (needed because a
+tilted camera's own "up" has a real world-Y component the old
+representation couldn't hold), driven by a new drag "trackpad" whose
+pointer-delta-as-fraction-of-pad-size feeds `panBy()` continuously -
+precise at any zoom because `panBy`'s own step already scales with the
+current view size. Cursor-centred wheel zoom (`zoomAtCursor`) was derived
+from the orthographic frustum's own geometry (the world point under a
+given clip-space offset from view-centre, solved for the `panOffset` shift
+that keeps it fixed as zoom changes) and wired to a `wheel` listener on the
+3D canvas only, never colliding with the canvas's existing
+pointerdown/pointermove-based painting handlers, which don't listen for
+`wheel` at all.
+
+**Verification:** a Playwright session against the seeded test scene
+exercised rotation (an 8-step ~350° compass drag, confirmed continuous via
+screenshots at angles with no preset nearby), cursor-centred zoom
+(confirmed the frame zoomed toward the actual cursor position, not the
+view centre, and clamps correctly under a 40-/60-notch scroll burst in
+each direction without scrolling the page), and precise panning (a small
+~8px trackpad drag produced a correspondingly small, exact shift, bringing
+a previously off-screen peak into view at the top edge rather than
+overshooting). State preservation was tested as one continuous sequence
+across all controls (rotate, zoom, pan, zoom again, preset click), reading
+back zoom/tilt/compass state after each step to confirm the others were
+untouched - directly exercising the "nothing resets except the explicit
+button" requirement, the same discipline the original task 3 checkpoint
+used for its own reset-on-painting test. Painting was then confirmed to
+still work correctly through the new controls (a Peak stroke after the
+full sequence produced a real `/api/terrain/cells` POST, a changed
+elevation sum, and a new peak exactly where clicked) and, separately, that
+painting and camera state are mutually inert - camera state read
+byte-identical before/after a paint stroke, and a view-mode round trip
+(Oblique → Top-down → Oblique) still reproduces an identical frame, as
+before. Reset/Fit View was confirmed to remain the only control that
+resets zoom/pan, correctly reframing at whatever azimuth/tilt was active
+rather than snapping back to the original default direction. `pnpm
+typecheck`, all 18 tests (against a genuinely fresh dev DB - the seeded
+scene used for screenshots has its own cells pre-painted and is not what
+the suite runs against), and `pnpm check:evidence` pass unmodified; no
+server, schema, or API change. Full detail, the interaction-design
+comparison table, and the stated remaining limitations (no keyboard
+equivalent for the dial/trackpad beyond the existing preset buttons and
+sliders; pinch-to-zoom on physical trackpad hardware not separately
+verified) are in `ROADMAP.md`, not duplicated here.
