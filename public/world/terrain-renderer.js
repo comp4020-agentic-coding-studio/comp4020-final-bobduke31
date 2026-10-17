@@ -9,7 +9,7 @@
 // mountains read as ridges and creases instead of one smooth lit blob.
 // Swap the fill technique for real textures later without touching this
 // boundary logic, the model, or the network code.
-import { GRID_SIZE, SEA_LEVEL, ELEVATION_MAX, TERRAIN_TYPES } from "./terrain-model.js";
+import { GRID_SIZE, SEA_LEVEL, ELEVATION_MAX, TERRAIN_TYPES, sampleBilinear } from "./terrain-model.js";
 import { createNoise2D } from "./vendor/simplex-noise.js";
 
 const COASTLINE_COLOR = "#3c2f20";
@@ -127,10 +127,65 @@ const FOLD_AMPLITUDE = 0.17;
 const FOLD_FADE_IN_START = 0.42;
 const FOLD_FADE_IN_END = 0.75;
 
+// Task 4 (ROADMAP.md): the continuous (per-pixel, not per-cell) top-down
+// renderer below needs fractalFold's value at thousands of arbitrary
+// fractional (x, y) positions per redraw, not just once per integer grid
+// cell - calling the real 4-octave simplex noise that often is too slow for
+// an interactive redraw. fractalFold has no dependency on the painted data
+// at all (it's a fixed function of position only - the elevation-dependent
+// part is `strength` below, computed separately), so it's precomputed once,
+// lazily, into a lookup table and bilinearly resampled from there instead.
+// FOLD_LUT_RES=768 (3 samples per grid cell) comfortably oversamples the
+// noise's own finest octave (freq ~0.45, wavelength ~2.2 cells) by roughly
+// 6x, well past the ~2x Nyquist minimum. Checked numerically (20,000 random
+// fractional positions against direct fractalFold calls): mean absolute
+// error ~0.005, worst case ~0.054, on fractalFold's own roughly 0..1 output
+// range - small enough relative to FOLD_AMPLITUDE (0.17) to be invisible
+// after the elevation-gated strength multiplier below. At an exact integer
+// grid coordinate the LUT samples its own grid points exactly (768 is an
+// exact multiple of 256, error ~3e-8, floating-point noise only), so this is
+// also a zero-behaviour-change swap for every existing per-cell caller
+// (buildShadingBuffer / renderTerrainOblique's fallback path), not just a
+// new continuous one.
+const FOLD_LUT_RES = 768;
+let foldLUT = null;
+
+function getFoldLUT() {
+  if (foldLUT) return foldLUT;
+  foldLUT = new Float32Array(FOLD_LUT_RES * FOLD_LUT_RES);
+  for (let j = 0; j < FOLD_LUT_RES; j++) {
+    const y = (j / FOLD_LUT_RES) * GRID_SIZE;
+    for (let i = 0; i < FOLD_LUT_RES; i++) {
+      const x = (i / FOLD_LUT_RES) * GRID_SIZE;
+      foldLUT[j * FOLD_LUT_RES + i] = fractalFold(x, y);
+    }
+  }
+  return foldLUT;
+}
+
+function sampleFoldLUT(x, y) {
+  const lut = getFoldLUT();
+  const fx = (x / GRID_SIZE) * FOLD_LUT_RES;
+  const fy = (y / GRID_SIZE) * FOLD_LUT_RES;
+  const cx = Math.min(FOLD_LUT_RES - 1.001, Math.max(0, fx));
+  const cy = Math.min(FOLD_LUT_RES - 1.001, Math.max(0, fy));
+  const x0 = Math.floor(cx);
+  const y0 = Math.floor(cy);
+  const x1 = Math.min(FOLD_LUT_RES - 1, x0 + 1);
+  const y1 = Math.min(FOLD_LUT_RES - 1, y0 + 1);
+  const tx = cx - x0;
+  const ty = cy - y0;
+  const a = lut[y0 * FOLD_LUT_RES + x0];
+  const b = lut[y0 * FOLD_LUT_RES + x1];
+  const c = lut[y1 * FOLD_LUT_RES + x0];
+  const d = lut[y1 * FOLD_LUT_RES + x1];
+  return a * (1 - tx) * (1 - ty) + b * tx * (1 - ty) + c * (1 - tx) * ty + d * tx * ty;
+}
+
 function foldOffset(x, y, elevation) {
   const strength = smoothstep(FOLD_FADE_IN_START, FOLD_FADE_IN_END, elevation);
   if (strength <= 0) return 0;
-  return (fractalFold(x, y) - 0.5) * 2 * FOLD_AMPLITUDE * strength;
+  return (sampleFoldLUT(x, y) - 0.5) * 2 * FOLD_AMPLITUDE * strength;
 }
 
 // Light from the upper-left, mostly overhead - the standard cartographic
@@ -195,18 +250,28 @@ function reliefAt(shading, x, y) {
   return { light, curvature };
 }
 
-function colorFor(elevation, typeIndex, light, curvature) {
+// Split from the old single colorFor (Task 4, ROADMAP.md) so both the
+// existing per-cell path (renderTerrainOblique's fallback, via colorFor
+// below) and the new continuous per-pixel top-down path can share one
+// "pick a base colour for this domain/type" step and one "apply lighting"
+// step, rather than two separately-maintained copies of this logic.
+function baseColorFor(elevation, typeIndex) {
   if (elevation <= SEA_LEVEL) {
     // Deeper water is darker; right at the coastline it's at its lightest.
     const t = smoothstep(ELEVATION_FLOOR, SEA_LEVEL, elevation);
     return lerpColor(SEA_DEEP, SEA_SHALLOW, t);
   }
   const typeName = TERRAIN_TYPES[typeIndex];
-  const base = typeName === "rock" ? rockColor(elevation) : (TYPE_COLORS[typeName] ?? TYPE_COLORS.grassland);
-  // Wider contrast than plain hillshading alone, plus crease darkening /
-  // ridge brightening from curvature - together these are what make folded
-  // mountains read as distinct ridges and gullies instead of one soft
-  // gradient from light to dark.
+  return typeName === "rock" ? rockColor(elevation) : (TYPE_COLORS[typeName] ?? TYPE_COLORS.grassland);
+}
+
+// Wider contrast than plain hillshading alone, plus crease darkening /
+// ridge brightening from curvature - together these are what make folded
+// mountains read as distinct ridges and gullies instead of one soft
+// gradient from light to dark. Sea colours (computed with light=curvature=0
+// by every caller) pass through unchanged, same as before this was split
+// out of colorFor.
+function applyRelief(base, light, curvature) {
   const crease = Math.max(0, -curvature) * 0.4;
   const ridgeBoost = Math.max(0, curvature) * 0.12;
   const brightness = clamp(0.55 + 0.95 * light + ridgeBoost - crease, 0.16, 1.75);
@@ -215,6 +280,112 @@ function colorFor(elevation, typeIndex, light, curvature) {
     Math.min(255, base[1] * brightness),
     Math.min(255, base[2] * brightness),
   ];
+}
+
+function colorFor(elevation, typeIndex, light, curvature) {
+  const base = baseColorFor(elevation, typeIndex);
+  if (elevation <= SEA_LEVEL) return base;
+  return applyRelief(base, light, curvature);
+}
+
+// --- Continuous (per-pixel) top-down shading -------------------------
+//
+// Task 4 (ROADMAP.md), by explicit request: Top-down's old per-cell flat
+// fillRect gave every pixel inside a cell the exact same colour, which is
+// blocky by construction regardless of canvas resolution or
+// devicePixelRatio - a bigger cellPx just makes bigger flat blocks. These
+// helpers evaluate colour continuously at any real-valued grid position
+// instead, the same conceptual model the oblique WebGL shader already uses
+// (bilinear elevation, finite-difference relief, bilinear-blended type
+// colours) so both views are smooth in the same way and for the same
+// reason, not via two unrelated techniques.
+//
+// Domain safety (the user's explicit "avoid incorrect blending... across
+// coastlines" requirement): the land/sea boundary is never colour-blended
+// at all - a hard formula switch (sea gradient vs. land+type) keyed off the
+// bilinearly-sampled elevation's exact sign relative to SEA_LEVEL, which is
+// itself continuous and lands at very nearly the same sub-cell position as
+// the vector coastline contour (both ultimately read the same linear
+// crossing of the same data). What *is* blended - terrain-type colour
+// between neighbouring land cells - explicitly excludes any neighbour at or
+// below sea level (see continuousTypeBlend), falling back to the pixel's
+// own cell colour instead, so a coastal pixel never mixes toward a sea
+// colour or a meaningless cross-domain type.
+
+// Mirrors reliefAt's finite-difference normal/curvature, but sampled at an
+// arbitrary fractional (gx, gy) via bilinear elevation instead of only at
+// integer cell centres - epsilon=1 (adjacent-cell distance) matches
+// reliefAt's own implicit spacing exactly, so RELIEF_EXAGGERATION needs no
+// retuning between the two paths.
+function continuousReliefAt(elevationGrid, gx, gy) {
+  const shade = (x, y) => {
+    const e = sampleBilinear(elevationGrid, x, y);
+    return e > SEA_LEVEL ? e + foldOffset(x, y, e) : e;
+  };
+  const center = shade(gx, gy);
+  const left = shade(gx - 1, gy);
+  const right = shade(gx + 1, gy);
+  const up = shade(gx, gy - 1);
+  const down = shade(gx, gy + 1);
+
+  const dzdx = (right - left) * RELIEF_EXAGGERATION;
+  const dzdy = (down - up) * RELIEF_EXAGGERATION;
+  const len = Math.hypot(dzdx, dzdy, 1);
+  const nx = -dzdx / len;
+  const ny = -dzdy / len;
+  const nz = 1 / len;
+  const light = nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2];
+
+  const curvature = (left + right + up + down - 4 * center) * RELIEF_EXAGGERATION;
+  return { light, curvature };
+}
+
+function clamp01(t) {
+  return Math.min(1, Math.max(0, t));
+}
+
+// Bilinearly blends FOUR ALREADY-RESOLVED COLOURS (the four nearest cell
+// centres), not the raw elevation/type data - the same "filter after the
+// categorical lookup, not before it" technique used in the oblique shader's
+// blendedTypeColor, so this only ever produces a real mix of real
+// neighbouring colours. Any neighbour at or below sea level is replaced by
+// `selfColor` (the pixel's own cell's colour, computed by the caller before
+// this runs) rather than contributing its own colour - so a coastal pixel's
+// blend degrades to selfColor-only, never actually mixing toward a sea
+// colour.
+function continuousTypeBlend(elevationGrid, typeGrid, gx, gy, selfColor) {
+  const colorAt = (cx, cy) => {
+    const ix = Math.min(GRID_SIZE - 1, Math.max(0, cx));
+    const iy = Math.min(GRID_SIZE - 1, Math.max(0, cy));
+    const elevation = elevationGrid[iy * GRID_SIZE + ix];
+    if (elevation <= SEA_LEVEL) return selfColor;
+    return baseColorFor(elevation, typeGrid[iy * GRID_SIZE + ix]);
+  };
+  const qx = gx - 0.5;
+  const qy = gy - 0.5;
+  const c0x = Math.floor(qx);
+  const c0y = Math.floor(qy);
+  const fx = clamp01(qx - c0x);
+  const fy = clamp01(qy - c0y);
+  const c00 = colorAt(c0x, c0y);
+  const c10 = colorAt(c0x + 1, c0y);
+  const c01 = colorAt(c0x, c0y + 1);
+  const c11 = colorAt(c0x + 1, c0y + 1);
+  return lerpColor(lerpColor(c00, c10, fx), lerpColor(c01, c11, fx), fy);
+}
+
+// Full colour for one output pixel at fractional grid position (gx, gy) -
+// the continuous counterpart of colorFor, used by the new per-pixel
+// renderTerrain below.
+function continuousColorAt(elevationGrid, typeGrid, gx, gy) {
+  const elevation = sampleBilinear(elevationGrid, gx, gy);
+  if (elevation <= SEA_LEVEL) return baseColorFor(elevation, 0);
+  const { light, curvature } = continuousReliefAt(elevationGrid, gx, gy);
+  const nx = Math.min(GRID_SIZE - 1, Math.max(0, Math.floor(gx)));
+  const ny = Math.min(GRID_SIZE - 1, Math.max(0, Math.floor(gy)));
+  const selfColor = baseColorFor(elevationGrid[ny * GRID_SIZE + nx], typeGrid[ny * GRID_SIZE + nx]);
+  const blendedBase = continuousTypeBlend(elevationGrid, typeGrid, gx, gy, selfColor);
+  return applyRelief(blendedBase, light, curvature);
 }
 
 // d3.contours() wants one threshold and returns the polygon(s) enclosing
@@ -267,7 +438,13 @@ function addSmoothedRing(path, ring, cellPx, offset) {
   path.closePath();
 }
 
-function buildCoastlinePath(elevationGrid, cellPx) {
+// Raw ring point data (real grid coordinates, padding already undone),
+// before any canvas-specific drawing - shared by buildCoastlinePath below
+// and by the 3D renderer, which needs the same coastline geometry as a line
+// mesh rather than a canvas Path2D. Computing this is the only part that
+// actually needs d3-contour; everything downstream of it is just "how to
+// draw a ring," which differs between the two renderers.
+export function computeCoastlineRings(elevationGrid) {
   const { padded, paddedSize } = buildPaddedGrid(elevationGrid);
   // d3-contour's threshold is inclusive (value >= threshold counts as
   // "inside"), but this app's own rule everywhere else is strictly greater
@@ -277,41 +454,70 @@ function buildCoastlinePath(elevationGrid, cellPx) {
   // contour around nearly the whole grid instead of just what's painted.
   // Nudging the threshold a hair above SEA_LEVEL makes the two agree.
   const contour = d3.contours().size([paddedSize, paddedSize]).smooth(true).contour(padded, SEA_LEVEL + 1e-6);
-  const path = new Path2D();
+  const rings = [];
   for (const polygon of contour.coordinates) {
-    // 1 undoes the one-cell padding, back to real grid coordinates.
-    for (const ring of polygon) addSmoothedRing(path, ring, cellPx, 1);
+    // -1 undoes the one-cell padding, back to real grid coordinates.
+    for (const ring of polygon) rings.push(ring.map(([x, y]) => [x - 1, y - 1]));
   }
+  return rings;
+}
+
+function buildCoastlinePath(elevationGrid, cellPx) {
+  const path = new Path2D();
+  for (const ring of computeCoastlineRings(elevationGrid)) addSmoothedRing(path, ring, cellPx, 0);
   return path;
 }
 
-// `region` ({minX, minY, maxX, maxY}, inclusive) redraws just that
-// rectangle of cell fill instead of the full grid - same "grids in, pixels
-// out" contract and identical output per cell either way, just cheaper
-// when only a small area actually changed. The coastline stroke is always
-// recomputed in full (see buildCoastlinePath). Omit `region` to redraw
-// everything (the initial load).
+// `region` ({minX, minY, maxX, maxY}, inclusive, in GRID CELLS) redraws just
+// the pixels covering that rectangle instead of the whole canvas - same
+// "grids in, pixels out" contract and identical output per pixel either
+// way, just cheaper when only a small area actually changed. The coastline
+// stroke is always recomputed in full (see buildCoastlinePath). Omit
+// `region` to redraw everything (the initial load).
+//
+// Task 4 (ROADMAP.md): this fills every actual output pixel by calling
+// continuousColorAt at that pixel's own fractional grid position, via a
+// plain ImageData buffer written with one putImageData call rather than one
+// fillRect per cell (or, worse, per pixel) - fillRect/strokeRect each carry
+// real per-call canvas-API overhead that a flat 256x256 cell-block fill
+// could absorb but a full-resolution per-pixel fill cannot. Measured
+// (ROADMAP.md task 4): a full-canvas redraw at the default 2x-capped device
+// pixel ratio (~2.36M pixels) takes ~330-415ms - noticeable, paid only on
+// initial load and on explicitly switching into Top-down, not on every
+// interaction. Interactive per-stroke redraws cover only the small dirty
+// region (brush-radius-sized, not canvas-sized) and measured at ~4ms,
+// unaffected by the full-canvas cost - the case that actually matters for
+// painting responsiveness.
 export function renderTerrain(ctx, elevationGrid, typeGrid, cellPx, region) {
   const minX = region ? Math.max(0, region.minX) : 0;
   const minY = region ? Math.max(0, region.minY) : 0;
   const maxX = region ? Math.min(GRID_SIZE - 1, region.maxX) : GRID_SIZE - 1;
   const maxY = region ? Math.min(GRID_SIZE - 1, region.maxY) : GRID_SIZE - 1;
 
-  // Padded by 1 on every side so every cell in [minX, maxX] x [minY, maxY]
-  // has real neighbour data to compute a normal/curvature from, even at
-  // the edge of the redrawn region.
-  const shading = buildShadingBuffer(elevationGrid, minX - 1, minY - 1, maxX + 1, maxY + 1);
+  const pxMinX = Math.round(minX * cellPx);
+  const pxMinY = Math.round(minY * cellPx);
+  const pxMaxX = Math.round((maxX + 1) * cellPx);
+  const pxMaxY = Math.round((maxY + 1) * cellPx);
+  const w = pxMaxX - pxMinX;
+  const h = pxMaxY - pxMinY;
+  const image = ctx.createImageData(w, h);
+  const data = image.data;
 
-  for (let y = minY; y <= maxY; y++) {
-    for (let x = minX; x <= maxX; x++) {
-      const index = y * GRID_SIZE + x;
-      const elevation = elevationGrid[index];
-      const { light, curvature } = elevation > SEA_LEVEL ? reliefAt(shading, x, y) : { light: 0, curvature: 0 };
-      const [r, g, b] = colorFor(elevation, typeGrid[index], light, curvature);
-      ctx.fillStyle = `rgb(${r | 0}, ${g | 0}, ${b | 0})`;
-      ctx.fillRect(x * cellPx, y * cellPx, cellPx, cellPx);
+  for (let py = 0; py < h; py++) {
+    // Sample at the pixel's centre, not its corner - the standard
+    // rasterization convention, avoiding a systematic half-pixel bias.
+    const gy = (pxMinY + py + 0.5) / cellPx;
+    for (let px = 0; px < w; px++) {
+      const gx = (pxMinX + px + 0.5) / cellPx;
+      const [r, g, b] = continuousColorAt(elevationGrid, typeGrid, gx, gy);
+      const i = (py * w + px) * 4;
+      data[i] = r;
+      data[i + 1] = g;
+      data[i + 2] = b;
+      data[i + 3] = 255;
     }
   }
+  ctx.putImageData(image, pxMinX, pxMinY);
 
   // A single thick opaque line reads as a border drawn on top of the map,
   // not an edge of it. Two thinner passes - a soft dark line, then a

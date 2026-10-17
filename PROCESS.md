@@ -212,3 +212,359 @@ same cell at the same instant silently clobber each other, per the accepted
 cost in `ADR.md`. None of this is a C9 blocker — C9's bar is the real-time
 loop and a documented concurrency decision, both in place — but all of it
 is real, outstanding work for C10 and the Final visual pass.
+
+## Crit 10 / Final: visual development on `c10-3d-terrain` (in progress)
+
+C9 shipped deliberately behind on visuals (above). This work happens on a
+local branch, never pushed or deployed without separate approval — see
+`ROADMAP.md`, which now tracks it as an ordered, scored list of twelve
+remaining tasks rather than as freeform chat history, and is the
+authoritative live status for this phase; this section records the actual
+decisions and findings behind entries there, not a duplicate of it.
+
+**3D heightfield renderer.** The oblique view's original column-extrusion
+canvas renderer — flat-shaded rectangles shifted up by `elevation * 70px`,
+no real geometry — was replaced with a Three.js/WebGL2 heightfield
+(`terrain-renderer-3d.js`): real vertex displacement, GPU ridged-noise detail
+added to actual geometry (not just lighting), slope/elevation-based material
+blending, and ray-heightfield picking against the authoritative elevation
+grid rather than the visual mesh. The first version of this plan proposed
+primitive cone/cylinder trees and noise-only-in-lighting mountains; both were
+rejected on review before implementation (noise needed to reach real
+geometry, not just shading; trees needed an authored billboard texture, not
+primitives) and the revised plan was what got built. Top-down is unchanged;
+WebGL2-unavailable browsers fall back to the original canvas renderer
+unmodified.
+
+**Checkpoint ([`0164a74`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/0164a746584e6130ec66f44e396523737d586dd4)):**
+ROADMAP.md task 1, a fixed water surface and independently editable seabed.
+The actual bug, traced in code rather than assumed: this app has no water
+surface at all, only a single elevation scalar per cell — a "sea" cell is
+just one whose elevation is `<= SEA_LEVEL`. `detailedHeight()` passes sea
+cells' elevation straight through, and the vertex shader displaces the mesh
+to `elevation * HEIGHT_SCALE` with no floor underneath, so **the geometry
+rendered as "water" was the seabed itself**. That one fact explained two
+complaints at once: deepening a seabed cell visibly dropped "the water,"
+and a beach next to a trench was a real ~25-unit vertical wall in the mesh —
+not two separate problems needing two separate fixes.
+
+Three approaches were compared in `ROADMAP.md` (a static flat water plane
+decoupled from the seabed mesh; a visual-only depth-compression curve with
+no new tool; a full per-water-body hydrology model with waves and foam).
+The middle option was the easy patch but left "can't control shallow vs.
+deep" completely unaddressed; the hydrology model is the right *eventual*
+answer for rivers and lakes (deferred to task 9) but far out of proportion
+to this task. The flat-plane approach was implemented: a static mesh at
+`y = SEA_LEVEL * HEIGHT_SCALE`, decoupled from the seabed, plus a
+`setSeabedElevation()` mirroring the existing `setLandElevation()` — same
+shape, opposite direction, same reason: a cell that's already land is left
+alone, and the result is clamped below a new `SEABED_CEILING` so no amount
+of sculpting tips sea into land (only Create Land / Paint Sea still cross
+that boundary). This reuses the exact pattern the Crit 9 coastline-erosion
+fix established, deliberately, rather than inventing a new clamp shape.
+
+Verified in-browser, not assumed from the diff: Playwright screenshots of
+the oblique view before and after Deepen/Shallow strokes at the same
+coastline spot that previously showed a cliff confirm the water stays flat
+and level, with depth now reading as a colour change rather than a drop in
+the surface; a `Create Land` stroke mid-sea now correctly pokes a new
+island up *through* the still-flat water, which is only possible if the two
+surfaces are genuinely independent. Top-down needed no changes and was
+re-tested to confirm that empirically rather than by assumption. A second
+browser session was instrumented to capture raw SSE frames rather than just
+compared by screenshot: it received live `terrain:update` batches for both
+tools with elevation values clamped exactly as designed (strictly negative,
+several pinned at precisely `-0.02`, the `SEABED_CEILING` value, never at or
+above `SEA_LEVEL`). Each batch arrived paired with a `terrain-type:clear`
+event; traced to `src/terrain.ts`'s existing, unrelated rule that any cell at
+or below sea level loses its terrain type — a no-op here, not a new
+interaction this task introduced. `pnpm typecheck`, all 18 tests, and
+`pnpm check:evidence` pass unmodified; no server, schema, or API change was
+needed or made.
+
+**Known limitations, named rather than hidden:** the water plane is a
+single flat, static surface — no waves, no shoreline foam, and a lake looks
+identical to the ocean; depth is communicated only through the seabed's own
+colour showing through the semi-transparent plane, with no dedicated depth
+colour ramp yet. Both are deliberately deferred to task 9
+(coastlines/rivers/lakes) rather than folded into this task's scope. None of
+this is a C10/Final blocker on its own — it is exactly the kind of gap
+`ROADMAP.md` exists to keep visible rather than let quietly slide.
+
+**Checkpoint ([`693f475`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/693f475e6fbf5600a04f5d885f0b97b7177ff4c2)):**
+ROADMAP.md task 2, natural elevation and slope transitions. Two real,
+visually-caught failures happened while implementing this, not just a clean
+path to the final design, and both are worth recording because they were
+only caught by actually rendering the result next to an unmodified baseline
+— exactly the discipline `CLAUDE.md` names and the earlier oblique-view
+section above already illustrates once.
+
+The task had two parts: a brush/data-side fix (a bounded relaxation pass
+that softens abrupt adjacent-cell jumps, scoped tightly to each stroke's own
+footprint so it can't expand a deliberately small brush or erase an
+intentional feature — the user's own correction before implementation), and
+a render-side fix (don't let the GPU ridge-detail noise pile extra
+jaggedness onto a slope that's already extreme — the user's second
+correction). The brush-side fix went cleanly. The render-side fix did not:
+
+- **First attempt** replaced the existing elevation-based noise gate
+  outright with a local-slope gate (steeper terrain = more detail, flatter
+  = less). Screenshotting the oblique view immediately showed the coastline
+  itself — an intentional, by-design discontinuity, not an artefact, per
+  `ADR.md` — rendered as a jagged, spiky line. A slope-only gate has no way
+  to distinguish "a real mountain face" from "the coastline," since both
+  are steep in the same way.
+- **Second attempt** narrowed the slope band and widened the sampling
+  radius to try to exclude coastline-level slopes specifically (calculated
+  against the actual seed-data profile, not guessed). This mostly fixed the
+  coastline, but a *new*, different artefact appeared: isolated spikes
+  partway down otherwise-smooth hillsides that hadn't been there before.
+  Tracing it (by computing the actual slope profile of an isolated seed
+  bump in plain Node, not just reasoning about the shader) found the cause:
+  a pure local-slope gate is zero at a dome's flat summit and *peaks in a
+  ring partway down the flank* instead — a shape the original elevation-
+  based gate never had — and the ridged-noise function's own occasional
+  sharp crests showed through as visible pokes wherever that ring happened
+  to cross one.
+- **What shipped instead:** keep the original, already-good elevation-based
+  envelope completely unchanged (confirmed via a direct screenshot
+  comparison against the pre-task-2 formula on identical seed data — pixel-
+  equivalent), and add a *damping ceiling only* — ordinary terrain is
+  untouched, and only a local slope beyond what the relaxation pass ever
+  leaves in the data gets its noise amplitude reduced. This is the version
+  that matched the untouched baseline exactly while still measurably
+  protecting against a genuinely pathological slope.
+
+A separate, real bug surfaced during this same work, unrelated to the
+shader: Mountain and Peak had never been wired to the Strength slider at
+all — a single click at the brush centre jumped straight to
+`MOUNTAIN_TARGET`/`PEAK_TARGET` regardless of Strength. This was the actual
+reason a small, modest-radius stroke still read as an instant narrow cone
+even with the relaxation pass in place: there was no gradual build-up for
+the relaxation pass to smooth between. Fixed by multiplying the lerp factor
+by `brushStrength`, the same integration every other elevation tool already
+had.
+
+**Verification:** direct A/B screenshot comparisons against the unmodified
+baseline (zero regression confirmed, not assumed); new Mountain/Peak
+features built up over several strokes read as rounded domes, not cones;
+the actual post-relaxation elevation data queried directly from SQLite to
+confirm a quantitative bound (max adjacent-cell difference 0.143, under the
+0.15 threshold); a tiny radius-1 brush stroke confirmed still precise; a
+second session's raw SSE frames captured to confirm the relaxation pass's
+extra cells sync live; a reload confirmed persistence. `pnpm typecheck`,
+all 18 tests, and `pnpm check:evidence` pass; no server, schema, or API
+change. Full detail, scoring, and the stated remaining limitations are in
+`ROADMAP.md`, not duplicated here.
+
+**Checkpoint ([`e07061b`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/e07061b30b84ceea0051c569353e02d67009ec4c)):**
+ROADMAP.md task 3, camera controls. The user's approval added two concrete
+constraints beyond the original four-direction/tilt/zoom/pan/auto-fit scope:
+auto-framing must never surprise-reset the camera mid-edit (a dedicated
+Reset/Fit View button instead), and picking/tree billboards must keep
+working at low, dramatic camera angles specifically, not just at the one
+tilt the renderer happened to ship with originally.
+
+The fixed `center`/`viewSize`/`distance`/`tiltFromVertical` constants became
+a live `camView` state object, with `fitView()` doing real work: it scans
+the actual painted elevation range, then projects that bounding box's 8
+corners onto the camera's own right/up axes to size the frustum — this
+directly fixed the tall-mountain clipping bug the task 3 assessment named,
+for any direction, not just whichever one the old constants were tuned
+against. `fitView()` is wired to run from exactly three places (initial
+load, the explicit fit button, and an azimuth/tilt change) and nowhere
+else, so the "don't reset while editing" requirement holds by construction
+rather than by coincidence of test ordering.
+
+One genuine bug was caught during verification, not before it: the first
+tilt implementation had `sin`/`cos` swapped (and the corresponding min/max
+tilt comments inverted to match), so the slider's two extremes rendered
+backwards from their intended meaning — tilt=80° showed a near-top-down
+view, tilt=14° showed the dramatic low angle. Caught by actually looking at
+the rendered screenshots against what the slider was supposed to mean, not
+by reading the formula and assuming it was right; fixed and re-verified at
+both extremes.
+
+A second, pre-existing bug named in the task 3 assessment itself (not a
+regression from this work) was fixed as planned: tree billboards had never
+actually been billboards — each instance's matrix set position and scale
+only, never rotation, so the planes kept one fixed world-space orientation
+that only looked right because the original fixed camera happened to sit on
+the one side that orientation faced. They now recompute a full camera-facing
+transform every frame from the live camera position.
+
+**Verification:** all four azimuth presets, both tilt extremes, both zoom
+directions, and the pan pad were each screenshotted and visually confirmed
+correct in the browser against `localhost:8800`. Two of the approval's
+specific requirements were tested in a way designed to actually
+discriminate a pass from a false positive, not just re-confirm the happy
+path: the "must not reset while editing" requirement was tested by setting
+a deliberately unusual camera state (non-default azimuth, zoom, pan),
+reading back the exact slider values, painting on an unrelated part of the
+map from a different view, and confirming the state and the rendered frame
+were pixel-identical afterward — not by relying on the coincidence that an
+earlier fit-view click would have left the same framing either way. The
+"picking at low angles" requirement was tested by painting a Peak stroke at
+a known screen coordinate at a 78° tilt and a non-default W→E azimuth, with
+an on-screen crosshair overlaid on the click point in the verification
+screenshot confirming the resulting peak rose up exactly there, not at a
+neighbouring cell. `pnpm typecheck`, all 18 tests (against a fresh dev DB),
+and `pnpm check:evidence` pass unmodified; no server, schema, or API
+change. Full detail, scoring, and the stated remaining limitations (the sun
+stays fixed in world space; manual zoom/pan resets on an azimuth/tilt
+change by design; camera state is per-tab, not synced between editors) are
+in `ROADMAP.md`, not duplicated here.
+
+**Checkpoint ([`5d519da`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/5d519da7be0f503598f5b8f957d98728813ec614)):**
+ROADMAP.md task 4, rendering resolution, pixelation and anti-aliasing. The
+assessment traced "looks rough" in both views to four separate causes
+rather than one, and the approval added a real correction to the
+recommended approach: Top-down's pixelated look was not to be kept as an
+intentional style choice - "precise editing does not require visibly
+blocky graphics" - so both views needed genuine smoothing, not just a
+higher-resolution version of the same flat fill.
+
+The fix that actually mattered for top-down wasn't the device-pixel-ratio
+sizing alone (that only stops the browser *upscaling* an already-blocky
+image) - it was replacing the renderer's per-cell flat `fillRect` with a
+true per-pixel continuous evaluation: bilinear elevation, finite-difference
+relief, and terrain-type colour bilinearly blended between neighbouring
+cells. The one constraint the correction named explicitly - don't blend
+incorrectly across coastlines or between terrain types - shaped the
+design directly rather than being bolted on afterward: the land/sea
+boundary is never colour-blended at all (a hard formula switch keyed off
+the same continuous elevation field the vector coastline itself reads),
+and any terrain-type blend that would otherwise reach across that boundary
+falls back to the pixel's own land-side colour instead of pulling in a
+sea-side sample. The oblique WebGL shader's analogous fix (blending
+already-resolved corner colours rather than a raw type index, which would
+be meaningless as a fraction) uses the identical technique for the
+identical reason, not a second ad hoc solution.
+
+Two things were checked rather than assumed, and the numbers didn't match
+the first guess in both directions - worth recording as real process
+evidence, not just a clean result. First, the mountain-fold noise needed a
+precomputed lookup table to stay fast at per-pixel-continuous sampling
+rates; a numerical check (20,000 random fractional positions against
+direct calls) confirmed the table's bilinear resampling error (~0.005 mean,
+~0.054 worst case) was small enough to be invisible, and exact at integer
+grid coordinates - so existing per-cell callers got the swap for free with
+no behaviour change. Second, an initial assumption that a full-canvas
+redraw would cost "low tens of ms" was wrong: measured directly, it costs
+~330-415ms at the default 2x-capped pixel ratio - slower than expected,
+though the case that actually matters for painting responsiveness
+(interactive per-stroke partial redraws) measured at ~4ms, unaffected. The
+higher number was corrected in the code comment and reported honestly in
+ROADMAP.md as a named limitation rather than left as the original
+optimistic guess.
+
+**Verification:** terrain-type boundary blending was checked
+quantitatively, not just by eye, in top-down - decoding the actual
+screenshot PNG's pixel data across the seed scene's known forest-patch
+boundary (`x=150`) shows a real intermediate colour between pure grass and
+pure forest, not an instant jump. The oblique view's blend was confirmed
+by zooming the live WebGL view 3x directly onto the same forest patch's
+edges, after an automated `gl.readPixels`-based pixel scan was tried and
+abandoned - correctly locating a known grid cell's exact screen position
+through the oblique camera's projection math for an automated assertion
+turned out to add more risk of a false result than the direct zoomed
+screenshot already resolved by inspection. Coastline domain-safety was
+checked the same way: a pixel scan straight across a real coastline
+crossing showed sand, a short genuine strip of grassland (confirmed
+against the seed script's own type-painting rule, not a rendering
+artefact), the vector coastline's ink stroke, then sea - never a muddy
+intermediate colour. Picking accuracy was re-verified after the pixel-scale
+change specifically because that change touches the exact pixel<->grid
+conversion math it depends on: a Peak stroke landed within 1 cell at
+`devicePixelRatio: 1` and exactly on target at `devicePixelRatio: 2`,
+confirmed via `/api/terrain` diffing, not by eye. SSE sync to a second
+browser context and reload persistence were both re-confirmed rendering
+identically with the new renderer. `pnpm typecheck`, all 18 tests, and
+`pnpm check:evidence` pass unmodified; no server, schema, or API change.
+Full detail, scoring, and the stated remaining limitations (the ~330-415ms
+full-redraw cost; the WebGL2-less 2D oblique fallback not getting a
+DPR-consistent shear) are in `ROADMAP.md`, not duplicated here.
+
+**Checkpoint ([`8893e71`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/8893e7129ebf66a60621ff036ae6844c5742311a)):**
+ROADMAP.md task 3, revisited. The user asked to revisit the
+already-"done" camera controls directly against a concrete usability bar:
+smooth 360° rotation, wheel zoom, free panning while zoomed in, no
+unexpected camera resets or scene reloads, and no conflict with terrain
+painting. Reading the existing implementation surfaced a real, previously
+unflagged bug matching that complaint: `setAzimuth()`/`setTilt()` called
+`fitView()` internally, so simply changing direction or tilt silently
+discarded any zoom/pan the user had already set up - an unexpected camera
+reset, just not the specific one (painting-triggered) the original task 3
+had been tested against.
+
+A first implementation plan (mouse-only: right-drag rotate, middle-drag
+pan, wheel zoom) was proposed and then explicitly paused by the user before
+being built - button/modifier-based gestures were flagged as unintuitive,
+and the user asked for a visual navigation design (a compass/orbit
+control, pan control, zoom control) to be compared properly first rather
+than assumed. Three toolbar-based alternatives were compared (a draggable
+compass dial + pan trackpad; an on-canvas view-cube-style gizmo; a plain
+continuous azimuth slider) - the on-canvas gizmo scored well on
+discoverability but was flagged as carrying real risk of exactly the
+painting-conflict the user was trying to avoid, since it would be a second
+drag surface on the same canvas the paint handlers already own. The
+toolbar-dial approach was chosen for keeping every new drag gesture
+physically off the canvas by construction, and approved with three
+corrections: all camera controls must preserve each other's state (nothing
+resets except the explicit Reset/Fit View button), panning must support
+precise fine control while zoomed in (not just coarse nudging), and wheel
+zoom must be cursor-centred.
+
+The implementation fixed the root cause directly: `setAzimuth`/`setTilt`
+no longer call `fitView()` at all (matching `setZoom`/`panBy`, which never
+did), so `fitView()` is now reachable only from initial load and the
+explicit fit button. `camView.azimuthIndex` (4 discrete values) became a
+continuous `azimuthDeg`, driven either by the four preset buttons
+(unchanged as shortcuts) or by dragging a new SVG compass dial
+(`Math.atan2` of the pointer's position around the dial centre, mapped
+through a dial-angle/azimuth-angle conversion derived from and checked
+against the camera's own existing position formula). The two-scalar
+`panX`/`panZ` became one `THREE.Vector3 panOffset` (needed because a
+tilted camera's own "up" has a real world-Y component the old
+representation couldn't hold), driven by a new drag "trackpad" whose
+pointer-delta-as-fraction-of-pad-size feeds `panBy()` continuously -
+precise at any zoom because `panBy`'s own step already scales with the
+current view size. Cursor-centred wheel zoom (`zoomAtCursor`) was derived
+from the orthographic frustum's own geometry (the world point under a
+given clip-space offset from view-centre, solved for the `panOffset` shift
+that keeps it fixed as zoom changes) and wired to a `wheel` listener on the
+3D canvas only, never colliding with the canvas's existing
+pointerdown/pointermove-based painting handlers, which don't listen for
+`wheel` at all.
+
+**Verification:** a Playwright session against the seeded test scene
+exercised rotation (an 8-step ~350° compass drag, confirmed continuous via
+screenshots at angles with no preset nearby), cursor-centred zoom
+(confirmed the frame zoomed toward the actual cursor position, not the
+view centre, and clamps correctly under a 40-/60-notch scroll burst in
+each direction without scrolling the page), and precise panning (a small
+~8px trackpad drag produced a correspondingly small, exact shift, bringing
+a previously off-screen peak into view at the top edge rather than
+overshooting). State preservation was tested as one continuous sequence
+across all controls (rotate, zoom, pan, zoom again, preset click), reading
+back zoom/tilt/compass state after each step to confirm the others were
+untouched - directly exercising the "nothing resets except the explicit
+button" requirement, the same discipline the original task 3 checkpoint
+used for its own reset-on-painting test. Painting was then confirmed to
+still work correctly through the new controls (a Peak stroke after the
+full sequence produced a real `/api/terrain/cells` POST, a changed
+elevation sum, and a new peak exactly where clicked) and, separately, that
+painting and camera state are mutually inert - camera state read
+byte-identical before/after a paint stroke, and a view-mode round trip
+(Oblique → Top-down → Oblique) still reproduces an identical frame, as
+before. Reset/Fit View was confirmed to remain the only control that
+resets zoom/pan, correctly reframing at whatever azimuth/tilt was active
+rather than snapping back to the original default direction. `pnpm
+typecheck`, all 18 tests (against a genuinely fresh dev DB - the seeded
+scene used for screenshots has its own cells pre-painted and is not what
+the suite runs against), and `pnpm check:evidence` pass unmodified; no
+server, schema, or API change. Full detail, the interaction-design
+comparison table, and the stated remaining limitations (no keyboard
+equivalent for the dial/trackpad beyond the existing preset buttons and
+sliders; pinch-to-zoom on physical trackpad hardware not separately
+verified) are in `ROADMAP.md`, not duplicated here.

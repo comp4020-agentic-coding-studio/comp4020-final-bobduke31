@@ -56,8 +56,17 @@
         <button type="button" data-tool="sea" title="The only tool that turns land into sea.">Paint sea</button>
       </div>
       <div class="tool-group">
-        <label>Brush size <input id="brush-size" type="range" min="4" max="28" step="1" value="10" /></label>
-        <label>Strength <input id="brush-strength" type="range" min="0.03" max="0.3" step="0.01" value="0.15" /></label>
+        <span class="tool-group-label">Water</span>
+        <button type="button" data-tool="deepen" title="Deepens existing sea. Has no effect on land - it never turns water into land.">
+          Deepen
+        </button>
+        <button type="button" data-tool="shallow" title="Shallows existing sea, but stops short of the coastline - it never turns water into land.">
+          Shallow
+        </button>
+      </div>
+      <div class="tool-group">
+        <label>Brush size <input id="brush-size" type="range" min="1" max="28" step="1" value="10" /></label>
+        <label>Strength <input id="brush-strength" type="range" min="0.01" max="0.3" step="0.01" value="0.15" /></label>
       </div>
       <div class="tool-group">
         <span class="tool-group-label">View</span>
@@ -67,19 +76,72 @@
         <button
           type="button"
           data-view="oblique"
-          title="Elevation shears upward so mountains show real height and a visible side. Still editable, but redraws the whole map on every stroke, so it's less responsive than top-down."
+          title="A real 3D heightfield view with lighting and shadow (falls back to a flatter column view if your browser has no WebGL2). Still fully editable."
         >
           Oblique
         </button>
       </div>
     </div>
+    <div class="toolbar hidden" id="camera-toolbar">
+      <div class="tool-group">
+        <span class="tool-group-label">Direction</span>
+        <div
+          class="compass"
+          id="camera-compass"
+          title="Drag anywhere on the dial to rotate the view freely, 360° - the camera position, tilt and zoom are never reset by this."
+        >
+          <svg viewBox="0 0 100 100" width="84" height="84" aria-hidden="true">
+            <circle cx="50" cy="50" r="46" class="compass-ring" />
+            <text x="50" y="13" class="compass-label">N</text>
+            <text x="89" y="54" class="compass-label">E</text>
+            <text x="50" y="95" class="compass-label">S</text>
+            <text x="11" y="54" class="compass-label">W</text>
+            <g id="compass-needle-group">
+              <line x1="50" y1="50" x2="50" y2="15" class="compass-needle" />
+              <circle cx="50" cy="15" r="6" class="compass-handle" />
+            </g>
+          </svg>
+        </div>
+        <div class="compass-presets">
+          <button type="button" data-azimuth-preset="0" title="Snap to looking from north toward south.">N&rarr;S</button>
+          <button type="button" data-azimuth-preset="1" class="active" title="Snap to looking from south toward north.">
+            S&rarr;N
+          </button>
+          <button type="button" data-azimuth-preset="2" title="Snap to looking from east toward west.">E&rarr;W</button>
+          <button type="button" data-azimuth-preset="3" title="Snap to looking from west toward east.">W&rarr;E</button>
+        </div>
+      </div>
+      <div class="tool-group">
+        <label>Tilt <input id="camera-tilt" type="range" min="12" max="82" step="1" value="58" /></label>
+        <label>Zoom <input id="camera-zoom" type="range" min="0.4" max="3" step="0.05" value="1" /></label>
+      </div>
+      <div class="tool-group">
+        <span class="tool-group-label">Pan</span>
+        <div
+          class="pan-trackpad"
+          id="camera-pan-trackpad"
+          title="Drag like a trackpad to pan precisely - the content follows your drag. Small drags give small, exact moves, even fully zoomed in."
+        ></div>
+      </div>
+      <div class="tool-group">
+        <button type="button" id="camera-fit" title="Frame the camera to fit everything that's currently painted, at the current direction and tilt. The only control that resets zoom/pan.">
+          Reset / Fit view
+        </button>
+      </div>
+    </div>
     <p class="tool-hint">
-      Raise / Lower / Smooth / Mountain / Peak only ever reshape existing land - they can't turn it into sea. Create
-      Land and Paint Sea are the only tools that change the coastline itself.
+      Raise / Lower / Smooth / Mountain / Peak only ever reshape existing land, and Deepen / Shallow only ever
+      reshape existing sea - neither side can turn into the other. Create Land and Paint Sea are the only tools
+      that change the coastline itself. The water surface stays level no matter how deep the seabed gets.
+    </p>
+    <p class="tool-hint hidden" id="camera-hint">
+      In Oblique view, the mouse wheel zooms in/out centred on the cursor. Dragging on the map itself always paints
+      - use the compass dial and pan trackpad above to look around instead.
     </p>
 
     <main>
       <canvas id="stage"></canvas>
+      <canvas id="stage-3d" class="hidden"></canvas>
     </main>
     <script src="/world/vendor/d3-array.js"></script>
     <script src="/world/vendor/d3-contour.js"></script>

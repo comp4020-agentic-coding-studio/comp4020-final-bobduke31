@@ -31,6 +31,27 @@ export function isLand(elevationGrid, x, y) {
   return elevationGrid[y * GRID_SIZE + x] > SEA_LEVEL;
 }
 
+// Bilinearly samples the authoritative grid at any real-valued (x, y) -
+// shared by the oblique renderer's picking/tree placement and the top-down
+// renderer's continuous (per-pixel, not per-cell) shading, so both views
+// read the exact same smooth interpretation of the stored data rather than
+// each hand-rolling a slightly different interpolation.
+export function sampleBilinear(grid, x, y) {
+  const cx = Math.min(GRID_SIZE - 1.001, Math.max(0, x));
+  const cy = Math.min(GRID_SIZE - 1.001, Math.max(0, y));
+  const x0 = Math.floor(cx);
+  const y0 = Math.floor(cy);
+  const x1 = Math.min(GRID_SIZE - 1, x0 + 1);
+  const y1 = Math.min(GRID_SIZE - 1, y0 + 1);
+  const fx = cx - x0;
+  const fy = cy - y0;
+  const a = grid[y0 * GRID_SIZE + x0];
+  const b = grid[y0 * GRID_SIZE + x1];
+  const c = grid[y1 * GRID_SIZE + x0];
+  const d = grid[y1 * GRID_SIZE + x1];
+  return a * (1 - fx) * (1 - fy) + b * fx * (1 - fy) + c * (1 - fx) * fy + d * fx * fy;
+}
+
 export function applyElevationCells(grid, cells) {
   for (const { x, y, elevation } of cells) {
     if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) continue;

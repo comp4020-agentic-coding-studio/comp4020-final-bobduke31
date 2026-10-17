@@ -15,11 +15,22 @@ import {
   setTypesFromList,
 } from "./terrain-model.js";
 import { renderTerrain, renderTerrainOblique, obliqueRise, OBLIQUE_MAX_RISE } from "./terrain-renderer.js";
+import { createTerrainScene3D, isWebGL2Available, MAX_DEVICE_PIXEL_RATIO } from "./terrain-renderer-3d.js";
 
 // Canvas footprint stays the same (256 * 3 = 768, same as the old 128 * 6)
 // - resolution doubles by making cells smaller, not the map physically
 // bigger, which is what actually makes individual cells less noticeable.
+// CELL_PX stays the CSS/logical pixel size (matches world.css's fixed
+// 768px display box and everything UI-facing); PIXEL_SCALE is what the top-
+// down canvas's backing store, renderer, and pixel<->grid picking math
+// actually use - CELL_PX scaled up by the device pixel ratio (Task 4,
+// ROADMAP.md) so the canvas's own pixel buffer matches the screen's real
+// pixel density instead of being upscaled and softened by the browser.
+// Capped the same way the 3D renderer caps it, for the same reason (bound
+// the cost of a much denser backing store on a 3x+ display).
 const CELL_PX = 3;
+const DEVICE_PIXEL_RATIO = Math.min(window.devicePixelRatio || 1, MAX_DEVICE_PIXEL_RATIO);
+const PIXEL_SCALE = CELL_PX * DEVICE_PIXEL_RATIO;
 const FLUSH_INTERVAL_MS = 100;
 const LAND_PUSH = 0.35; // how far "create land" / "paint sea" push past sea level
 
@@ -39,13 +50,36 @@ const LAND_FLOOR = SEA_LEVEL + 0.02;
 const MOUNTAIN_TARGET = 0.6;
 const PEAK_TARGET = 0.95;
 
+// Mirrors LAND_FLOOR on the other side of the coastline (Task 1, ROADMAP.md):
+// Deepen/Shallow sculpt existing sea and must never cross into land, the
+// same invariant Raise/Lower/etc. enforce for land. Create Land / Paint Sea
+// remain the only tools that move the coastline itself.
+const SEABED_CEILING = SEA_LEVEL - 0.02;
+
 const canvas = document.getElementById("stage");
-canvas.width = GRID_SIZE * CELL_PX;
-canvas.height = GRID_SIZE * CELL_PX;
+canvas.width = GRID_SIZE * PIXEL_SCALE;
+canvas.height = GRID_SIZE * PIXEL_SCALE;
 const ctx = canvas.getContext("2d");
 
 const elevationGrid = createElevationGrid();
 const typeGrid = createTypeGrid();
+
+// The WebGL2 heightfield renderer (terrain-renderer-3d.js) needs its own
+// canvas - a canvas can only ever hand out one kind of rendering context in
+// its lifetime, so it can't share #stage with the 2D top-down renderer.
+// `scene3d` stays null (the existing column-extrusion oblique renderer on
+// `canvas`/`ctx` keeps working unchanged) on any browser without WebGL2.
+// Its backing-store sizing is handled internally by createTerrainScene3D
+// (renderer.setPixelRatio/setSize), not set directly here, since Three.js
+// owns that relationship between logical size and device pixel ratio.
+const canvas3d = document.getElementById("stage-3d");
+const scene3d = isWebGL2Available()
+  ? createTerrainScene3D(canvas3d, elevationGrid, typeGrid, GRID_SIZE * CELL_PX)
+  : null;
+
+function activeCanvas() {
+  return viewMode === "oblique" && scene3d ? canvas3d : canvas;
+}
 
 let currentTool = "raise";
 // Doubled from the 128-grid default (5) so the brush covers the same
@@ -57,7 +91,7 @@ const pendingElevation = new Map();
 const pendingTypes = new Map();
 let flushHandle = null;
 let painting = false;
-let lastGridPos = null;
+let lastStampPos = null;
 
 function smoothstep(t) {
   const clamped = Math.min(1, Math.max(0, t));
@@ -85,36 +119,56 @@ function markDirty(x, y) {
   if (y > dirty.maxY) dirty.maxY = y;
 }
 
+// Pushes the current grids into the 3D renderer and draws one frame. Both
+// texture uploads are of the whole 256x256 grid (a few hundred KB total) -
+// cheap enough to redo in full on every batched update rather than tracking
+// a sub-rectangle, the same "small enough that simple is fine" call
+// terrain-renderer.js already makes for its own coastline recompute.
+function render3D() {
+  scene3d.updateHeight(elevationGrid);
+  scene3d.updateType(elevationGrid, typeGrid);
+  scene3d.render();
+}
+
 function scheduleRender() {
   if (renderScheduled) return;
   renderScheduled = true;
   requestAnimationFrame(() => {
     renderScheduled = false;
     if (!dirty) return;
-    // The oblique view has no safe "just the changed cells" shortcut: a
-    // column's height can newly cover (or uncover) rows several steps
-    // farther away on screen, not just the cells a brush stroke actually
-    // touched - see renderTerrainOblique's doc comment. So it always
-    // repaints the whole grid, batched to one redraw per animation frame
-    // the same way the partial redraw below is, rather than once per
-    // pointer event.
+    if (viewMode === "oblique" && scene3d) {
+      dirty = null;
+      render3D();
+      return;
+    }
+    // The canvas-column oblique fallback has no safe "just the changed
+    // cells" shortcut: a column's height can newly cover (or uncover) rows
+    // several steps farther away on screen, not just the cells a brush
+    // stroke actually touched - see renderTerrainOblique's doc comment. So
+    // it always repaints the whole grid, batched to one redraw per
+    // animation frame the same way the partial redraw below is, rather
+    // than once per pointer event.
     if (viewMode === "oblique") {
       dirty = null;
-      renderTerrainOblique(ctx, elevationGrid, typeGrid, CELL_PX, OBLIQUE_MARGIN);
+      renderTerrainOblique(ctx, elevationGrid, typeGrid, PIXEL_SCALE, OBLIQUE_MARGIN * DEVICE_PIXEL_RATIO);
       return;
     }
     // Padded by 1: the coastline stroke has width, so it can cover a
     // sliver of a cell just outside the cells that actually changed.
     const region = { minX: dirty.minX - 1, minY: dirty.minY - 1, maxX: dirty.maxX + 1, maxY: dirty.maxY + 1 };
     dirty = null;
-    renderTerrain(ctx, elevationGrid, typeGrid, CELL_PX, region);
+    renderTerrain(ctx, elevationGrid, typeGrid, PIXEL_SCALE, region);
   });
 }
 
 function redrawAll() {
   dirty = null;
-  if (viewMode === "oblique") renderTerrainOblique(ctx, elevationGrid, typeGrid, CELL_PX, OBLIQUE_MARGIN);
-  else renderTerrain(ctx, elevationGrid, typeGrid, CELL_PX);
+  if (viewMode === "oblique" && scene3d) {
+    render3D();
+    return;
+  }
+  if (viewMode === "oblique") renderTerrainOblique(ctx, elevationGrid, typeGrid, PIXEL_SCALE, OBLIQUE_MARGIN * DEVICE_PIXEL_RATIO);
+  else renderTerrain(ctx, elevationGrid, typeGrid, PIXEL_SCALE);
 }
 
 function queueElevation(x, y, elevation) {
@@ -250,6 +304,103 @@ function setRockType(x, y) {
   queueType(x, y, "rock");
 }
 
+// The mirror image of setLandElevation, for Deepen/Shallow (ROADMAP.md
+// Task 1): sculpts existing sea and must never cross into land by accident,
+// the same invariant for the same reason - a cell that's currently land is
+// left alone (these tools don't create sea - Paint Sea does), and the
+// result is always clamped below SEABED_CEILING, so no amount of shallowing
+// can tip it into land. The rendered water *surface* stays flat regardless
+// of how deep this makes a cell - see terrain-renderer-3d.js's water plane;
+// this only ever changes the seabed, never anything above it.
+function setSeabedElevation(x, y, elevation) {
+  const index = y * GRID_SIZE + x;
+  if (elevationGrid[index] > SEA_LEVEL) return;
+  const clamped = clamp(elevation, ELEVATION_MIN, SEABED_CEILING);
+  elevationGrid[index] = clamped;
+  queueElevation(x, y, clamped);
+  markDirty(x, y);
+}
+
+// ROADMAP.md task 2: the root cause of "mountains read as narrow spikes with
+// a cliff at the edge" was traced to the brush/data layer, not just
+// rendering - Mountain/Peak converge every cell in their radius toward the
+// same fixed target, so a sustained stroke saturates to a near-uniform
+// plateau with a step right where the brush's influence hits zero, and two
+// separately-painted features simply meet at whatever step their two target
+// elevations happen to leave. This softens exactly that: a per-stamp pass,
+// scoped tightly to the stamp's own footprint, that nudges only the pairs of
+// adjacent cells that differ by more than a geologically-implausible amount
+// - everything within that amount (an intentional steep ridge or peak side)
+// is read as deliberate and left untouched.
+//
+// Deliberately NOT a wider/softer brush falloff: the correction that
+// prompted this ("keep the smallest brushes precise - natural falloff must
+// not significantly expand the selected brush radius") rules that out, so
+// RELAX_PADDING stays a small fixed amount rather than scaling with brush
+// size, and the brush's own falloff shape (forEachBrushCell) is untouched.
+const MAX_NATURAL_SLOPE = 0.15; // max "natural" per-adjacent-cell elevation step before this pass acts
+const RELAX_ITERATIONS = 2;
+const RELAX_FACTOR = 0.25; // fraction of the excess difference moved between a pair, per iteration
+const RELAX_PADDING = 1; // cells beyond the brush radius considered, so a stroke's edge can
+// blend with whatever (painted or not) already sits just outside it
+
+// Moves a fraction of the excess (beyond MAX_NATURAL_SLOPE) between one
+// adjacent pair of cells. Never touches a pair straddling the coastline
+// (one land, one sea) - that boundary is the one intentionally sharp edge
+// in this model (only Create Land / Paint Sea may move it, per ADR.md), not
+// an artifact for this pass to smooth over. Reuses the same LAND_FLOOR/
+// SEABED_CEILING bounds every other land/sea tool already respects, so this
+// can never itself push a cell across the coastline either.
+function relaxPair(x0, y0, x1, y1) {
+  const i0 = y0 * GRID_SIZE + x0;
+  const i1 = y1 * GRID_SIZE + x1;
+  const h0 = elevationGrid[i0];
+  const h1 = elevationGrid[i1];
+  const bothLand = h0 > SEA_LEVEL && h1 > SEA_LEVEL;
+  const bothSea = h0 <= SEA_LEVEL && h1 <= SEA_LEVEL;
+  if (!bothLand && !bothSea) return;
+  const diff = h1 - h0;
+  const excess = Math.abs(diff) - MAX_NATURAL_SLOPE;
+  if (excess <= 0) return;
+  const move = Math.sign(diff) * excess * RELAX_FACTOR;
+  const floor = bothLand ? LAND_FLOOR : ELEVATION_MIN;
+  const ceiling = bothLand ? ELEVATION_MAX : SEABED_CEILING;
+  const newH0 = clamp(h0 + move, floor, ceiling);
+  const newH1 = clamp(h1 - move, floor, ceiling);
+  if (newH0 === h0 && newH1 === h1) return;
+  elevationGrid[i0] = newH0;
+  elevationGrid[i1] = newH1;
+  queueElevation(x0, y0, newH0);
+  queueElevation(x1, y1, newH1);
+  markDirty(x0, y0);
+  markDirty(x1, y1);
+}
+
+// Runs the pass above over one stamp's own footprint (+ RELAX_PADDING),
+// a handful of bounded iterations - cheap because it's scoped to the brush,
+// not the whole grid, the same "local, not global" shape as every other
+// per-stamp operation here.
+function relaxRegion(cx, cy, radius) {
+  const minX = Math.max(0, cx - radius - RELAX_PADDING);
+  const maxX = Math.min(GRID_SIZE - 1, cx + radius + RELAX_PADDING);
+  const minY = Math.max(0, cy - radius - RELAX_PADDING);
+  const maxY = Math.min(GRID_SIZE - 1, cy + radius + RELAX_PADDING);
+  for (let iter = 0; iter < RELAX_ITERATIONS; iter++) {
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        if (x + 1 <= maxX) relaxPair(x, y, x + 1, y);
+        if (y + 1 <= maxY) relaxPair(x, y, x, y + 1);
+      }
+    }
+  }
+}
+
+// Every tool that can change elevation runs the relaxation pass above after
+// painting - terrain-type-only tools (grassland/sand/forest/rock) don't
+// touch elevationGrid at all, so they're excluded rather than running a
+// pass that would always find nothing to do.
+const ELEVATION_TOOLS = new Set(["raise", "lower", "smooth", "mountain", "peak", "land", "sea", "deepen", "shallow"]);
+
 function paintAt(cx, cy) {
   switch (currentTool) {
     case "raise":
@@ -272,10 +423,21 @@ function paintAt(cx, cy) {
       // Raises land toward a high ridge band and marks it rocky - a
       // mountain is height and material together, not a grey tint on flat
       // ground (see ADR.md / CLAUDE.md on not faking elevation with colour).
+      // ROADMAP.md task 2: this used to lerp by `falloff` alone, ignoring
+      // the Strength slider entirely - a single click at the brush centre
+      // jumped straight to MOUNTAIN_TARGET regardless of Strength, which is
+      // what made even a small, modest-radius stroke read as an instant
+      // narrow cone rather than something that builds up gradually like
+      // every other elevation tool. Multiplying by brushStrength (same as
+      // Raise/Lower/Smooth already do) fixes that without touching the
+      // brush's radius or falloff shape at all - still exactly the cells
+      // forEachBrushCell selects, just a smaller step toward the target per
+      // stamp, same "fine, bounded, predictable control" the brush-
+      // precision fix established for the additive tools.
       forEachBrushCell(cx, cy, (x, y, falloff) => {
         const current = elevationGrid[y * GRID_SIZE + x];
         if (current <= SEA_LEVEL) return;
-        setLandElevation(x, y, lerpTowards(current, MOUNTAIN_TARGET, falloff));
+        setLandElevation(x, y, lerpTowards(current, MOUNTAIN_TARGET, falloff * brushStrength));
         setRockType(x, y);
         markDirty(x, y);
       });
@@ -284,10 +446,11 @@ function paintAt(cx, cy) {
       // Same idea, pushed toward the elevation ceiling for a prominent
       // summit; the renderer tints the highest rock as snow, so a peak
       // reads as a peak even with colour turned off (hillshading alone).
+      // Same Strength fix as Mountain above, same reason.
       forEachBrushCell(cx, cy, (x, y, falloff) => {
         const current = elevationGrid[y * GRID_SIZE + x];
         if (current <= SEA_LEVEL) return;
-        setLandElevation(x, y, lerpTowards(current, PEAK_TARGET, falloff));
+        setLandElevation(x, y, lerpTowards(current, PEAK_TARGET, falloff * brushStrength));
         setRockType(x, y);
         markDirty(x, y);
       });
@@ -307,6 +470,16 @@ function paintAt(cx, cy) {
         setElevation(x, y, lerpTowards(current, SEA_LEVEL - LAND_PUSH, falloff));
       });
       break;
+    case "deepen":
+      forEachBrushCell(cx, cy, (x, y, falloff) => {
+        setSeabedElevation(x, y, elevationGrid[y * GRID_SIZE + x] - brushStrength * falloff);
+      });
+      break;
+    case "shallow":
+      forEachBrushCell(cx, cy, (x, y, falloff) => {
+        setSeabedElevation(x, y, elevationGrid[y * GRID_SIZE + x] + brushStrength * falloff);
+      });
+      break;
     default:
       // One of TERRAIN_TYPES: painting a type only ever touches land - a
       // brush straddling a coastline simply has no effect on its sea half,
@@ -319,21 +492,46 @@ function paintAt(cx, cy) {
       });
       break;
   }
+  if (ELEVATION_TOOLS.has(currentTool)) relaxRegion(cx, cy, brushRadius);
   scheduleRender();
   scheduleFlush();
 }
 
-// Paints along the segment from the last known pointer position to the new
-// one, not just at the new point - without this, a fast drag leaves gaps
-// between sampled positions instead of a continuous stroke.
-function paintAlong(x0, y0, x1, y1) {
-  const dist = Math.hypot(x1 - x0, y1 - y0);
-  const step = Math.max(1, brushRadius / 2);
-  const steps = Math.max(1, Math.ceil(dist / step));
+// How far the pointer must actually travel (in grid cells) before the next
+// stamp is placed, regardless of how many pointermove events fire along the
+// way. This - not the falloff shape - is what makes a stroke's total effect
+// depend on distance travelled, not on event frequency: a slow drag can fire
+// pointermove dozens of times over a few cells, and without a minimum
+// spacing each of those was its own full-strength stamp, so the same
+// physical gesture could apply 1 stamp or 30 depending only on mouse
+// polling rate. Scales with brush radius (a tiny brush needs tight spacing
+// to paint a continuous line at all) but never below a hard floor.
+function stampSpacing() {
+  return Math.max(0.4, brushRadius * 0.5);
+}
+
+// Walks the segment from (x0, y0) - the last cell a stamp actually landed
+// on - to (x1, y1) - where the pointer is now - placing a stamp every
+// stampSpacing() cells. Returns the exact fractional position just past the
+// last stamp placed, not (x1, y1) itself: the caller carries that forward as
+// the new "last stamp" origin, so leftover sub-spacing distance accumulates
+// across calls instead of being discarded. Without that carry-over, a slow
+// drag - many pointermove events, each covering less than one spacing unit
+// - would place its first stamp and then never place another, since every
+// individual call would see "not far enough yet" and reset to zero.
+function stampAlong(x0, y0, x1, y1) {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const dist = Math.hypot(dx, dy);
+  const spacing = stampSpacing();
+  const steps = Math.floor(dist / spacing);
   for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    paintAt(Math.round(x0 + (x1 - x0) * t), Math.round(y0 + (y1 - y0) * t));
+    const t = (i * spacing) / dist;
+    paintAt(Math.round(x0 + dx * t), Math.round(y0 + dy * t));
   }
+  if (steps === 0) return { x: x0, y: y0 };
+  const consumedT = (steps * spacing) / dist;
+  return { x: x0 + dx * consumedT, y: y0 + dy * consumedT };
 }
 
 // In the oblique view, a screen point doesn't map to one grid cell by
@@ -346,22 +544,44 @@ function paintAlong(x0, y0, x1, y1) {
 // really looking at under their cursor, not just whatever row the y pixel
 // would land on in a flat top-down reading.
 function obliqueScreenToGrid(px, py) {
-  const gx = Math.floor(px / CELL_PX);
+  // px/py arrive in the canvas's own backing-store pixel space (see
+  // canvasToGrid), which is PIXEL_SCALE per cell now, not CELL_PX - must
+  // match whatever renderTerrainOblique was actually called with above.
+  const gx = Math.floor(px / PIXEL_SCALE);
   if (gx < 0 || gx >= GRID_SIZE) return { x: -1, y: -1 };
   for (let gy = GRID_SIZE - 1; gy >= 0; gy--) {
-    const baseY = gy * CELL_PX;
+    const baseY = gy * PIXEL_SCALE;
+    // obliqueRise's result is NOT itself DPR-scaled (OBLIQUE_HEIGHT_SCALE is
+    // a fixed constant in terrain-renderer.js, independent of cellPx) -
+    // matching renderTerrainOblique's own unscaled call exactly, so picking
+    // agrees with whatever was actually drawn. A pre-existing, documented
+    // limitation of this WebGL2-less fallback path only (ROADMAP.md task 4):
+    // its mountain-rise-to-cell-width proportion isn't DPR-invariant the way
+    // the primary WebGL oblique renderer now is.
     const top = baseY - obliqueRise(elevationGrid[gy * GRID_SIZE + gx]);
-    if (py >= top && py <= baseY + CELL_PX) return { x: gx, y: gy };
+    if (py >= top && py <= baseY + PIXEL_SCALE) return { x: gx, y: gy };
   }
   return { x: -1, y: -1 };
 }
 
 function canvasToGrid(event) {
-  const rect = canvas.getBoundingClientRect();
-  const px = ((event.clientX - rect.left) / rect.width) * canvas.width;
-  const py = ((event.clientY - rect.top) / rect.height) * canvas.height;
-  if (viewMode === "oblique") return obliqueScreenToGrid(px, py - OBLIQUE_MARGIN);
-  return { x: Math.floor(px / CELL_PX), y: Math.floor(py / CELL_PX) };
+  const el = activeCanvas();
+  const rect = el.getBoundingClientRect();
+  const px = ((event.clientX - rect.left) / rect.width) * el.width;
+  const py = ((event.clientY - rect.top) / rect.height) * el.height;
+  if (viewMode === "oblique" && scene3d) {
+    // The 3D renderer's own ray-heightfield march (against the same
+    // elevationGrid this file paints into) is the single source of truth
+    // for picking in that view - see terrain-renderer-3d.js. Its own
+    // canvas.width/height already reflect the device pixel ratio (see
+    // createTerrainScene3D), and px/py above are already computed in that
+    // same backing-store space via the el.width/el.height ratio, so no
+    // extra scaling is needed here.
+    const hit = scene3d.pick(px, py, elevationGrid);
+    return hit ?? { x: -1, y: -1 };
+  }
+  if (viewMode === "oblique") return obliqueScreenToGrid(px, py - OBLIQUE_MARGIN * DEVICE_PIXEL_RATIO);
+  return { x: Math.floor(px / PIXEL_SCALE), y: Math.floor(py / PIXEL_SCALE) };
 }
 
 // -1,-1 means the pointer isn't over any drawn terrain column at all - only
@@ -373,33 +593,45 @@ function isOffTerrain(pos) {
   return pos.x < 0 || pos.y < 0;
 }
 
-canvas.addEventListener("pointerdown", (event) => {
+function handlePointerDown(event) {
   painting = true;
-  canvas.setPointerCapture(event.pointerId);
+  event.currentTarget.setPointerCapture(event.pointerId);
   const pos = canvasToGrid(event);
-  lastGridPos = isOffTerrain(pos) ? null : pos;
+  // lastStampPos is fractional (the exact point stampAlong last walked to),
+  // not the integer cell paintAt was actually called with - see stampAlong.
+  lastStampPos = isOffTerrain(pos) ? null : pos;
   if (!isOffTerrain(pos)) paintAt(pos.x, pos.y);
-});
+}
 
-canvas.addEventListener("pointermove", (event) => {
+function handlePointerMove(event) {
   if (!painting) return;
   const pos = canvasToGrid(event);
   if (isOffTerrain(pos)) return;
-  if (lastGridPos) paintAlong(lastGridPos.x, lastGridPos.y, pos.x, pos.y);
-  else paintAt(pos.x, pos.y);
-  lastGridPos = pos;
-});
+  if (lastStampPos) lastStampPos = stampAlong(lastStampPos.x, lastStampPos.y, pos.x, pos.y);
+  else {
+    paintAt(pos.x, pos.y);
+    lastStampPos = pos;
+  }
+}
 
 function stopPainting() {
   if (!painting) return;
   painting = false;
-  lastGridPos = null;
+  lastStampPos = null;
   flush();
 }
 
-canvas.addEventListener("pointerup", stopPainting);
-canvas.addEventListener("pointercancel", stopPainting);
-canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+// Listeners are on both canvases - only the one `activeCanvas()` has made
+// visible ever receives pointer events (a `display: none` element is never
+// hit-tested), so `event.currentTarget` in the handlers above is always the
+// right one to capture the pointer on.
+for (const el of [canvas, canvas3d]) {
+  el.addEventListener("pointerdown", handlePointerDown);
+  el.addEventListener("pointermove", handlePointerMove);
+  el.addEventListener("pointerup", stopPainting);
+  el.addEventListener("pointercancel", stopPainting);
+  el.addEventListener("contextmenu", (event) => event.preventDefault());
+}
 
 function wireToolbar() {
   const buttons = document.querySelectorAll("[data-tool]");
@@ -424,6 +656,8 @@ function wireToolbar() {
 
 function wireViewToggle() {
   const buttons = document.querySelectorAll("[data-view]");
+  const cameraToolbar = document.getElementById("camera-toolbar");
+  const cameraHint = document.getElementById("camera-hint");
   for (const button of buttons) {
     button.addEventListener("click", () => {
       const mode = button.dataset.view;
@@ -431,18 +665,228 @@ function wireViewToggle() {
       viewMode = mode;
       for (const other of buttons) other.classList.remove("active");
       button.classList.add("active");
-      // The oblique view needs extra canvas height so a peak near row 0
-      // has room to rise into without being clipped (see OBLIQUE_MARGIN);
-      // top-down doesn't, so this only grows the canvas when switching in,
-      // not permanently. world.css gives #stage a fixed CSS height, which
-      // would otherwise squash this taller backing store back down and
-      // throw off its aspect ratio - overriding it inline keeps a 1:1
-      // pixel mapping (and canvasToGrid's px/py math correct) either way.
-      canvas.height = GRID_SIZE * CELL_PX + (viewMode === "oblique" ? OBLIQUE_MARGIN : 0);
-      canvas.style.height = `${canvas.height}px`;
+      const show3D = viewMode === "oblique" && scene3d;
+      canvas3d.classList.toggle("hidden", !show3D);
+      canvas.classList.toggle("hidden", show3D);
+      cameraToolbar.classList.toggle("hidden", !show3D);
+      cameraHint.classList.toggle("hidden", !show3D);
+      if (!show3D) {
+        // The canvas-column fallback oblique view needs extra canvas height
+        // so a peak near row 0 has room to rise into without being clipped
+        // (see OBLIQUE_MARGIN); top-down doesn't, so this only grows the
+        // canvas when switching in, not permanently. world.css gives
+        // #stage a fixed CSS height, which would otherwise squash this
+        // taller backing store back down and throw off its aspect ratio -
+        // overriding it inline keeps a 1:1 pixel mapping (and
+        // canvasToGrid's px/py math correct) either way. The 3D canvas's
+        // size is fixed (the camera frustum handles rise, not canvas
+        // height), so it never needs this. The backing-store attribute
+        // (canvas.height) is in PIXEL_SCALE units (device-pixel-ratio
+        // aware, Task 4); the CSS override must stay in logical/CELL_PX
+        // units, or the display box itself would grow with the device
+        // pixel ratio instead of just the resolution behind it.
+        const marginPx = viewMode === "oblique" ? OBLIQUE_MARGIN : 0;
+        canvas.height = GRID_SIZE * PIXEL_SCALE + marginPx * DEVICE_PIXEL_RATIO;
+        canvas.style.height = `${GRID_SIZE * CELL_PX + marginPx}px`;
+      }
       redrawAll();
     });
   }
+}
+
+// ROADMAP.md task 3 (camera controls), revisited: wires the compass dial,
+// direction-preset shortcuts, tilt/zoom sliders, pan trackpad, wheel-zoom
+// and fit-view controls to the 3D renderer's camera. Every handler here
+// calls `renderOnce()` directly rather than going through
+// `scheduleRender()`/`markDirty()` - a camera move isn't a terrain edit, so
+// it has nothing to do with the dirty-rect tracking those use, and a UI
+// click/drag is already a single discrete event with no need for
+// rAF-batching the way a flood of pointermove events does.
+//
+// Every new drag surface here (the compass dial, the pan trackpad) lives in
+// `#camera-toolbar`, never on `#stage-3d` itself - the canvas's own
+// pointerdown/pointermove/pointerup listeners (above) are already fully
+// committed to painting, and keeping the new gestures on physically
+// separate elements means they can never be confused with a paint stroke,
+// by construction rather than by button/key-modifier convention. Only wheel
+// events are attached to the canvas (zoom has no existing canvas gesture to
+// conflict with - painting is pointer-drag-based, not wheel-based).
+function wireCameraControls() {
+  if (!scene3d) return; // no WebGL2 - this toolbar never leaves "hidden"
+
+  function renderOnce() {
+    if (viewMode === "oblique") scene3d.render();
+  }
+
+  function angularDiff(a, b) {
+    return Math.abs((((a - b + 540) % 360) + 360) % 360 - 180);
+  }
+
+  const zoomInput = document.getElementById("camera-zoom");
+  const tiltInput = document.getElementById("camera-tilt");
+  const compass = document.getElementById("camera-compass");
+  const needleGroup = document.getElementById("compass-needle-group");
+  const presetButtons = document.querySelectorAll("[data-azimuth-preset]");
+  const PRESET_MATCH_EPS_DEG = 0.5; // a free drag rarely lands exactly on a preset
+
+  // The dial's own visual angle (clockwise from N/top, matching the SVG's
+  // N/E/S/W label positions) is a different convention from azimuthDeg
+  // itself (which tracks the camera's own position in world space, not
+  // which way it's facing) - this converts between them. Derived directly
+  // from the camera-position formula in terrain-renderer-3d.js
+  // (`position = center + horizontal*(sin(angleRad), _, cos(angleRad))`,
+  // with +X = east and +Z = south): the view direction (opposite the
+  // camera's own position from center) works out to bearing-from-north
+  // `(360 - azimuthDeg) mod 360`, which both conversions below share since
+  // the map is self-inverse mod 360. Verified against all four presets:
+  // azimuthDeg 0 (S->N, looking north) maps to dial angle 0 (needle at N);
+  // 90 (E->W, looking west) to 270 (needle at W); 180 (N->S, looking south)
+  // to 180 (needle at S); 270 (W->E, looking east) to 90 (needle at E) -
+  // the needle always points the way the camera is actually looking, the
+  // intuitive reading of "which way is this compass facing".
+  function azimuthToDialDeg(azimuthDeg) {
+    return (360 - ((azimuthDeg % 360) + 360) % 360) % 360;
+  }
+  function dialDegToAzimuth(dialDeg) {
+    return azimuthToDialDeg(dialDeg);
+  }
+
+  function syncZoomSlider() {
+    zoomInput.value = String(scene3d.getCameraState().zoom);
+  }
+
+  function syncCompass() {
+    const state = scene3d.getCameraState();
+    needleGroup.setAttribute("transform", `rotate(${azimuthToDialDeg(state.azimuthDeg)} 50 50)`);
+    for (const button of presetButtons) {
+      const preset = state.azimuthPresets[Number(button.dataset.azimuthPreset)];
+      button.classList.toggle("active", angularDiff(preset.angleDeg, state.azimuthDeg) < PRESET_MATCH_EPS_DEG);
+    }
+  }
+
+  for (const button of presetButtons) {
+    button.addEventListener("click", () => {
+      scene3d.setAzimuthPreset(Number(button.dataset.azimuthPreset));
+      syncCompass();
+      renderOnce();
+    });
+  }
+
+  // Dragging the compass dial: continuous 360 deg rotation read directly
+  // from the pointer's own angle around the dial's centre, not a discrete
+  // set of steps - and never resets tilt/zoom/pan, since setAzimuth only
+  // ever calls applyCameraState() (see terrain-renderer-3d.js; this is the
+  // explicit "preserve each other's state" requirement for this revisit).
+  let compassDragging = false;
+  function dialDegFromPointer(event) {
+    const rect = compass.getBoundingClientRect();
+    const dx = event.clientX - (rect.left + rect.width / 2);
+    const dy = event.clientY - (rect.top + rect.height / 2);
+    return (((Math.atan2(dx, -dy) * 180) / Math.PI) + 360) % 360;
+  }
+  function rotateToPointer(event) {
+    scene3d.setAzimuth(dialDegToAzimuth(dialDegFromPointer(event)));
+    syncCompass();
+    renderOnce();
+  }
+  compass.addEventListener("pointerdown", (event) => {
+    compassDragging = true;
+    compass.setPointerCapture(event.pointerId);
+    rotateToPointer(event);
+  });
+  compass.addEventListener("pointermove", (event) => {
+    if (compassDragging) rotateToPointer(event);
+  });
+  function stopCompassDrag() {
+    compassDragging = false;
+  }
+  compass.addEventListener("pointerup", stopCompassDrag);
+  compass.addEventListener("pointercancel", stopCompassDrag);
+
+  tiltInput.addEventListener("input", () => {
+    scene3d.setTilt(Number(tiltInput.value));
+    renderOnce();
+  });
+
+  zoomInput.addEventListener("input", () => {
+    scene3d.setZoom(Number(zoomInput.value));
+    renderOnce();
+  });
+
+  // Trackpad-style panning (replaces the old fixed-step pan-pad buttons):
+  // each pointermove's own screen-pixel delta maps directly to a fraction
+  // of the trackpad's own size, so a small drag is a small, exact move -
+  // precise at any zoom level (panBy's own step already scales by the
+  // current view size/zoom), not a fixed-speed nudge per click. Sign
+  // convention makes the rendered scene follow the drag directly (the
+  // direct-manipulation feel the trackpad metaphor implies): moving the
+  // camera+look-at-centre together along its own screen-right axis shifts
+  // the *content* the opposite way on screen (right => content left),
+  // hence the negated X term below; moving along its own screen-up axis
+  // shifts content the opposite way too (up => content down), which for Y
+  // already matches "drag down (positive dyFrac) => content follows,
+  // moving down" with no extra negation needed.
+  const trackpad = document.getElementById("camera-pan-trackpad");
+  let trackpadDragging = false;
+  let lastTrackpadX = 0;
+  let lastTrackpadY = 0;
+  trackpad.addEventListener("pointerdown", (event) => {
+    trackpadDragging = true;
+    lastTrackpadX = event.clientX;
+    lastTrackpadY = event.clientY;
+    trackpad.setPointerCapture(event.pointerId);
+  });
+  trackpad.addEventListener("pointermove", (event) => {
+    if (!trackpadDragging) return;
+    const rect = trackpad.getBoundingClientRect();
+    const dxFrac = (event.clientX - lastTrackpadX) / rect.width;
+    const dyFrac = (event.clientY - lastTrackpadY) / rect.height;
+    lastTrackpadX = event.clientX;
+    lastTrackpadY = event.clientY;
+    scene3d.panBy(-dxFrac, dyFrac);
+    renderOnce();
+  });
+  function stopTrackpadDrag() {
+    trackpadDragging = false;
+  }
+  trackpad.addEventListener("pointerup", stopTrackpadDrag);
+  trackpad.addEventListener("pointercancel", stopTrackpadDrag);
+
+  // Cursor-centred wheel zoom: only wired to the 3D canvas (the painting
+  // pointer handlers above are unaffected - wheel is a separate event type
+  // they never listen for), and only acts while Oblique is actually the
+  // visible view, the same guard renderOnce() uses, so a wheel scroll over
+  // a hidden canvas can never silently move a camera the user can't see.
+  canvas3d.addEventListener(
+    "wheel",
+    (event) => {
+      if (viewMode !== "oblique") return;
+      event.preventDefault();
+      const rect = canvas3d.getBoundingClientRect();
+      const px = ((event.clientX - rect.left) / rect.width) * canvas3d.width;
+      const py = ((event.clientY - rect.top) / rect.height) * canvas3d.height;
+      const ndcX = (px / canvas3d.width) * 2 - 1;
+      const ndcY = -(py / canvas3d.height) * 2 + 1;
+      // Exponential so a steady scroll feels like a steady zoom *rate*
+      // (each wheel notch multiplies, rather than adds to, the zoom level) -
+      // the standard feel for scroll-to-zoom, and symmetric between
+      // zooming in and back out by the same notch count.
+      const factor = Math.exp(-event.deltaY * 0.0015);
+      scene3d.zoomAtCursor(factor, ndcX, ndcY);
+      syncZoomSlider();
+      renderOnce();
+    },
+    { passive: false },
+  );
+
+  document.getElementById("camera-fit").addEventListener("click", () => {
+    scene3d.fitView();
+    syncZoomSlider();
+    syncCompass();
+    renderOnce();
+  });
+
+  syncCompass();
 }
 
 async function loadTerrain() {
@@ -452,6 +896,11 @@ async function loadTerrain() {
   ]);
   setElevationFromList(elevationGrid, await elevationRes.json());
   setTypesFromList(typeGrid, await typesRes.json());
+  // The 3D scene auto-fit once already at construction time, against the
+  // locally-created blank starting grid (before this real data arrived) -
+  // redone here so the first Oblique view is framed for the actual loaded
+  // terrain, not an empty map.
+  if (scene3d) scene3d.fitView();
   redrawAll();
 }
 
@@ -498,5 +947,6 @@ function connectEvents() {
 
 wireToolbar();
 wireViewToggle();
+wireCameraControls();
 loadTerrain();
 connectEvents();

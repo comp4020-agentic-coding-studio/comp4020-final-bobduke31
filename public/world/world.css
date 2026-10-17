@@ -101,7 +101,8 @@ main {
   width: 100%;
 }
 
-#stage {
+#stage,
+#stage-3d {
   max-width: 90vw;
   max-height: 65vh;
   width: 768px;
@@ -109,5 +110,90 @@ main {
   border: 1px solid #2a333b;
   cursor: crosshair;
   touch-action: none;
-  image-rendering: pixelated;
+}
+
+/* Task 4 (ROADMAP.md), by explicit request: Top-down no longer forces a
+   blocky pixel-art look - its renderer now shades continuously per pixel
+   instead of per grid cell (see terrain-renderer.js), so letting the
+   browser's default smooth scaling apply (removing the nearest-neighbour
+   override that used to live here) is what actually looks crisp instead of
+   chunky at the canvas's own device-pixel-ratio-aware resolution. */
+
+.hidden {
+  display: none;
+}
+
+/* Draggable 360deg rotation dial - a toolbar control, never on #stage-3d
+   itself, so this drag gesture can never be confused with painting (see
+   ROADMAP.md's camera-controls revisit). touch-action: none stops the
+   browser's own scroll/pan gestures from eating the drag on touch. */
+.compass {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.compass:active {
+  cursor: grabbing;
+}
+
+.compass-ring {
+  fill: #1a2129;
+  stroke: #333f4a;
+  stroke-width: 2;
+}
+
+.compass-label {
+  fill: #93a3ad;
+  font-size: 11px;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+
+.compass-needle {
+  stroke: #6fa6cc;
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.compass-handle {
+  fill: #4a86ad;
+  stroke: #6fa6cc;
+  stroke-width: 1.5;
+}
+
+.compass-presets {
+  display: grid;
+  grid-template-columns: repeat(2, auto);
+  gap: 0.2rem;
+}
+
+.compass-presets button {
+  padding: 0.25rem 0.45rem;
+  font-size: 0.72rem;
+}
+
+/* Trackpad-style precise panning: dragging moves the view by exactly the
+   fraction of the pad's own size the pointer travelled, so a small drag is
+   a small, exact pan - unlike the old fixed-size-nudge button pad, this
+   stays precise at any zoom level since panBy() itself already scales each
+   step by the current view size. Also a toolbar control, not on #stage-3d,
+   for the same painting-conflict-avoidance reason as the compass. */
+.pan-trackpad {
+  width: 5.2rem;
+  height: 3.6rem;
+  background: #1a2129;
+  border: 1px solid #333f4a;
+  border-radius: 0.3rem;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  background-image:
+    linear-gradient(#333f4a 1px, transparent 1px), linear-gradient(90deg, #333f4a 1px, transparent 1px);
+  background-size: 33% 50%;
+}
+
+.pan-trackpad:active {
+  cursor: grabbing;
+  background-color: #20282f;
 }

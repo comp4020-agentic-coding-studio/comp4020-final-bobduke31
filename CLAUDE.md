@@ -27,6 +27,21 @@ discipline `CREDITS.md` already applies to every art asset. Hand-build only
 what genuinely has no off-the-shelf equivalent; confirmed so far that's the
 multiplayer sync layer, not the visuals.
 
+**The `/world/` Oblique view is now a real Three.js (vendored, MIT) WebGL2
+heightfield mesh**, not a 2D canvas column-extrusion trick --- see
+`terrain-renderer-3d.js` and `CREDITS.md`'s "Vendored code" section for what
+was adopted (Three.js itself) versus considered and passed over
+(`THREE.Terrain` is a procedural *generator*, not a fit for an authoritative
+heightfield; `@interverse/three-terrain-lod`'s slope-based-blending *idea*
+was reused, its TSL/WebGPU package was not, to avoid a second dependency
+axis in a no-bundler repo). The forest canopy billboards are a small
+authored texture, not sourced art --- every CC0/CC-BY pack found was either
+ink/line-art style (the direction this file already steers away from) or a
+pixel-art register that reads as a retro tile game, not painted cartography.
+Kenney's Nature Kit (CC0, real 3D tree models) remains on record as the
+option if the project wants to replace the billboards with real meshes
+later.
+
 ## Verify the rendered result, not a description of it
 
 A passing check or a plausible description is not evidence. Before calling
