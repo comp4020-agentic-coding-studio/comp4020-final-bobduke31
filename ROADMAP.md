@@ -208,6 +208,76 @@ Tested against the seeded reference scene
   (natural elevation and slope transitions) still applies equally to the
   seabed as to land.
 
+### Regression found and fixed after shipping: Top-down/Oblique land-sea mismatch
+
+Reported directly by the user comparing the two views side by side on a
+real map: Top-down showed small islands in open ocean; Oblique showed a
+near-solid green landmass with a tiny water patch - the same underlying
+data rendering as two contradictory maps, not a styling difference.
+
+**Root cause, confirmed by direct calculation, not assumed:** the Oblique
+renderer's height data was carried through an 8-bit `DataTexture`
+(`elevationToTexel`/`texelToElevationRange` in `terrain-renderer-3d.js`),
+quantizing every elevation to 1 of 256 steps (~0.0078 wide at this app's
+`[-1, 1]` range) before the GPU shader's own `vElevation <= uSeaLevel`
+land/sea test ever ran. An *unpainted* cell's elevation is exactly `0`
+(`SEA_LEVEL`) - the default for the overwhelming majority of cells on any
+real map, not a rare edge case - which quantizes to texel 128 and decodes
+back to `+0.00392`: just barely *above* `SEA_LEVEL`. Every unpainted cell
+was therefore misclassified as land in Oblique, while Top-down (plain JS
+floats, `terrain-model.js`'s `isLand`, no texture, no quantization)
+correctly read the identical cells as sea. Two different land/sea tests,
+silently disagreeing at the one elevation value nearly every cell actually
+has - confirmed numerically (`elevation=0` round-trips to `0.00392`, a
+documented `elevationToTexel` comment now records the exact calculation)
+and reproduced visually with a deliberately sparse test scene (two small
+painted islands, the rest of the 256×256 grid left entirely unpainted) -
+chosen because it isolates the bug cleanly, unlike the regular seed scene
+where most of the frame actually is land already.
+
+**Fix:** the height texture is now `Float32Array`/`THREE.FloatType` (this
+renderer already requires WebGL2 via `isWebGL2Available`, which guarantees
+float-texture support), carrying the real elevation value through with no
+lossy round-trip at all - the same precision Top-down always had.
+`texelToElevationRange` is now the identity (the normalize-from-8-bit-
+integer step it used to do no longer applies). A `SEA_LEVEL + epsilon`
+comparison nudge (the pattern `computeCoastlineRings` already uses for an
+unrelated d3-contour precision issue) was considered and rejected: it would
+only have patched the classification symptom, not the lossy quantization
+itself, which also subtly distorted every land cell's actual displayed
+height near sea level, not just its land/sea classification.
+
+**A second bug this fix exposed, not introduced:** once sea rendered
+correctly instead of as misclassified land, the water plane showed visible
+horizontal banding - classic z-fighting, because the plane sits at exactly
+`y = SEA_LEVEL * HEIGHT_SCALE` and an unpainted cell's ground-mesh vertex
+displaces to the exact same y (`detailedHeight`'s own early return for
+`aboveSea <= 0.0001`). This was always latent; the land-sea bug had been
+hiding it almost everywhere by rendering sea as solid land, leaving the
+water plane mostly occluded rather than exposed and coplanar with real
+seabed. Fixed with the same `+0.05` epsilon offset the coastline ink-line
+already uses for an identical reason - confirmed safe against the smallest
+real elevation margins in this app (`LAND_FLOOR`/`SEABED_CEILING`, ±0.02 →
+±0.92 world units at `HEIGHT_SCALE=46`), 18× larger than the 0.05 offset,
+so it can't visually expose seabed above water or submerge shallow land.
+
+**Verification:** real Playwright screenshots, not a description of the
+diff. The sparse two-island scene: before the fix, Oblique showed a solid
+green landmass with the islands barely distinguishable; after, Oblique
+shows exactly two islands in open water, matching Top-down's layout
+feature-for-feature. The standard mountain/forest/coastline seed scene was
+re-screenshotted too, confirming zero regression: coastline shape, water
+depth gradient, mountain geometry, and forest billboards all render
+identically to before this fix. Oblique-view picking (ray-heightfield
+picking against the authoritative `elevationGrid`, unaffected by this
+texture-only fix) was re-confirmed by clicking Peak through the Oblique
+canvas and reading back `/api/terrain` - elevation rose exactly as
+expected. `pnpm typecheck`, all 23 tests (against a genuinely fresh dev
+DB, not the seeded scene used for screenshots - rerun after an initial
+mistaken run against the seeded scene produced an expected, unrelated
+failure), and `pnpm check:evidence` pass; no server, schema, or API
+change - this was a renderer-only bug and fix.
+
 ---
 
 ## 2. Natural elevation and slope transitions
