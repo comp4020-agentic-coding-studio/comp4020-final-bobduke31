@@ -213,14 +213,20 @@ cost in `ADR.md`. None of this is a C9 blocker — C9's bar is the real-time
 loop and a documented concurrency decision, both in place — but all of it
 is real, outstanding work for C10 and the Final visual pass.
 
-## Crit 10 / Final: visual development on `c10-3d-terrain` (in progress)
+## Final: visual development on `c10-3d-terrain` (merged to `main`)
 
-C9 shipped deliberately behind on visuals (above). This work happens on a
-local branch, never pushed or deployed without separate approval — see
-`ROADMAP.md`, which now tracks it as an ordered, scored list of twelve
-remaining tasks rather than as freeform chat history, and is the
-authoritative live status for this phase; this section records the actual
-decisions and findings behind entries there, not a duplicate of it.
+C9 shipped deliberately behind on visuals (above). This work happened on a
+local branch, reviewed and merged via
+[PR #1](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/pull/1)
+once independently re-verified in a real browser (not just re-reporting the
+branch's own prior claims — see that PR's description for what was
+specifically re-checked before merging: smooth top-down shading, a working
+Oblique heightfield, camera controls with no state-reset regression, and
+two-independent-browser-context real-time sync). See `ROADMAP.md`, which
+tracks this as an ordered, scored list of twelve remaining tasks rather than
+as freeform chat history, and is the authoritative live status for this
+phase; this section records the actual decisions and findings behind
+entries there, not a duplicate of it.
 
 **3D heightfield renderer.** The oblique view's original column-extrusion
 canvas renderer — flat-shaded rectangles shifted up by `elevation * 70px`,
@@ -568,3 +574,140 @@ comparison table, and the stated remaining limitations (no keyboard
 equivalent for the dial/trackpad beyond the existing preset buttons and
 sliders; pinch-to-zoom on physical trackpad hardware not separately
 verified) are in `ROADMAP.md`, not duplicated here.
+
+## Crit 10: multi-user permissions, activity logging, and the homepage swap
+
+C10's brief asks for something narrower and more concrete than the visual
+work above: two or more people, each in their own browser, acting on
+shared state, with the app able to tell them apart — a permission checked
+server-side, written down with why, plus a persistent server-side activity
+log. The existing session cookie (`src/session.ts`, shipped for Crit 8) and
+the existing per-mark ownership check (`deleteMarkOwnedBy`) already proved
+this app has the right identity model; what C10 added was extending that
+same pattern to terrain, and giving it a durable, demo-ready log.
+
+**Checkpoints:**
+[`879f109`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/879f1097fa275abdb78021a94ed86fa1d7446432)
+(activity-log table and stdout logging),
+[`2f6e757`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/2f6e7570d2aa02c208ee7cb45d53459290a3ae55)
+(per-session undo snapshot/restore),
+[`25c6b22`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/25c6b22a301e2621a1415df99a4430f31b9f0d10)
+(server wiring: undo endpoint, log endpoints, the homepage/`/isle/` route
+swap),
+[`53871ac`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/53871ac0d8543b36d279f709f369cf85bb1d935d)
+(client undo button),
+[`9ab156b`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/9ab156b4859a8856bb36f1f5d2719662e303531e)
+(automated tests, and the `waitForEvent` race fix).
+
+**The permission chosen, and why not a bigger one.** Terrain itself stays
+the shared, ownerless canvas `ADR.md`'s first entry already decided for C9
+— nothing in C10's brief asks every feature to gain per-user restriction,
+only that *a* real one exist and be checked server-side. Reopening that
+decision now, with no new evidence it was wrong, would be exactly the kind
+of unnecessary scope creep `CLAUDE.md` warns against. Instead, a new,
+genuinely useful permission was added: **undo is strictly per-session.**
+`POST /api/terrain/undo` restores whatever *the requesting session itself*
+last painted. The check isn't a comparison a future edit could remove by
+accident — the server holds an in-memory snapshot keyed by the session id
+read from the request's own cookie (`src/undo.ts`), and there is no field
+in the request that could name a different session's snapshot at all. Full
+reasoning and the alternatives considered (per-cell terrain ownership,
+invite-link roles, logging with no new permission) are in `ADR.md`'s second
+entry, not repeated here.
+
+**A real bug found while building the snapshot, before it shipped.** A
+single brush stroke that sets both elevation and terrain type (Mountain,
+Peak) reaches the server as *two separate sequential POSTs* from the
+client's existing batching (`flush()` in `world-client.js`) — not one. A
+first version of `captureStroke` simply overwrote the previous snapshot on
+each call, which would have silently discarded the first POST's "before"
+state the moment the second POST arrived milliseconds later: undoing a
+Mountain stroke would have only reverted the rock-type paint, leaving the
+elevation change in place. Caught and fixed before any manual testing, by
+re-reading the client's own flush timing rather than assuming one POST per
+stroke — `captureStroke` now merges writes into the same snapshot within a
+400ms window (mirroring the client's own `FLUSH_INTERVAL_MS=100`, with
+slack), keeping the *first* reading per cell (the real pre-stroke value),
+not the most recent. Verified directly afterward: a live Mountain stroke in
+a real browser produced two distinct activity-log entries
+(`terrain:paint`, `terrain-type:paint`) but one `terrain:undo` that
+reverted all 317 touched cells in a single pass — confirmed both
+numerically (`/api/terrain` diff) and visually (an Oblique-view screenshot
+after the undo cycle shows the exact pre-stroke baseline terrain, not a
+half-reverted mountain).
+
+**The activity log** (`activity_log` table, `src/activity.ts`) records
+every terrain paint, terrain undo, terrain-type paint, mark creation, and
+mark deletion — including denied ones, logged as `DENIED ...`, not silently
+dropped, since a refused cross-session action is exactly the finding the
+crit's demo format is built to surface. It lives in the same SQLite file as
+every other table, on the one volume that survives a restart or redeploy,
+so it outlives the crit as required. Every entry is also printed to stdout,
+so `flyctl logs -a <repo>` tailed live — the brief's own prescribed demo
+method — shows the same thing with no UI involved. A visitor is shown as a
+short deterministic display name (`src/identity.ts`, e.g. "Lone Finch
+#9f2") rather than their raw session id, for the same reason
+`toClientMark` already never hands a client another visitor's raw id.
+
+**The in-app log viewer** (`/logs/`) is this app's own tool for reading
+that same log, SSE-fed off the identical broadcast channel `terrain:update`
+already uses — not a second real-time mechanism. Its purpose, per the
+brief's own framing, is "what you and your agent read when the deployed
+app misbehaves," not something built only to pass the crit; `flyctl logs`
+stays the primary demo path regardless.
+
+**Verification, in a real browser, not assumed from the diff.** Two fully
+independent browser contexts (separate cookie jars, no shared storage —
+not two tabs) were driven with curl and Playwright together: session A
+painted a cell and created a mark; session B's attempt to delete A's mark
+correctly returned 403 *and* produced a `DENIED` activity-log line naming
+A's mark by id; session B's own attempt to call `/api/terrain/undo` with
+nothing of its own to undo correctly returned 409 and left A's cell
+completely unchanged (confirmed via `/api/terrain`, not assumed from the
+409 alone) — the actual property C10 asks to see demonstrated, not just a
+passing status code. A's own undo then correctly reverted its own stroke.
+The `/logs/` page was opened in a separate browser context from the one
+painting, confirming new entries appear there live with no reload. All of
+this is also covered by `spec/activity.test.ts`'s own automated checks
+(session-distinguishing display names, successful self-undo, a 409 for
+nothing-to-undo, and the specific "B's failed undo attempt doesn't touch
+A's data" property), run against a fresh dev DB.
+
+**A real, pre-existing test race, exposed and fixed.** Adding
+`activity.test.ts` (which also posts terrain cells, concurrently with
+`terrain.test.ts` against the same running app and the same global SSE
+broadcast channel) turned a latent flakiness in
+`terrain.test.ts`'s own `waitForEvent` helper into a reliable failure: it
+resolved on *the next* event of a given type, not necessarily *its own*
+event, so another test file's concurrent write could resolve it first with
+the wrong payload. Fixed by adding a content-matching predicate to
+`waitForEvent` (now takes a `matches(data)` filter, not just an event-type
+string) — confirmed fixed by running the full suite three times in a row
+clean, where it had failed on the very first run after the new test file
+was added. `pnpm typecheck`, all 23 tests, and `pnpm check:evidence` pass.
+
+**The homepage swap.** `/` now serves the exact same file `/world/` does —
+a direct serve, not a redirect, so the browser's address bar stays at `/`
+throughout (confirmed via Playwright: `page.url()` read back as `/` after
+load, after painting, and after a reload). `/world/` keeps working
+unchanged as a compatibility alias. The Isle (Crit 8's shipped app) is
+unchanged and fully functional, moved to `/isle/` rather than deleted, so
+its existing `marks` data and the whole experience it shipped stay
+reachable. `README.md` was rewritten from describing The Isle to describing
+the actual current app, since it had gone stale the moment `/world/`
+became the project's real direction back at Crit 9 — this was overdue
+independent of C10, and C10's own requirement to "update outdated homepage
+references" was the forcing function to finally do it. Verified live in a
+real browser at the deployed URL post-deploy (see below), not just locally.
+
+**Known limitations, named rather than hidden:** undo is one level deep,
+in-memory — a server restart or a second stroke before undoing the first
+loses the ability to undo an earlier one; this is a real, accepted
+limitation for "undo my last click," not a version-history feature (that's
+`ROADMAP.md` task 10, tracked separately as Final-project scope, not
+conflated with this narrower permission feature). The activity log has no
+pagination — it caps at the 200 most recent entries on load, relying on
+the live stream for everything after; fine for a debugging/demo aid, not
+an archive browser. Terrain itself remains ownerless by deliberate,
+documented choice (`ADR.md`), not an oversight — C10 doesn't ask for every
+feature to gain per-user restriction, only that a real one exist.

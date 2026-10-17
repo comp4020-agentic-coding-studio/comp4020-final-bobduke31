@@ -147,6 +147,15 @@ export function isLand(x: number, y: number): boolean {
   return elevationAt(x, y) > SEA_LEVEL;
 }
 
+// The elevation each of these cells holds right now, before any write - used
+// by src/undo.ts to capture "what this stroke is about to overwrite" at the
+// moment a batch arrives, server-side, not trusted from the client. An
+// unpainted cell correctly reads as SEA_LEVEL (0), the same default
+// elevationAt and the client's own blank-grid default already agree on.
+export function elevationsFor(cells: { x: number; y: number }[]): TerrainCell[] {
+  return cells.map(({ x, y }) => ({ x, y, elevation: elevationAt(x, y) }));
+}
+
 const upsertStmt = db.prepare(`
   INSERT INTO terrain_cells (x, y, elevation, updated_at)
   VALUES (?, ?, ?, datetime('now'))
@@ -198,6 +207,20 @@ export function listTerrainTypes(): TerrainTypeCell[] {
   }));
 }
 
+const getTypeStmt = db.prepare("SELECT terrain FROM terrain_type_cells WHERE x = ? AND y = ?");
+
+// The terrain type each of these cells holds right now (or `null` if
+// untyped/sea) - the type-layer counterpart to elevationsFor, used the same
+// way by src/undo.ts to capture a pre-write snapshot server-side.
+export function terrainTypesFor(
+  cells: { x: number; y: number }[],
+): { x: number; y: number; terrain: TerrainType | null }[] {
+  return cells.map(({ x, y }) => {
+    const row = getTypeStmt.get(x, y) as unknown as { terrain: string } | undefined;
+    return { x, y, terrain: (row?.terrain as TerrainType | undefined) ?? null };
+  });
+}
+
 export function isValidTerrainTypeCell(value: unknown): value is TerrainTypeCell {
   if (typeof value !== "object" || value === null) return false;
   const { x, y, terrain } = value as Record<string, unknown>;
@@ -227,6 +250,22 @@ export function applyTerrainTypes(cells: TerrainTypeCell[]): void {
   db.exec("BEGIN");
   try {
     for (const cell of cells) upsertTypeStmt.run(cell.x, cell.y, cell.terrain);
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
+}
+
+// src/undo.ts's own counterpart to applyTerrainTypes: a snapshot it's
+// restoring may record a cell as untyped (terrain: null, from
+// terrainTypesFor above) rather than one of TERRAIN_TYPES - upsertTypeStmt
+// can't write that (its column is NOT NULL), so this is the explicit path
+// back to "no type" rather than silently coercing null into a string.
+export function clearTerrainTypes(cells: { x: number; y: number }[]): void {
+  db.exec("BEGIN");
+  try {
+    for (const cell of cells) deleteTypeStmt.run(cell.x, cell.y);
     db.exec("COMMIT");
   } catch (err) {
     db.exec("ROLLBACK");
