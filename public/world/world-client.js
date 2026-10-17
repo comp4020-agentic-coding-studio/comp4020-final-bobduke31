@@ -14,7 +14,21 @@ import {
   clearTypeCells,
   setTypesFromList,
 } from "./terrain-model.js";
-import { renderTerrain, renderTerrainOblique, obliqueRise, OBLIQUE_MAX_RISE } from "./terrain-renderer.js";
+import {
+  renderTerrain,
+  renderTerrainOblique,
+  obliqueRise,
+  OBLIQUE_MAX_RISE,
+  loadGrassTexture,
+} from "./terrain-renderer.js";
+
+// PROTOTYPE TRIAL (final-redesign-prototype branch): decoding starts
+// immediately, in parallel with everything else below - the texture isn't
+// ready for the very first paint, but every scheduled render after that
+// (any later paint, or the periodic reconnect re-fetch) picks it up once
+// loaded, same "best effort, no load-order dependency" pattern as the
+// existing Oblique tree glb loads.
+loadGrassTexture("/world/assets/textures/grass-cethiel.png");
 import { createTerrainScene3D, isWebGL2Available, MAX_DEVICE_PIXEL_RATIO } from "./terrain-renderer-3d.js";
 
 // Canvas footprint stays the same (256 * 3 = 768, same as the old 128 * 6)

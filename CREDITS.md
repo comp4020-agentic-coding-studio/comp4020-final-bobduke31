@@ -79,6 +79,32 @@ the browser with no build step, no attribution required by either licence.
   ("not another ink-sketch renderer"); pixel-art tree tile packs read as a
   retro tile game, not painted cartography.
 
+### Grassland ground texture
+
+- **Asset**: `public/world/assets/textures/grass-cethiel.png`
+- **Pack**: [Tileable Grass Textures - Set 1](https://opengameart.org/content/tileable-grass-textures-set-1) (`Grass_01.png`, one of four 512x512 variants; the pack's normal maps are unused)
+- **Author**: Cethiel
+- **Licence**: [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) — public domain, no attribution required
+- **Modified**: no (used as downloaded)
+- Trialled on `final-redesign-prototype` as the shared painted grass fill for
+  grassland cells in both the Top-down (Canvas2D, `terrain-renderer.js`) and
+  Oblique (WebGL shader, `terrain-renderer-3d.js`) renderers, tiled at the
+  same physical scale in both (`GRASS_TEXTURE_TILE_SIZE`,
+  `terrain-model.js`). Replaces an earlier trial of an AI-generated texture
+  from `research/c10-ai-assets/` that was used as a convenience placeholder
+  before real alternatives were actually pushed through - that texture has
+  been removed.
+- **Considered and not used**: [Watercolor Terrain Textures](https://voxelcorelab.itch.io/watercolor-terrain-textures)
+  by Voxel Core Lab (Jonas Voland), CC0, all 4 grass variants downloaded and
+  inspected directly. Genuinely real and CC0, but each variant is a blurred
+  colour-wash with no distinct painted detail (no grass blades, no texture
+  variation) - tiled across terrain it reads as a flat green smear, not
+  painted cartography. [Hand Painted Grass](https://opengameart.org/content/hand-painted-grass)
+  by PamNawi (CC0) was also inspected and passed over for the same reason,
+  plus an over-saturated sci-fi-slime colour. [Hand Painted Grass Texture](https://opengameart.org/content/hand-painted-grass-texture-1)
+  by Kiira was passed over on licence grounds (OGA-BY 3.0, attribution
+  required) given a CC0 alternative of comparable quality was available.
+
 ### Forest canopy texture
 
 `public/world/assets/tree-{deciduous,conifer}.png` are not sourced art —

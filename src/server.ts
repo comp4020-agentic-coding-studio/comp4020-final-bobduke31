@@ -30,6 +30,12 @@ const MIME: Record<string, string> = {
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
+  // PROTOTYPE TRIAL (final-redesign-prototype branch): needed to serve
+  // vendored glTF assets (.gltf JSON + its sibling .bin buffer) for the
+  // Oblique view's real mesh trial - see terrain-renderer-3d.js.
+  ".gltf": "model/gltf+json",
+  ".bin": "application/octet-stream",
+  ".webp": "image/webp",
 };
 
 interface StaticFile {

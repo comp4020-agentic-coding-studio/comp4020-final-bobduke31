@@ -23,7 +23,15 @@
 //    already cheap at this size), not touch any CPU-side vertex buffer.
 import * as THREE from "./vendor/three/three.module.js";
 import { GLTFLoader } from "./vendor/three/GLTFLoader.js";
-import { GRID_SIZE, ELEVATION_MIN, ELEVATION_MAX, SEA_LEVEL, TERRAIN_TYPES, sampleBilinear } from "./terrain-model.js";
+import {
+  GRID_SIZE,
+  ELEVATION_MIN,
+  ELEVATION_MAX,
+  SEA_LEVEL,
+  TERRAIN_TYPES,
+  GRASS_TEXTURE_TILE_SIZE,
+  sampleBilinear,
+} from "./terrain-model.js";
 import { computeCoastlineRings } from "./terrain-renderer.js";
 
 // World units: one grid cell = one unit in X/Z, so picking math and the
@@ -257,6 +265,13 @@ const FRAGMENT_SHADER = `
   uniform vec3 uLightDir;
   uniform vec3 uLightColor;
   uniform vec3 uAmbient;
+  // PROTOTYPE TRIAL (final-redesign-prototype branch): same painted grass
+  // texture and tile scale as the Top-down Canvas renderer (see
+  // terrain-model.js's GRASS_TEXTURE_TILE_SIZE) - sampled with the fragment's
+  // own world-space xz so both views agree on where a tile boundary falls,
+  // not just that grass looks painted in both.
+  uniform sampler2D uGrassTexture;
+  uniform bool uGrassTextureReady;
   uniform float uSeaLevel;
 
   vec3 lerp3(vec3 a, vec3 b, float t) { return a + (b - a) * clamp(t, 0.0, 1.0); }
@@ -342,6 +357,17 @@ const FRAGMENT_SHADER = `
       // fallback, so a fragment right at the coastline degrades to exactly
       // today's crisp self-colour rather than pulling in a sea-side sample.
       base = blendedTypeColor(base);
+
+      // PROTOTYPE TRIAL (final-redesign-prototype branch): swap in the
+      // painted grass texture for fragments whose OWN cell (not the blended
+      // neighbourhood) is grassland - same restriction terrain-renderer.js's
+      // Top-down path applies, so a boundary fragment still gets the existing
+      // flat-colour blend rather than a texture sample mixed with a flat
+      // colour (which would look like a visible seam, not a blend).
+      if (uGrassTextureReady && typeIndex == 0) {
+        vec2 grassUv = vec2(vWorldPos.x, vWorldPos.z) / ${GRASS_TEXTURE_TILE_SIZE.toFixed(1)};
+        base = texture2D(uGrassTexture, grassUv).rgb;
+      }
 
       // Slope-based rock bleed-through: steep ground reads as scree/rock
       // regardless of painted type, the way a real relief map doesn't let
@@ -467,13 +493,27 @@ function mulberry32(seed) {
 }
 
 // PROTOTYPE TRIAL (final-redesign-prototype branch, not merged to main):
-// real low-poly glTF tree meshes (Kenney Nature Kit, CC0 - see CREDITS.md)
-// in place of the flat billboard sprites, to test whether real geometry
-// reads better from the Oblique camera than a textured plane does. Billboard
-// approach (TREE_TEXTURE_PATHS, PlaneGeometry, camera-facing rotation) is
-// kept commented below rather than deleted, since this is a trial, not a
-// decided replacement - the user has not approved merging this.
-const TREE_MODEL_PATHS = ["/world/assets/tree_pineRoundC.glb", "/world/assets/tree_oak.glb"];
+// real glTF tree meshes in place of the flat billboard sprites, to test
+// whether real geometry reads better from the Oblique camera than a
+// textured plane does. Billboard approach (TREE_TEXTURE_PATHS,
+// PlaneGeometry, camera-facing rotation) is kept commented below rather
+// than deleted, since this is a trial, not a decided replacement - the
+// user has not approved merging this.
+//
+// First attempt used Kenney's Nature Kit trees (CC0) - functionally fine,
+// but side-by-side screenshots against KayKit's Medieval Hexagon Pack
+// building meshes (research/asset-trials/) showed a real style mismatch:
+// Kenney is sharp, flat-faceted low-poly; KayKit is smooth, rounded,
+// softly-gradient-shaded. Mixing them in one scene (a KayKit building next
+// to a Kenney tree) would look like two different games, not one
+// consistent art direction - see research/asset-trials/tree-style-
+// compare.png and building-style-compare.png. Switched to KayKit's own
+// Forest Nature Pack (CC0, same author/style family as the building pack)
+// so trees and future buildings read as one coherent set.
+const TREE_MODEL_PATHS = [
+  "/world/assets/kaykit-forest/Tree_1_A_Color1.gltf",
+  "/world/assets/kaykit-forest/Tree_3_A_Color1.gltf",
+];
 
 function buildTreeLayer(scene, textureLoader, gltfLoader) {
   // Each variant's geometry/material isn't known until its glb loads, so
@@ -491,16 +531,14 @@ function buildTreeLayer(scene, textureLoader, gltfLoader) {
         if (obj.isMesh && !geometry) {
           geometry = obj.geometry;
           material = obj.material;
-          // Kenney's glTF export authors these as metalness:1/roughness:1
-          // (a PBR convention meant for a scene with a real environment
-          // map). This scene has none - only one DirectionalLight plus a
-          // flat AmbientLight - so a metal surface has no light to reflect
-          // and renders almost black. Forcing it to a plain matte (non-
-          // metal) material is the standard fix for dropping an
-          // env-map-authored PBR asset into a simpler lighting rig; it
-          // does not touch geometry or the authored vertex/palette colour.
+          // A real environment-map-authored metalness value (seen with
+          // Kenney's Nature Kit during the first trial of this feature -
+          // metalness:1 renders near-black with only a DirectionalLight and
+          // no env map) would need the same fix this metalness=0 forcing
+          // did there. KayKit's own glTF export already ships metalness:0,
+          // so this is a no-op for the current asset, kept as a defensive
+          // default in case a future swap reintroduces the problem.
           material.metalness = 0;
-          material.roughness = 0.9;
         }
       });
       if (!geometry) return;
@@ -721,6 +759,18 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
   fillHeightTexture(heightTexture, elevationGrid);
   fillTypeTexture(typeTexture, typeGrid);
 
+  // PROTOTYPE TRIAL (final-redesign-prototype branch): same source image as
+  // the Top-down renderer's loadGrassTexture, loaded independently here since
+  // the two renderers don't share a texture cache - RepeatWrapping lets the
+  // shader tile it across the whole grid with one plain UV divide rather than
+  // a manual wrap (see the grassUv line in FRAGMENT_SHADER above).
+  const grassTexture = new THREE.TextureLoader().load("/world/assets/textures/grass-cethiel.png", (tex) => {
+    tex.colorSpace = THREE.SRGBColorSpace;
+    groundMaterial.uniforms.uGrassTextureReady.value = true;
+  });
+  grassTexture.wrapS = THREE.RepeatWrapping;
+  grassTexture.wrapT = THREE.RepeatWrapping;
+
   const groundMaterial = new THREE.ShaderMaterial({
     uniforms: {
       uHeight: { value: heightTexture },
@@ -730,6 +780,8 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
       uLightColor: { value: new THREE.Color(1, 0.98, 0.92) },
       uAmbient: { value: new THREE.Color(0.38, 0.42, 0.48) },
       uSeaLevel: { value: SEA_LEVEL },
+      uGrassTexture: { value: grassTexture },
+      uGrassTextureReady: { value: false },
     },
     vertexShader: VERTEX_SHADER,
     fragmentShader: FRAGMENT_SHADER,
