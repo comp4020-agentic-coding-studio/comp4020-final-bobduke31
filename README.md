@@ -1,69 +1,69 @@
-# The Isle
+# Shared terrain
 
-A fictional island, shared by whoever visits it. There's no login and no
-feed — just one map. Click or tap a spot, drop a flag, a campfire, a tent, a
-boat, a tree, or a ruin, and it stays there for the next person who visits.
-If it's a mark you placed yourself, a small × lets you take it back.
+A real-time, multiplayer fantasy map: anyone who opens it paints shared
+terrain — raise mountains, carve coastlines, plant forests — and sees
+everyone else's changes arrive live, with no reload. There's no login; an
+anonymous session distinguishes one visitor from another, and the server
+checks who did what before it acts.
 
-This is the first version, shipped for Crit 8 ("It's alive!"). It does one
-thing: a stranger visits, leaves a mark, and finds it still there when they
-come back — and can remove their mark if they change their mind. The
-real-time layer (seeing other people's marks appear live) and a bigger world
-are deliberately left for later.
+This started as **The Isle** (Crit 8): a fictional island where visitors
+dropped fixed marks. That app still runs, unchanged, at [`/isle/`](/isle/)
+— it isn't deleted, just no longer the homepage, now that the project's
+actual direction (a real-time, multiplayer map editor, not marks on a
+static image) has a working prototype of its own.
 
 ## The core interaction
 
-1. Open the island.
-2. Click or tap anywhere on it.
-3. Pick one of six icons from the small palette that appears.
-4. The mark is saved. Reload the page, or come back tomorrow — it's still
-   there.
-5. A mark you placed carries a small red × in its corner. Click it to remove
-   that mark. Only yours carry one — you can't remove anyone else's.
+1. Open the map.
+2. Pick a tool — Raise, Lower, Mountain, Forest, and more line the toolbar.
+3. Drag on the map. The stroke appears instantly for you, and within about a
+   second for everyone else who has the page open.
+4. Made a mistake? **Undo my last stroke** reverts your own most recent
+   edit — never anyone else's, even if someone paints over the same spot
+   right after you.
+5. Switch between a flat Top-down view (precise editing) and a 3D Oblique
+   view (a real lit, shaded heightfield) at any time — both stay in sync
+   with the same shared data.
 
-That's the whole app, on purpose. Everything else is in service of making
-that one loop feel good, not in adding more to do.
+Everything anyone paints is saved to the server immediately; reload, or
+come back tomorrow, and it's still there.
 
-## What "good" means for this app (first draft)
+## Multi-user, checked on the server
 
-Good, for a small shared space like this, isn't the same as good for a
-product with a feed and a login. The brief points at the small web and games
-made for a handful of friends — places that are legible and calm because
-only a few people shaped them, not because a moderation team is watching. I
-want The Isle to feel closer to that than to a public comment section.
+Two people, each in their own browser with no shared cookies, act on the
+same map and are told apart. What's shared and what's per-person is a
+deliberate choice, not an accident:
 
-A first attempt at what that means here:
-
-- **It reads as a place, not a grid.** A mark should feel left *somewhere* —
-  on the hill, by the lake, out on the point. The island's own terrain
-  gives marks that sense of location.
-- **It stays legible as it fills up.** A handful of marks should look like
-  visitors; a few hundred shouldn't look like vandalism. Unlimited
-  overlapping marks won't stay legible forever — this is the main open
-  problem (see Known gaps).
-- **It can't be used to write anything.** No text field — only six fixed
-  icons. A map anyone can scrawl free text onto gets defaced on day one.
-- **Mistakes aren't permanent.** Removing your own mark matters too — a
-  place that only accumulates marks, with no way back, punishes a misclick
-  as much as something you meant.
-
-What I looked at while deciding this: the brief's own pointers toward the
-small web and games built for a handful of people; shared pixel-canvas
-projects, as an example of what an open, mark-by-mark space can become at
-scale, good and bad; and early-web guestbooks, which solved a smaller
-version of the same problem with almost no moderation at all.
+- **Terrain itself stays a shared, ownerless canvas.** Anyone can paint any
+  cell — there's no claim or lock on a piece of land. This was decided for
+  Crit 9 and hasn't changed; see `ADR.md`'s first entry for why.
+- **Undo is strictly per-session, checked server-side.** A request can only
+  ever undo whatever *that same session* last painted — there's no way to
+  address someone else's edit, by construction, not just by convention. See
+  `ADR.md`'s second entry for the full reasoning.
+- **Every edit is logged, server-side, with who did it** — including
+  attempts that get refused. [`/logs/`](/logs/) shows this live; the same
+  information is also in this app's own process output
+  (`flyctl logs -a <repo>`), so it's there whether or not anyone's looking
+  at the page.
 
 ## Known gaps — named now, not hidden
 
-- **No rate limiting yet.** A visitor can place (or remove) marks as fast as
-  they like.
-- **No real-time layer yet.** Marks only appear on load or reload. The crit
-  spec says this can wait, so it has.
-- **One fixed island, no growth yet.** The world doesn't get bigger as more
-  people visit.
+- **Visual quality is a work in progress.** `ROADMAP.md` tracks this
+  honestly: some terrain (mountains, in particular) still reads as
+  obviously stamped rather than hand-sculpted, named as a real,
+  not-yet-fixed limitation rather than hidden behind a nicer screenshot.
+- **Undo is one level deep, in memory.** It reverts your very last stroke,
+  not a history you can step back through further — that's deliberately
+  left to a later, properly persisted version-history feature, not
+  conflated with this narrower permission feature.
+- **No rate limiting.** A visitor can paint as fast as they like.
+- **One shared map, no growth or multiple maps yet.**
 
 ## Credits
 
-Island art and mark icons are sourced, not hand-drawn — see
-[the credits page](/credits/) (also [`CREDITS.md`](CREDITS.md) in the repo)
-for the full licence and attribution record for each asset.
+Terrain rendering reuses Three.js (vendored, MIT) and techniques adapted
+from published work — see [the credits page](/credits/) (also
+[`CREDITS.md`](CREDITS.md) in the repo) for the full licence and
+attribution record, including what was built from scratch versus adapted
+from an existing source.
