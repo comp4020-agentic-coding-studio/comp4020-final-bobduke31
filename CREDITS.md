@@ -60,10 +60,18 @@ the browser with no build step, no attribution required by either licence.
   *technique* is reused (hand-written against a standard `ShaderMaterial`
   instead); the package is not.
 - **Kenney's Nature Kit** (CC0, real low-poly 3D tree/rock models, GLB-ready)
-  — good fidelity, but needs `GLTFLoader` and binary asset fetching, a second
-  piece of infrastructure on top of this change. Left for a later pass if the
-  project wants real 3D tree models (see "Forest canopy" below for what
-  shipped instead).
+  — trialled on the `final-redesign-prototype` branch (not merged to `main`):
+  `GLTFLoader` (vendored under `public/world/vendor/three/`, same MIT three.js
+  release as the rest of the app) loads `tree_pineRoundC.glb` and `tree_oak.glb`
+  in place of the billboard sprites below. Real screenshots at a near-horizontal
+  camera tilt (82°) show individual tree silhouettes reading clearly, which a
+  flat billboard cannot do edge-on - a genuine improvement over the billboard
+  approach at that camera angle. One integration cost found and fixed: Kenney's
+  glTF export authors materials as `metalness: 1, roughness: 1` (meant for a
+  scene with a real environment map); without one they render almost black
+  under this scene's plain directional+ambient lighting, so the loader forces
+  `metalness: 0` on load. Not yet a final decision - see ROADMAP.md's
+  prototype-plan section.
 - CC0/CC-BY forest-stamp icon packs on OpenGameArt/itch.io (e.g. "Fantasy
   Icons Ink", and the same eysselia "Brush and element for drawing a map"
   pack `research/prototypes/README.md` already used and moved away from) —

@@ -22,6 +22,7 @@
 //    KB covering the whole 256x256 grid, re-uploaded in full since that's
 //    already cheap at this size), not touch any CPU-side vertex buffer.
 import * as THREE from "./vendor/three/three.module.js";
+import { GLTFLoader } from "./vendor/three/GLTFLoader.js";
 import { GRID_SIZE, ELEVATION_MIN, ELEVATION_MAX, SEA_LEVEL, TERRAIN_TYPES, sampleBilinear } from "./terrain-model.js";
 import { computeCoastlineRings } from "./terrain-renderer.js";
 
@@ -465,55 +466,68 @@ function mulberry32(seed) {
   };
 }
 
-const TREE_TEXTURE_PATHS = ["/world/assets/tree-deciduous.png", "/world/assets/tree-conifer.png"];
-const TREE_WORLD_HEIGHT = 2.6;
-const TREE_WORLD_WIDTH = 2.0;
+// PROTOTYPE TRIAL (final-redesign-prototype branch, not merged to main):
+// real low-poly glTF tree meshes (Kenney Nature Kit, CC0 - see CREDITS.md)
+// in place of the flat billboard sprites, to test whether real geometry
+// reads better from the Oblique camera than a textured plane does. Billboard
+// approach (TREE_TEXTURE_PATHS, PlaneGeometry, camera-facing rotation) is
+// kept commented below rather than deleted, since this is a trial, not a
+// decided replacement - the user has not approved merging this.
+const TREE_MODEL_PATHS = ["/world/assets/tree_pineRoundC.glb", "/world/assets/tree_oak.glb"];
 
-function buildTreeLayer(scene, textureLoader) {
-  const geometry = new THREE.PlaneGeometry(TREE_WORLD_WIDTH, TREE_WORLD_HEIGHT);
-  geometry.translate(0, TREE_WORLD_HEIGHT / 2, 0);
+function buildTreeLayer(scene, textureLoader, gltfLoader) {
+  // Each variant's geometry/material isn't known until its glb loads, so
+  // meshes start as placeholders (0 instances) and get swapped to a real
+  // InstancedMesh once loaded - rebuild() calls queued before load finishes
+  // are replayed from the last elevation/type grids given to them.
+  const meshes = TREE_MODEL_PATHS.map(() => null);
+  let pendingGrids = null;
 
-  const meshes = TREE_TEXTURE_PATHS.map((path) => {
-    const texture = textureLoader.load(path);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    // MeshLambertMaterial was tried first (the plan's original intent: tint
-    // trees by the scene's real directional light so they sit in the same
-    // lighting as the terrain). In practice the billboard's single fixed
-    // face normal doesn't reliably face the light, so most instances came
-    // out nearly black - unreadable, worse than the flat green fill this is
-    // supposed to improve on. A flat, fixed daylight tint on an unlit
-    // material keeps the authored canopy colours legible; it doesn't darken
-    // in a mountain's shadow the way the ground does - a real limitation,
-    // not a hidden one (see PROCESS.md).
-    const material = new THREE.MeshBasicMaterial({
-      map: texture,
-      color: new THREE.Color(0.95, 0.97, 0.88),
-      transparent: true,
-      alphaTest: 0.4,
-      side: THREE.DoubleSide,
+  TREE_MODEL_PATHS.forEach((path, v) => {
+    gltfLoader.load(path, (gltf) => {
+      let geometry = null;
+      let material = null;
+      gltf.scene.traverse((obj) => {
+        if (obj.isMesh && !geometry) {
+          geometry = obj.geometry;
+          material = obj.material;
+          // Kenney's glTF export authors these as metalness:1/roughness:1
+          // (a PBR convention meant for a scene with a real environment
+          // map). This scene has none - only one DirectionalLight plus a
+          // flat AmbientLight - so a metal surface has no light to reflect
+          // and renders almost black. Forcing it to a plain matte (non-
+          // metal) material is the standard fix for dropping an
+          // env-map-authored PBR asset into a simpler lighting rig; it
+          // does not touch geometry or the authored vertex/palette colour.
+          material.metalness = 0;
+          material.roughness = 0.9;
+        }
+      });
+      if (!geometry) return;
+      const mesh = new THREE.InstancedMesh(geometry, material, 1);
+      mesh.count = 0;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      scene.add(mesh);
+      meshes[v] = mesh;
+      if (pendingGrids) rebuild(pendingGrids.elevationGrid, pendingGrids.typeGrid);
     });
-    const mesh = new THREE.InstancedMesh(geometry, material, 1);
-    mesh.count = 0;
-    mesh.castShadow = true;
-    scene.add(mesh);
-    return mesh;
   });
 
-  // Placement data (world position/scale) is kept here, outside rebuild(),
-  // so updateFacing() below can re-orient every instance toward a moving
-  // camera without recomputing the (expensive, seeded-random) placement
-  // pass itself - placement only changes on a terrain-type edit, facing
-  // changes on every camera move, and they're deliberately decoupled.
+  // Placement data (world position/rotation/scale) is kept here, outside
+  // rebuild(), in case a future per-camera-move update is reintroduced -
+  // real meshes don't need to face the camera (unlike the billboard they
+  // replace), so there's no updateFacing equivalent needed here.
   let placements = [[], []];
 
   function rebuild(elevationGrid, typeGrid) {
+    pendingGrids = { elevationGrid, typeGrid };
     const forestIndex = TERRAIN_TYPES.indexOf("forest");
     placements = [[], []];
     const rand = mulberry32(90125);
-    // A tree per forest cell would crowd them into a solid dark mass at
-    // TREE_WORLD_WIDTH's footprint (cells are 1 world unit apart, trees are
-    // 2 wide) - skipping most cells spaces individual trees out enough to
-    // actually read as scattered detail rather than a flat dark texture.
+    // A tree per forest cell would crowd them into a solid dark mass -
+    // skipping most cells spaces individual trees out enough to actually
+    // read as scattered detail rather than a flat dark mass.
     const PLACEMENT_CHANCE = 0.22;
     for (let y = 0; y < GRID_SIZE; y++) {
       for (let x = 0; x < GRID_SIZE; x++) {
@@ -525,54 +539,48 @@ function buildTreeLayer(scene, textureLoader) {
         const h = sampleElevationBilinear(elevationGrid, jx, jz);
         const variant = rand() < 0.65 ? 0 : 1;
         const scale = 1.1 + rand() * 0.6;
-        placements[variant].push({ x: jx, y: h * HEIGHT_SCALE, z: jz, scale });
+        const rotY = rand() * Math.PI * 2;
+        placements[variant].push({ x: jx, y: h * HEIGHT_SCALE, z: jz, scale, rotY });
       }
     }
 
+    const matrix = new THREE.Matrix4();
+    const position = new THREE.Vector3();
+    const quaternion = new THREE.Quaternion();
+    const scaleVec = new THREE.Vector3();
+    const euler = new THREE.Euler();
     for (let v = 0; v < meshes.length; v++) {
       const mesh = meshes[v];
+      if (!mesh) continue; // glb for this variant hasn't loaded yet
       const list = placements[v];
-      if (list.length > mesh.instanceMatrix.count) {
-        mesh.dispose?.();
-        meshes[v] = new THREE.InstancedMesh(mesh.geometry, mesh.material, Math.max(1, list.length));
+      let active = mesh;
+      if (list.length > active.instanceMatrix.count) {
+        active.dispose?.();
+        active = new THREE.InstancedMesh(mesh.geometry, mesh.material, Math.max(1, list.length));
+        active.castShadow = true;
+        active.receiveShadow = true;
         scene.remove(mesh);
-        scene.add(meshes[v]);
-        meshes[v].castShadow = true;
+        scene.add(active);
+        meshes[v] = active;
       }
-      meshes[v].count = list.length;
-    }
-  }
-
-  // ROADMAP.md task 3: these were never real billboards (see the comment on
-  // the material above) - each instance kept one fixed world orientation,
-  // which only ever happened to face the camera because there used to be
-  // exactly one fixed camera position. Now that the camera can sit at any
-  // of 4 azimuths (or anywhere continuously via tilt), every instance's
-  // rotation is recomputed here, each time the camera moves - a real
-  // (Y-axis-only, so trees stay upright) billboard rotation, cheap enough
-  // to redo in full every call since tree counts are bounded by forest-cell
-  // count, same reasoning as the full-grid texture re-uploads elsewhere.
-  const matrix = new THREE.Matrix4();
-  const position = new THREE.Vector3();
-  const quaternion = new THREE.Quaternion();
-  const scaleVec = new THREE.Vector3();
-  const euler = new THREE.Euler();
-  function updateFacing(camera) {
-    for (let v = 0; v < meshes.length; v++) {
-      const active = meshes[v];
-      const list = placements[v];
       for (let i = 0; i < list.length; i++) {
         const p = list[i];
-        const rotY = Math.atan2(camera.position.x - p.x, camera.position.z - p.z);
-        euler.set(0, rotY, 0);
+        euler.set(0, p.rotY, 0);
         quaternion.setFromEuler(euler);
         position.set(p.x, p.y, p.z);
         scaleVec.set(p.scale, p.scale, p.scale);
         matrix.compose(position, quaternion, scaleVec);
         active.setMatrixAt(i, matrix);
       }
+      active.count = list.length;
       if (list.length > 0) active.instanceMatrix.needsUpdate = true;
     }
+  }
+
+  function updateFacing() {
+    // Real meshes have genuine volume from every angle - no camera-facing
+    // rotation needed (this was the billboard-specific fix for ROADMAP.md
+    // task 3; kept as a no-op so the caller in the render loop is unchanged).
   }
 
   return { meshes, rebuild, updateFacing };
@@ -785,7 +793,8 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
   scene.add(new THREE.AmbientLight(0xffffff, 0.25));
 
   const textureLoader = new THREE.TextureLoader();
-  const trees = buildTreeLayer(scene, textureLoader);
+  const gltfLoader = new GLTFLoader();
+  const trees = buildTreeLayer(scene, textureLoader, gltfLoader);
   trees.rebuild(elevationGrid, typeGrid);
 
   const coastline = buildCoastlineLine(scene);
