@@ -7,152 +7,147 @@
     <link rel="stylesheet" href="/world/world.css" />
   </head>
   <body>
-    <header class="page-header">
-      <h1>Shared terrain — multiplayer map editor</h1>
-      <p>
-        Pick a tool, then drag on the map. Open this page in a second window or browser profile to watch changes
-        arrive live, with no reload. <a href="/logs/">See the live activity log</a> &middot;
-        <a href="/isle/">The Isle (Crit 8)</a>
-      </p>
-    </header>
-
-    <div class="toolbar">
-      <div class="tool-group">
-        <span class="tool-group-label">Elevation</span>
-        <button type="button" data-tool="raise" class="active" title="Raises existing land. Has no effect on the sea.">
-          Raise
-        </button>
-        <button type="button" data-tool="lower" title="Lowers existing land, but stops short of the sea - it never turns land into water.">
-          Lower
-        </button>
-        <button
-          type="button"
-          data-tool="smooth"
-          title="Softens bumpy land by averaging it with its neighbours. Never crosses the coastline into the sea."
-        >
-          Smooth
-        </button>
-      </div>
-      <div class="tool-group">
-        <span class="tool-group-label">Relief</span>
-        <button type="button" data-tool="mountain" title="Raises land into a rocky ridge - changes height and material together.">
-          Mountain
-        </button>
-        <button type="button" data-tool="peak" title="Raises land to a high, rocky summit - the tallest, most prominent terrain.">
-          Peak
-        </button>
-      </div>
-      <div class="tool-group">
-        <span class="tool-group-label">Terrain</span>
-        <button type="button" data-tool="grassland">Grassland</button>
-        <button type="button" data-tool="sand">Sand</button>
-        <button type="button" data-tool="forest">Forest</button>
-        <button type="button" data-tool="rock" title="Rocky ground material, at whatever height it already is - for height, use Mountain or Peak.">
-          Rock
-        </button>
-      </div>
-      <div class="tool-group">
-        <span class="tool-group-label">Land</span>
-        <button type="button" data-tool="land" title="The only tool that turns sea into land.">Create land</button>
-        <button type="button" data-tool="sea" title="The only tool that turns land into sea.">Paint sea</button>
-      </div>
-      <div class="tool-group">
-        <span class="tool-group-label">Water</span>
-        <button type="button" data-tool="deepen" title="Deepens existing sea. Has no effect on land - it never turns water into land.">
-          Deepen
-        </button>
-        <button type="button" data-tool="shallow" title="Shallows existing sea, but stops short of the coastline - it never turns water into land.">
-          Shallow
-        </button>
-      </div>
-      <div class="tool-group">
-        <label>Brush size <input id="brush-size" type="range" min="1" max="28" step="1" value="10" /></label>
-        <label>Strength <input id="brush-strength" type="range" min="0.01" max="0.3" step="0.01" value="0.15" /></label>
-      </div>
-      <div class="tool-group">
-        <button
-          type="button"
-          id="undo-button"
-          title="Undoes your own last stroke - checked server-side, so this can only ever undo a stroke you painted, never anyone else's."
-        >
-          Undo my last stroke
-        </button>
-      </div>
-      <div class="tool-group">
-        <span class="tool-group-label">View</span>
-        <button type="button" data-view="top" class="active" title="Flat map, accurate shapes - best for precise editing.">
-          Top-down
-        </button>
-        <button
-          type="button"
-          data-view="oblique"
-          title="A real 3D heightfield view with lighting and shadow (falls back to a flatter column view if your browser has no WebGL2). Still fully editable."
-        >
-          Oblique
-        </button>
-      </div>
-    </div>
-    <div class="toolbar hidden" id="camera-toolbar">
-      <div class="tool-group">
-        <span class="tool-group-label">Direction</span>
-        <div
-          class="compass"
-          id="camera-compass"
-          title="Drag anywhere on the dial to rotate the view freely, 360° - the camera position, tilt and zoom are never reset by this."
-        >
-          <svg viewBox="0 0 100 100" width="84" height="84" aria-hidden="true">
-            <circle cx="50" cy="50" r="46" class="compass-ring" />
-            <text x="50" y="13" class="compass-label">N</text>
-            <text x="89" y="54" class="compass-label">E</text>
-            <text x="50" y="95" class="compass-label">S</text>
-            <text x="11" y="54" class="compass-label">W</text>
-            <g id="compass-needle-group">
-              <line x1="50" y1="50" x2="50" y2="15" class="compass-needle" />
-              <circle cx="50" cy="15" r="6" class="compass-handle" />
-            </g>
-          </svg>
-        </div>
-        <div class="compass-presets">
-          <button type="button" data-azimuth-preset="0" title="Snap to looking from north toward south.">N&rarr;S</button>
-          <button type="button" data-azimuth-preset="1" class="active" title="Snap to looking from south toward north.">
-            S&rarr;N
+    <div class="app">
+      <header class="topbar">
+        <span class="brand">Shared terrain</span>
+        <div class="view-switch" role="group" aria-label="Map view">
+          <button type="button" data-view="top" class="active" title="Flat map, accurate shapes - best for precise editing.">
+            Top-down
           </button>
-          <button type="button" data-azimuth-preset="2" title="Snap to looking from east toward west.">E&rarr;W</button>
-          <button type="button" data-azimuth-preset="3" title="Snap to looking from west toward east.">W&rarr;E</button>
+          <button
+            type="button"
+            data-view="oblique"
+            title="A real 3D heightfield view with lighting and shadow (falls back to a flatter column view if your browser has no WebGL2). Still fully editable."
+          >
+            Oblique
+          </button>
         </div>
-      </div>
-      <div class="tool-group">
-        <label>Tilt <input id="camera-tilt" type="range" min="12" max="82" step="1" value="58" /></label>
-        <label>Zoom <input id="camera-zoom" type="range" min="0.4" max="3" step="0.05" value="1" /></label>
-      </div>
-      <div class="tool-group">
-        <span class="tool-group-label">Pan</span>
-        <div
-          class="pan-trackpad"
-          id="camera-pan-trackpad"
-          title="Drag like a trackpad to pan precisely - the content follows your drag. Small drags give small, exact moves, even fully zoomed in."
-        ></div>
-      </div>
-      <div class="tool-group">
-        <button type="button" id="camera-fit" title="Frame the camera to fit everything that's currently painted, at the current direction and tilt. The only control that resets zoom/pan.">
-          Reset / Fit view
-        </button>
-      </div>
-    </div>
-    <p class="tool-hint">
-      Raise / Lower / Smooth / Mountain / Peak only ever reshape existing land, and Deepen / Shallow only ever
-      reshape existing sea - neither side can turn into the other. Create Land and Paint Sea are the only tools
-      that change the coastline itself. The water surface stays level no matter how deep the seabed gets.
-    </p>
-    <p class="tool-hint hidden" id="camera-hint">
-      In Oblique view, the mouse wheel zooms in/out centred on the cursor. Dragging on the map itself always paints
-      - use the compass dial and pan trackpad above to look around instead.
-    </p>
+        <div class="topbar-right">
+          <button
+            type="button"
+            id="undo-button"
+            class="ghost-button"
+            title="Undoes your own last stroke - checked server-side, so this can only ever undo a stroke you painted, never anyone else's."
+          >
+            Undo
+          </button>
+          <a href="/logs/" class="ghost-link">Activity log</a>
+          <a href="/isle/" class="ghost-link">The Isle (Crit 8)</a>
+        </div>
+      </header>
 
-    <main>
-      <canvas id="stage"></canvas>
-      <canvas id="stage-3d" class="hidden"></canvas>
-    </main>
+      <nav class="category-rail" aria-label="Tool categories">
+        <button type="button" class="category-btn active" data-category="land">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M2 18l5-7 4 5 3-4 8 6z" fill="currentColor"/></svg>
+          <span>Land</span>
+        </button>
+        <button type="button" class="category-btn" data-category="terrain">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="7" cy="8" r="3" fill="currentColor"/><path d="M2 20c0-4 3-6 5-6s5 2 5 6z" fill="currentColor"/><path d="M13 20c0-3 2.5-5 4.5-5s4.5 2 4.5 5z" fill="currentColor"/></svg>
+          <span>Terrain</span>
+        </button>
+        <button type="button" class="category-btn" data-category="water">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M2 14c2-2 4-2 6 0s4 2 6 0 4-2 6 0 4 2 6 0v6c-2 2-4 2-6 0s-4-2-6 0-4 2-6 0-4-2-6 0z" fill="currentColor"/></svg>
+          <span>Water</span>
+        </button>
+      </nav>
+
+      <main class="canvas-wrap">
+        <div class="canvas-area" id="canvas-area">
+          <canvas id="stage"></canvas>
+          <canvas id="stage-3d" class="hidden"></canvas>
+
+          <div class="camera-float hidden" id="camera-toolbar">
+            <h4>Camera</h4>
+            <div
+              class="compass"
+              id="camera-compass"
+              title="Drag anywhere on the dial to rotate the view freely, 360° - the camera position, tilt and zoom are never reset by this."
+            >
+              <svg viewBox="0 0 100 100" width="72" height="72" aria-hidden="true">
+                <circle cx="50" cy="50" r="46" class="compass-ring" />
+                <text x="50" y="13" class="compass-label">N</text>
+                <text x="89" y="54" class="compass-label">E</text>
+                <text x="50" y="95" class="compass-label">S</text>
+                <text x="11" y="54" class="compass-label">W</text>
+                <g id="compass-needle-group">
+                  <line x1="50" y1="50" x2="50" y2="15" class="compass-needle" />
+                  <circle cx="50" cy="15" r="6" class="compass-handle" />
+                </g>
+              </svg>
+            </div>
+            <div class="compass-presets">
+              <button type="button" data-azimuth-preset="0" title="Look from north toward south.">N&rarr;S</button>
+              <button type="button" data-azimuth-preset="1" class="active" title="Look from south toward north.">S&rarr;N</button>
+              <button type="button" data-azimuth-preset="2" title="Look from east toward west.">E&rarr;W</button>
+              <button type="button" data-azimuth-preset="3" title="Look from west toward east.">W&rarr;E</button>
+            </div>
+            <label>Tilt <input id="camera-tilt" type="range" min="12" max="82" step="1" value="58" /></label>
+            <label>Zoom <input id="camera-zoom" type="range" min="0.4" max="3" step="0.05" value="1" /></label>
+            <div
+              class="pan-trackpad"
+              id="camera-pan-trackpad"
+              title="Drag like a trackpad to pan precisely - the content follows your drag."
+            ></div>
+            <button type="button" id="camera-fit" class="ghost-button full-width" title="Frame the camera to fit everything currently painted.">
+              Reset / fit view
+            </button>
+          </div>
+        </div>
+
+        <p class="tool-hint" id="category-hint">
+          Raise / Lower / Smooth / Mountain / Peak only ever reshape existing land - they never touch the sea. Open
+          this page in a second window or browser profile to watch changes arrive live, with no reload.
+        </p>
+        <p class="tool-hint hidden" id="camera-hint">
+          In Oblique view, the mouse wheel zooms in/out centred on the cursor. Dragging on the map itself always
+          paints - use the compass dial and pan trackpad to look around instead.
+        </p>
+      </main>
+
+      <aside class="options-panel">
+        <section class="options-section" data-panel="land">
+          <h3>Elevation</h3>
+          <div class="btn-grid">
+            <button type="button" data-tool="raise" class="active" title="Raises existing land. Has no effect on the sea.">Raise</button>
+            <button type="button" data-tool="lower" title="Lowers existing land, but stops short of the sea.">Lower</button>
+            <button type="button" data-tool="smooth" title="Softens bumpy land by averaging it with its neighbours.">Smooth</button>
+          </div>
+          <h3>Relief</h3>
+          <div class="btn-grid">
+            <button type="button" data-tool="mountain" title="Raises land into a rocky ridge - height and material together.">Mountain</button>
+            <button type="button" data-tool="peak" title="Raises land to a high, rocky summit.">Peak</button>
+          </div>
+        </section>
+
+        <section class="options-section hidden" data-panel="terrain">
+          <h3>Terrain material</h3>
+          <div class="btn-grid">
+            <button type="button" data-tool="grassland">Grassland</button>
+            <button type="button" data-tool="sand">Sand</button>
+            <button type="button" data-tool="forest">Forest</button>
+            <button type="button" data-tool="rock" title="Rocky ground material, at whatever height it already is.">Rock</button>
+          </div>
+        </section>
+
+        <section class="options-section hidden" data-panel="water">
+          <h3>Coastline</h3>
+          <div class="btn-grid">
+            <button type="button" data-tool="land" title="The only tool that turns sea into land.">Create land</button>
+            <button type="button" data-tool="sea" title="The only tool that turns land into sea.">Paint sea</button>
+          </div>
+          <h3>Seabed</h3>
+          <div class="btn-grid">
+            <button type="button" data-tool="deepen" title="Deepens existing sea. Has no effect on land.">Deepen</button>
+            <button type="button" data-tool="shallow" title="Shallows existing sea, but stops short of the coastline.">Shallow</button>
+          </div>
+        </section>
+
+        <div class="options-footer">
+          <label>Brush size <input id="brush-size" type="range" min="1" max="28" step="1" value="10" /></label>
+          <label>Strength <input id="brush-strength" type="range" min="0.01" max="0.3" step="0.01" value="0.15" /></label>
+        </div>
+      </aside>
+    </div>
     <script src="/world/vendor/d3-array.js"></script>
     <script src="/world/vendor/d3-contour.js"></script>
     <script type="module" src="/world/world-client.js"></script>

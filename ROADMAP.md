@@ -32,6 +32,41 @@ better (for "implementation cost," 10 = cheap/fast, 1 = expensive/slow).
 - 🔨 In progress
 - ✅ Done (remaining known limitations stated inline, not hidden)
 
+## Product phases (how the numbered tasks below add up to a whole product)
+
+The list below reads as 12 (now 13) separate feature tickets, but it's
+actually working through four phases of one product - stated here so the
+ordering reads as a plan toward "a real multiplayer map editor," not a grab
+bag:
+
+1. **Make the one shared map itself correct and good-looking** (tasks 1, 2,
+   4, 5, 6, 7) - fixed sea level, natural slopes, rendering resolution, and
+   both views' art quality. Everything here is about the *terrain data and
+   its rendering*, independent of how a person interacts with it. This phase
+   is mostly done; tasks 6 and 7 remain.
+2. **Make editing and navigating that map not fight the user** (task 3,
+   task 13) - camera controls and, as of this entry, the whole editor
+   workspace (canvas space, tool organization, panel layout). This phase
+   exists because phase 1's fidelity is wasted if the UI around it is a
+   cramped fixed-size canvas with every tool visible at once - task 13 was
+   pulled forward out of numeric order for exactly this reason, at explicit
+   user request, rather than waiting for tasks 6-12.
+3. **Grow what can be depicted on one map** (tasks 8, 9) - real vegetation,
+   rivers and lakes - content breadth within the existing single-map,
+   single-scale model.
+4. **Grow the product beyond one fixed map** (tasks 10, 11, 12) - multiple/
+   larger maps, procedural starting terrain, and placeable objects (roads,
+   buildings, walls). Per `CLAUDE.md`, a regional-scale map is the near-term
+   fidelity target and continent-scale is "the same engine at a later,
+   larger scope" via task 10/11, not a separate system; an isometric city
+   view is explicitly out of scope for now, not a deferred task.
+
+Phases are sequential in intent (no point hand-placing buildings on a map
+whose terrain still looks wrong), but, as task 13 shows, a phase-2 problem
+severe enough to undermine everything else can jump the queue - the numbered
+list is a priority order within a phase, not a rule that blocks reordering
+across phases.
+
 ## Already completed (context, not part of this ordered list)
 
 - **C9 real-time sync** - shared terrain grid, SQLite persistence, SSE
@@ -1546,6 +1581,170 @@ than to the terrain grid. Likely needs its own data model decision (a
 third SQLite table alongside `marks` and `terrain_cells`) and its own
 concurrency note in `ADR.md` once scoped.
 
+## 13. Editor workspace UI/UX redesign
+
+**Status:** ✅ Prototyped on `final-redesign-prototype` (branched from
+`main` at `bf0a08e`, not merged - built and shown for a decision, not shipped
+yet). Pulled forward out of numeric order (see "Product phases" above) at
+explicit user request: "Prioritise UI/UX now, rather than more isolated
+asset experiments."
+
+### Root cause (verified against the running app, not assumed)
+
+Every prior task in this file improved the *rendered map itself*; none
+touched the chrome around it. Direct inspection of the pre-redesign app
+(`research/roadmap/screenshots/2026-10-17-uiux-before-{topdown,oblique}.png`)
+showed one dominant, structural problem shared by every tool and both map
+views, not a cosmetic one: `#stage`/`#stage-3d` were hardcoded to a fixed
+768×768px box (`CELL_PX = 3` constant × `GRID_SIZE = 256`) regardless of
+actual window size, so on any wide monitor the map - the entire point of the
+product - occupied a small fraction of the viewport, surrounded by empty
+dark background. On top of that, all 13 tools (5 `tool-group`s: Elevation,
+Relief, Terrain, Land, Water) were shown simultaneously in one wrapping
+toolbar, and the camera controls (direction/tilt/zoom/pan, relevant only in
+Oblique view) lived in a second toolbar permanently reserving vertical space
+even in Top-down.
+
+### Approaches compared
+
+Three complete, real HTML/CSS mockups were built (not described) using an
+actual captured map screenshot as content rather than placeholder boxes, so
+canvas-to-chrome proportions could be judged honestly - rendered via
+Playwright for side-by-side comparison, not eyeballed as markup:
+
+| | A. Fixed left sidebar, flat tool list | B. Category rail + right "Tool Options" panel (Wonderdraft-style) | C. Canvas-first, floating panels over the map |
+|---|---|---|---|
+| **Summary** | Keep one always-visible sidebar listing every tool (grouped, not tabbed); canvas fills the remaining space. | Left icon rail selects a tool *category* (Land/Terrain/Water); a right panel shows only that category's tools and options - mirrors Wonderdraft's documented tabs + Tool Options split and Inkarnate's icon-rail + contextual-options pattern (researched via WebSearch, since `CLAUDE.md` names both as the visual target). | No fixed chrome at all - all panels float, semi-transparent, directly over a full-bleed canvas; closest to a "canvas is the whole app" feel. |
+| Reuses target apps' real patterns | 4 | 9 | 5 |
+| Canvas space at rest | 7 | 8 | 10 |
+| Tool discoverability (new user) | 6 | 8 | 5 |
+| Scales to more tools later (tasks 8-12 add vegetation density, rivers, buildings...) | 5 | 9 | 4 |
+| Implementation cost (10=cheap) | 8 | 7 | 6 |
+| Screenshot | `research/roadmap/screenshots/2026-10-17-uiux-direction-a-sidebar-mockup.png` | `research/roadmap/screenshots/2026-10-17-uiux-direction-b-wonderdraft-mockup.png` | `research/roadmap/screenshots/2026-10-17-uiux-direction-c-floating-mockup.png` |
+
+**Risks:** Direction C's floating-everything look is the most visually
+striking in a single screenshot, but a map editor needs tools to stay
+discoverable and fitted to a long editing session, not just look good in a
+marketing shot - panels drifting over live terrain also risks occluding the
+exact area being edited, with no fixed-chrome alternative to glance at.
+Direction A's flat always-visible list doesn't scale: tasks 8-12 (real
+vegetation controls, rivers/lakes, procedural generation, buildings/roads)
+each add more tools, and a flat sidebar grows linearly with no grouping
+mechanism beyond what already exists today.
+
+**Recommendation:** Direction B. It's the one option backed by a real,
+documented precedent from the project's own named visual target (Wonderdraft
+specifically ships left category tabs + a right Tool Options panel), it
+scales to future tool growth via categories rather than list length, and it
+devotes the most space to the canvas of any option that keeps tools
+persistently discoverable (C only wins on raw canvas space by hiding tools
+behind floating panels, which trades discoverability for it).
+
+### Implementation
+
+Direction B, implemented as:
+
+- **Root cause fix (applies regardless of chosen direction):** `index.html`
+  and `world.css` rewritten around a CSS Grid app shell
+  (`grid-template-columns: 76px 1fr 230px`) with the canvas column as the
+  only `1fr` track. `#stage`/`#stage-3d` changed from a fixed 768×768px box
+  to `max-width/max-height: 100%` + `aspect-ratio: 1/1` inside a
+  flex-centered `.canvas-area`, so the square grid's *absolute* size now
+  responds to real available viewport space. `world-client.js`'s hardcoded
+  `CELL_PX = 3` replaced with `computeCellPx()`, which measures
+  `#canvas-area`'s actual bounding box once at load and derives a backing-
+  store resolution from it (clamped 2-6px/cell), rather than assuming a
+  fixed window size.
+- **Category rail + options panel:** the old 5 `tool-group`s consolidated
+  into 3 categories - Land (Elevation + Relief), Terrain (material), Water
+  (Coastline + Seabed) - as a left icon rail (`wireCategoryRail()` in
+  `world-client.js`) toggling which `<section data-panel="...">` is visible
+  in a right `.options-panel`. Switching category also selects that
+  category's first tool as the active one (`CATEGORY_FIRST_TOOL`), so the
+  active brush is never a tool hidden in a panel that just closed. Icons are
+  hand-authored inline SVG, not emoji - emoji was tried first in the mockups
+  and rendered as empty "tofu" boxes under headless Chromium, a concrete bug
+  avoided in the real implementation.
+- **Camera controls demoted to a floating overlay:** `#camera-toolbar`
+  moved from a second permanent toolbar to `.camera-float`, an absolutely-
+  positioned panel inside `.canvas-area` itself, shown only in Oblique view.
+  Justification: camera direction/tilt/zoom/pan is view-*navigation*, not a
+  terrain-*editing* tool category, so it doesn't belong beside Raise/Lower/
+  etc. in the rail/panel split, and keeping it permanently docked in
+  Top-down (where it has nothing to control) was pure wasted space.
+- **Shared brush controls:** one Brush size / Strength footer pinned to the
+  bottom of the options panel, used by every category (an earlier draft
+  duplicated these per-category; removed as unnecessary per this task's own
+  "do not add unnecessary features" constraint - it was the same two
+  sliders three times, not three different concerns).
+- **Per-category hint text:** found and fixed during this task's own final
+  art/usability pass (not part of the original three-direction comparison):
+  the bottom hint paragraph was still showing fixed land/water-specific copy
+  ("Raise / Lower / Smooth / Mountain / Peak only ever reshape existing
+  land...") while the Terrain panel was active, describing tools that
+  weren't even visible. Replaced the single static hint with
+  `CATEGORY_HINT`, a per-category sentence swapped in `wireCategoryRail()`.
+- **Responsive breakpoint:** below 900px width, the grid collapses to a
+  single column (rail becomes a horizontal strip, options panel moves below
+  the canvas, page becomes scrollable) rather than clipping the canvas.
+
+### Verification (real browser, Playwright, against `localhost:8099`, seeded scene)
+
+- **Canvas space:** `research/roadmap/screenshots/2026-10-17-uiux-before-topdown.png`
+  vs. `.../2026-10-17-uiux-after-topdown.png` - the map now fills nearly the
+  entire viewport at 1600×1000 instead of a ~768px box in a sea of empty
+  background.
+- **Both map views carry the new chrome correctly:**
+  `.../2026-10-17-uiux-after-topdown.png` and `.../2026-10-17-uiux-after-oblique.png`.
+- **Category switching works and updates the right state:** verified via
+  precise `[data-category="..."]` locators (an earlier ambiguous
+  `text=Terrain` selector falsely suggested switching was broken - it was
+  matching 3 different elements, not a real bug; re-verified with
+  `.evaluate(el => el.classList.contains("hidden"))` against both panels
+  directly). Screenshots:
+  `.../2026-10-17-uiux-after-terrain-panel.png`,
+  `.../2026-10-17-uiux-after-water-panel.png`.
+- **Actual editing workflow still works:** a real paint stroke was driven
+  through Playwright and confirmed to fire a `POST /api/terrain/cells`
+  request and visibly change the rendered terrain -
+  `.../2026-10-17-uiux-after-paint-workflow.png`.
+- **Camera controls still work after being moved into the floating panel:**
+  dragging the compass dial rotated the view (needle moved, `W→E` preset
+  activated) and the Tilt slider produced a visibly flatter viewing angle -
+  `.../2026-10-17-uiux-after-camera-rotated.png`,
+  `.../2026-10-17-uiux-after-camera-tilted.png`. Confirmed by actually
+  viewing both renders, not just checking for a thrown error.
+- **Responsive breakpoint:** `.../2026-10-17-uiux-after-narrow-viewport.png`
+  at <900px width shows the stacked, scrollable layout working as designed.
+- **Per-category hint-text fix:** `.../2026-10-17-uiux-category-hint-fix-terrain.png`
+  confirms the Terrain panel now shows terrain-specific copy instead of the
+  stale land/water text.
+- `pnpm typecheck` passes clean after every change in this task.
+
+### Remaining limitations (not fixed by this change, not hidden)
+
+- `computeCellPx()` measures available layout space once at load, not on
+  window resize (no `ResizeObserver`) - the CSS layout itself still scales
+  visually on resize via `max-width`/`max-height`, but the canvas's backing-
+  store resolution (and therefore paint-brush pixel precision) stays fixed
+  to whatever size the window was at load. Not needed for this prototype's
+  purpose (proving the layout direction), but a real follow-up before this
+  is adopted as the final UI.
+- No automated test coverage added for the new category-rail/panel wiring
+  (`wireCategoryRail`, `CATEGORY_HINT`) - verified manually via Playwright
+  in this session only, the same gap every other UI-only task in this file
+  currently has.
+- A full fresh art-consistency pass was done (new UI chrome's dark palette,
+  spacing, and icon style against the terrain rendering, KayKit trees, and
+  the CC0 grass texture) but did not surface changes beyond the hint-text
+  fix above - recorded here as a pass that was actually performed, not
+  skipped, per this task's own "check art consistency... and fix obvious
+  problems yourself" instruction.
+- This is a prototype on `final-redesign-prototype`, not yet adopted,
+  merged, or deployed - the next step is the user's decision on whether to
+  adopt it, per their own instruction ("Show me the working result before
+  we decide whether to adopt it").
+
 ---
 
 ## Completed work log
@@ -1632,3 +1831,28 @@ concurrency note in `ADR.md` once scoped.
   committing to it over a hand-rolled procedural-texture fallback. Not yet
   implemented; the image-generation experiment and final approach choice
   are still pending.
+- **2026-10-16/17** - On `final-redesign-prototype` (branched from `main` at
+  `bf0a08e`, test data, not merged): real art-asset trials for task 8
+  (Kenney Nature Kit glTF tree meshes vs. billboards, KayKit Forest Nature
+  Pack, and a real CC0 grass texture replacing an AI-generated placeholder
+  the user flagged as exactly the "fall back to self-generated assets"
+  pattern they'd forbidden) - see `CREDITS.md` for the sourcing trail.
+  Commits
+  [`f6c391d`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/f6c391d939b17601ff58152caad46cfc3a896399)
+  and
+  [`4c18d5f`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/4c18d5fac32d3d977c38cb2553bda45a39383875).
+- **2026-10-17** - Task 13 (editor workspace UI/UX redesign) assessed,
+  implemented, and verified in the same session on `final-redesign-prototype`,
+  pulled forward out of numeric order at the user's explicit request to
+  prioritize UI/UX over further isolated asset experiments. Three complete
+  design directions built as real, Playwright-rendered mockups and compared
+  before writing any application code; Direction B (Wonderdraft-style
+  category rail + right tool-options panel) implemented, along with the
+  underlying root-cause fix both other directions would have needed too (the
+  canvas's fixed 768px size, independent of which chrome surrounds it). A
+  real content bug (stale, category-irrelevant hint text) was found and
+  fixed during this task's own closing art/usability pass. See task 13
+  section above for the full comparison, implementation, and verification
+  trail with screenshot citations. Not yet committed to git - pending the
+  user's review of the working prototype before deciding whether to adopt
+  it, per their own "Show me the working result before we decide" request.

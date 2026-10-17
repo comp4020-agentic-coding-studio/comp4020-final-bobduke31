@@ -2,131 +2,334 @@
   color-scheme: dark;
 }
 
+* {
+  box-sizing: border-box;
+}
+
+html,
 body {
   margin: 0;
-  min-height: 100vh;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
   background: #11161b;
   color: #d8e2e8;
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+/* Full-viewport app shell: a 48px topbar, a fixed-width category rail, a
+   flexible canvas column, and a fixed-width options panel - the canvas
+   column is the only `1fr` track, so it's the one area that actually grows
+   or shrinks with the window (replacing the old fixed 768px canvas box,
+   which wasted most of a wide viewport as empty background - see
+   ROADMAP.md's UI/UX redesign entry). */
+.app {
+  display: grid;
+  grid-template-columns: 76px 1fr 230px;
+  grid-template-rows: 48px 1fr;
+  height: 100vh;
+  width: 100vw;
+}
+
+.topbar {
+  grid-column: 1 / -1;
   display: flex;
-  flex-direction: column;
   align-items: center;
+  gap: 1rem;
+  padding: 0 0.9rem;
+  background: #171e25;
+  border-bottom: 1px solid #2a333b;
 }
 
-.page-header {
-  text-align: center;
-  padding: 1.25rem 1rem 0.5rem;
-  max-width: 40rem;
+.brand {
+  font-size: 0.85rem;
+  font-weight: 600;
+  opacity: 0.85;
+  white-space: nowrap;
 }
 
-.tool-hint {
-  max-width: 40rem;
-  margin: 0.4rem 1rem 0;
+.topbar-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.ghost-link {
+  color: #8fc3e8;
   font-size: 0.78rem;
-  opacity: 0.7;
-  text-align: center;
+  text-decoration: none;
 }
 
-.page-header h1 {
-  margin: 0 0 0.25rem;
-  font-size: 1.4rem;
+.ghost-link:hover {
+  text-decoration: underline;
 }
 
-.page-header p {
-  margin: 0;
-  opacity: 0.8;
-  font-size: 0.9rem;
-}
-
-.toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1.25rem;
-  justify-content: center;
-  align-items: flex-end;
-  padding: 0.75rem 1rem;
-  margin: 0.5rem 1rem 0;
-  background: #1a2129;
-  border: 1px solid #2a333b;
-  border-radius: 0.5rem;
-}
-
-.tool-group {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-
-.tool-group-label {
-  font-size: 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  opacity: 0.65;
-  margin-right: 0.25rem;
-}
-
-.toolbar button {
+.ghost-button {
   background: #242e38;
   color: #d8e2e8;
   border: 1px solid #333f4a;
   border-radius: 0.35rem;
-  padding: 0.4rem 0.7rem;
-  font-size: 0.85rem;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.78rem;
   cursor: pointer;
 }
 
-.toolbar button:hover {
+.ghost-button:hover {
   background: #2d3946;
 }
 
-.toolbar button.active {
+.ghost-button.full-width {
+  width: 100%;
+}
+
+.view-switch {
+  display: flex;
+  background: #1a2129;
+  border: 1px solid #2a333b;
+  border-radius: 0.4rem;
+  overflow: hidden;
+}
+
+.view-switch button {
+  background: none;
+  border: none;
+  color: #d8e2e8;
+  padding: 0.32rem 0.85rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.view-switch button.active {
+  background: #4a86ad;
+  color: #06121a;
+  font-weight: 600;
+}
+
+/* Left icon rail: one button per tool CATEGORY (Land / Terrain / Water),
+   not per tool - each button swaps which <section> is visible in the right
+   options panel, the same category-tabs + tool-options-panel split
+   Wonderdraft and Inkarnate both use (see CREDITS.md / CLAUDE.md's named
+   visual bar), rather than a flat 20-button toolbar. */
+.category-rail {
+  grid-row: 2;
+  background: #171e25;
+  border-right: 1px solid #2a333b;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 0.6rem 0.4rem;
+  gap: 0.3rem;
+  overflow-y: auto;
+}
+
+.category-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  color: #93a3ad;
+  padding: 0.55rem 0.2rem;
+  cursor: pointer;
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.category-btn:hover {
+  background: #1f2831;
+}
+
+.category-btn.active {
+  background: #243546;
+  border-color: #4a86ad;
+  color: #8fc3e8;
+}
+
+.canvas-wrap {
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* The canvas itself now fills whatever space is actually available
+   (flex: 1 1 auto, min-height: 0) instead of a fixed 768px box - on a wide
+   monitor the map used to sit in a small square surrounded by empty dark
+   background; it now uses the real available area. A single aspect-ratio
+   box keeps the grid itself square (it IS a square 256x256 grid) while
+   letting that square's absolute size respond to the viewport. */
+.canvas-area {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0c1014;
+  padding: 0.8rem;
+}
+
+#stage,
+#stage-3d {
+  max-width: 100%;
+  max-height: 100%;
+  aspect-ratio: 1 / 1;
+  width: auto;
+  height: 100%;
+  border: 1px solid #2a333b;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.hidden {
+  display: none;
+}
+
+.tool-hint {
+  margin: 0;
+  padding: 0.45rem 1rem;
+  font-size: 0.72rem;
+  opacity: 0.65;
+  text-align: center;
+  border-top: 1px solid #2a333b;
+  background: #13181d;
+}
+
+/* Right options panel: the controls for whichever category is active in
+   the left rail - one shared brush-size/strength footer, since every tool
+   in every category uses the same two sliders (terrain-only tools simply
+   ignore Strength, exactly as they did when it was one shared toolbar
+   control before this redesign). */
+.options-panel {
+  grid-row: 2;
+  background: #171e25;
+  border-left: 1px solid #2a333b;
+  padding: 0.9rem 0.8rem;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.options-section h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.6;
+}
+
+.options-section h3:not(:first-child) {
+  margin-top: 1rem;
+}
+
+.btn-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.4rem;
+  margin-bottom: 0.3rem;
+}
+
+.btn-grid button {
+  background: #242e38;
+  color: #d8e2e8;
+  border: 1px solid #333f4a;
+  border-radius: 0.35rem;
+  padding: 0.45rem 0.3rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.btn-grid button:hover {
+  background: #2d3946;
+}
+
+.btn-grid button.active {
   background: #4a86ad;
   border-color: #6fa6cc;
   color: #06121a;
   font-weight: 600;
 }
 
-.toolbar label {
+.options-footer {
+  margin-top: auto;
+  padding-top: 0.9rem;
+  border-top: 1px solid #2a333b;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.options-panel label {
   display: flex;
   flex-direction: column;
   font-size: 0.72rem;
   opacity: 0.8;
-  gap: 0.2rem;
+  gap: 0.25rem;
 }
 
-main {
-  padding: 1rem;
-  display: flex;
-  justify-content: center;
+.options-panel input[type="range"] {
   width: 100%;
 }
 
-#stage,
-#stage-3d {
-  max-width: 90vw;
-  max-height: 65vh;
-  width: 768px;
-  height: 768px;
+/* Camera controls float directly over the canvas, only in Oblique view -
+   they're view-navigation (where you're looking from), not a terrain-
+   editing tool category, so they don't belong in the left rail/right panel
+   split with Raise/Lower/etc. Kept off the canvas's own paint surface by
+   living in this separate floating box, same no-gesture-conflict rule the
+   old fixed toolbar already relied on. */
+.camera-float {
+  position: absolute;
+  top: 0.9rem;
+  right: 0.9rem;
+  width: 158px;
+  background: #171e25ee;
+  backdrop-filter: blur(8px);
   border: 1px solid #2a333b;
-  cursor: crosshair;
-  touch-action: none;
+  border-radius: 0.5rem;
+  padding: 0.65rem 0.7rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
 }
 
-/* Task 4 (ROADMAP.md), by explicit request: Top-down no longer forces a
-   blocky pixel-art look - its renderer now shades continuously per pixel
-   instead of per grid cell (see terrain-renderer.js), so letting the
-   browser's default smooth scaling apply (removing the nearest-neighbour
-   override that used to live here) is what actually looks crisp instead of
-   chunky at the canvas's own device-pixel-ratio-aware resolution. */
-
-.hidden {
+/* `.camera-float.hidden` (two classes, higher specificity than the plain
+   `.hidden` utility above) so this panel reliably disappears in Top-down
+   view regardless of each rule's position in this file. */
+.camera-float.hidden {
   display: none;
 }
 
-/* Draggable 360deg rotation dial - a toolbar control, never on #stage-3d
-   itself, so this drag gesture can never be confused with painting (see
-   ROADMAP.md's camera-controls revisit). touch-action: none stops the
-   browser's own scroll/pan gestures from eating the drag on touch. */
+.camera-float h4 {
+  margin: 0;
+  align-self: flex-start;
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+}
+
+.camera-float label {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  font-size: 0.68rem;
+  opacity: 0.8;
+  gap: 0.2rem;
+}
+
+.camera-float input[type="range"] {
+  width: 100%;
+}
+
 .compass {
   cursor: grab;
   touch-action: none;
@@ -166,22 +369,29 @@ main {
   display: grid;
   grid-template-columns: repeat(2, auto);
   gap: 0.2rem;
+  width: 100%;
 }
 
 .compass-presets button {
-  padding: 0.25rem 0.45rem;
-  font-size: 0.72rem;
+  background: #242e38;
+  color: #d8e2e8;
+  border: 1px solid #333f4a;
+  border-radius: 0.3rem;
+  padding: 0.22rem 0.4rem;
+  font-size: 0.68rem;
+  cursor: pointer;
 }
 
-/* Trackpad-style precise panning: dragging moves the view by exactly the
-   fraction of the pad's own size the pointer travelled, so a small drag is
-   a small, exact pan - unlike the old fixed-size-nudge button pad, this
-   stays precise at any zoom level since panBy() itself already scales each
-   step by the current view size. Also a toolbar control, not on #stage-3d,
-   for the same painting-conflict-avoidance reason as the compass. */
+.compass-presets button.active {
+  background: #4a86ad;
+  border-color: #6fa6cc;
+  color: #06121a;
+  font-weight: 600;
+}
+
 .pan-trackpad {
-  width: 5.2rem;
-  height: 3.6rem;
+  width: 100%;
+  height: 3.2rem;
   background: #1a2129;
   border: 1px solid #333f4a;
   border-radius: 0.3rem;
@@ -196,4 +406,47 @@ main {
 .pan-trackpad:active {
   cursor: grabbing;
   background-color: #20282f;
+}
+
+/* Below ~900px wide, the three-column layout no longer has room: the
+   options panel moves under the canvas and the category rail becomes a
+   horizontal strip, so the editor stays usable on a narrow window/tablet
+   instead of clipping the canvas to near-nothing. */
+@media (max-width: 900px) {
+  .app {
+    grid-template-columns: 1fr;
+    grid-template-rows: 48px auto 1fr auto;
+    overflow-y: auto;
+    height: auto;
+    min-height: 100vh;
+  }
+
+  html,
+  body {
+    overflow: auto;
+  }
+
+  .category-rail {
+    grid-row: 2;
+    flex-direction: row;
+    justify-content: center;
+    border-right: none;
+    border-bottom: 1px solid #2a333b;
+  }
+
+  .category-btn {
+    flex-direction: row;
+    padding: 0.5rem 0.8rem;
+  }
+
+  .canvas-wrap {
+    grid-row: 3;
+    min-height: 60vh;
+  }
+
+  .options-panel {
+    grid-row: 4;
+    border-left: none;
+    border-top: 1px solid #2a333b;
+  }
 }

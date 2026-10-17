@@ -31,18 +31,37 @@ import {
 loadGrassTexture("/world/assets/textures/grass-cethiel.png");
 import { createTerrainScene3D, isWebGL2Available, MAX_DEVICE_PIXEL_RATIO } from "./terrain-renderer-3d.js";
 
-// Canvas footprint stays the same (256 * 3 = 768, same as the old 128 * 6)
-// - resolution doubles by making cells smaller, not the map physically
-// bigger, which is what actually makes individual cells less noticeable.
-// CELL_PX stays the CSS/logical pixel size (matches world.css's fixed
-// 768px display box and everything UI-facing); PIXEL_SCALE is what the top-
-// down canvas's backing store, renderer, and pixel<->grid picking math
-// actually use - CELL_PX scaled up by the device pixel ratio (Task 4,
-// ROADMAP.md) so the canvas's own pixel buffer matches the screen's real
-// pixel density instead of being upscaled and softened by the browser.
-// Capped the same way the 3D renderer caps it, for the same reason (bound
-// the cost of a much denser backing store on a 3x+ display).
-const CELL_PX = 3;
+const canvasArea = document.getElementById("canvas-area");
+
+// PROTOTYPE (final-redesign-prototype branch, UI/UX redesign): CELL_PX used
+// to be a hardcoded constant (a fixed 768px square canvas regardless of the
+// browser window) - the single biggest usability problem found comparing
+// UI directions for this redesign: on any wide monitor the map sat in a
+// small square surrounded by wasted dark background, while world.css's
+// toolbar/panel chrome took a fixed slice off the top. world.css now gives
+// the canvas a flexible box (grid/flex layout, no fixed pixel size) that
+// fills whatever space is actually available; this derives CELL_PX from
+// that real, measured space once at load, so the backing-store resolution
+// matches the box the CSS layout actually gives it instead of a guessed
+// constant. Not re-derived on every window resize (no ResizeObserver) - the
+// CSS layout itself still responds live to a resize (the canvas visually
+// scales like any image/video element), only the backing-store resolution
+// stays fixed at whatever it was on load. A live re-render-at-full-
+// resolution-on-every-resize pipeline is a real future refinement (noted in
+// ROADMAP.md), not something this layout-focused prototype needs to solve.
+function computeCellPx() {
+  const rect = canvasArea.getBoundingClientRect();
+  const available = Math.max(200, Math.min(rect.width, rect.height) - 40);
+  return clamp(available / GRID_SIZE, 2, 6);
+}
+
+// PIXEL_SCALE is what the top-down canvas's backing store, renderer, and
+// pixel<->grid picking math actually use - CELL_PX scaled up by the device
+// pixel ratio (Task 4, ROADMAP.md) so the canvas's own pixel buffer matches
+// the screen's real pixel density instead of being upscaled and softened by
+// the browser. Capped the same way the 3D renderer caps it, for the same
+// reason (bound the cost of a much denser backing store on a 3x+ display).
+const CELL_PX = computeCellPx();
 const DEVICE_PIXEL_RATIO = Math.min(window.devicePixelRatio || 1, MAX_DEVICE_PIXEL_RATIO);
 const PIXEL_SCALE = CELL_PX * DEVICE_PIXEL_RATIO;
 const FLUSH_INTERVAL_MS = 100;
@@ -648,6 +667,12 @@ for (const el of [canvas, canvas3d]) {
 }
 
 function wireToolbar() {
+  // One shared "active" tool across all three category panels (`data-tool`
+  // buttons live in all of them, but only one panel is visible at a time -
+  // see wireCategoryRail) - clearing every button's `.active` class, not
+  // just the clicked button's own panel, so switching categories can never
+  // leave a stale active button highlighted in a panel that's about to be
+  // hidden.
   const buttons = document.querySelectorAll("[data-tool]");
   for (const button of buttons) {
     button.addEventListener("click", () => {
@@ -668,6 +693,57 @@ function wireToolbar() {
   });
 
   document.getElementById("undo-button").addEventListener("click", undoLastStroke);
+}
+
+// PROTOTYPE (final-redesign-prototype branch, UI/UX redesign): the left
+// icon rail picks which category's <section> is visible in the right
+// options panel (Wonderdraft/Inkarnate-style category tabs + tool-options
+// panel, replacing the old single flat toolbar of every tool at once - see
+// CLAUDE.md's named visual bar and CREDITS.md). Switching category also
+// selects that category's first tool as the active one, so the current
+// brush is always one of the tools actually visible on screen - without
+// this, switching to "Terrain" while "Raise" was still the active tool
+// would leave the user painting an invisible, unselected tool with no
+// feedback as to which panel it belongs to.
+const CATEGORY_FIRST_TOOL = {
+  land: "raise",
+  terrain: "grassland",
+  water: "land",
+};
+
+// Each category's tools behave differently enough (land tools only ever
+// reshape height, terrain tools only ever repaint material at whatever
+// height is already there, water tools are the only ones that can turn
+// land into sea or back) that one hint sentence can't honestly describe
+// all three - the old copy was land/water-specific but stayed on screen
+// unchanged while Terrain was selected, describing tools that weren't
+// even visible.
+const CATEGORY_HINT = {
+  land: "Raise / Lower / Smooth / Mountain / Peak only ever reshape existing land - they never touch the sea. Open this page in a second window or browser profile to watch changes arrive live, with no reload.",
+  terrain:
+    "Grassland / Sand / Forest / Rock only ever repaint material at whatever height the land already is - they never raise, lower, or touch the coastline.",
+  water:
+    "Create Land and Paint Sea are the only tools that move the coastline itself. Deepen / Shallow only ever reshape existing sea - neither side can turn into the other.",
+};
+
+function wireCategoryRail() {
+  const railButtons = document.querySelectorAll("[data-category]");
+  const sections = document.querySelectorAll("[data-panel]");
+  const toolButtons = document.querySelectorAll("[data-tool]");
+  const categoryHint = document.getElementById("category-hint");
+  for (const railButton of railButtons) {
+    railButton.addEventListener("click", () => {
+      const category = railButton.dataset.category;
+      for (const other of railButtons) other.classList.remove("active");
+      railButton.classList.add("active");
+      for (const section of sections) section.classList.toggle("hidden", section.dataset.panel !== category);
+      currentTool = CATEGORY_FIRST_TOOL[category];
+      for (const toolButton of toolButtons) {
+        toolButton.classList.toggle("active", toolButton.dataset.tool === currentTool);
+      }
+      categoryHint.textContent = CATEGORY_HINT[category];
+    });
+  }
 }
 
 // Server-checked by construction (src/undo.ts): the server restores whatever
@@ -701,28 +777,47 @@ function wireViewToggle() {
       for (const other of buttons) other.classList.remove("active");
       button.classList.add("active");
       const show3D = viewMode === "oblique" && scene3d;
+      // The canvas-COLUMN fallback (no WebGL2) is the only mode that ever
+      // reuses #stage itself for Oblique - distinct from `show3D`, which is
+      // about which <canvas> ELEMENT is visible. Only this path needs the
+      // extra-height/non-square treatment below; ordinary top-down (with or
+      // without a scene3d) and the WebGL2 Oblique scene3d path (on
+      // #stage-3d, sized independently by createTerrainScene3D) both just
+      // use world.css's own responsive `aspect-ratio: 1/1` box unmodified.
+      const obliqueFallback = viewMode === "oblique" && !scene3d;
       canvas3d.classList.toggle("hidden", !show3D);
       canvas.classList.toggle("hidden", show3D);
       cameraToolbar.classList.toggle("hidden", !show3D);
       cameraHint.classList.toggle("hidden", !show3D);
-      if (!show3D) {
-        // The canvas-column fallback oblique view needs extra canvas height
-        // so a peak near row 0 has room to rise into without being clipped
-        // (see OBLIQUE_MARGIN); top-down doesn't, so this only grows the
-        // canvas when switching in, not permanently. world.css gives
-        // #stage a fixed CSS height, which would otherwise squash this
-        // taller backing store back down and throw off its aspect ratio -
-        // overriding it inline keeps a 1:1 pixel mapping (and
-        // canvasToGrid's px/py math correct) either way. The 3D canvas's
-        // size is fixed (the camera frustum handles rise, not canvas
-        // height), so it never needs this. The backing-store attribute
-        // (canvas.height) is in PIXEL_SCALE units (device-pixel-ratio
-        // aware, Task 4); the CSS override must stay in logical/CELL_PX
-        // units, or the display box itself would grow with the device
-        // pixel ratio instead of just the resolution behind it.
-        const marginPx = viewMode === "oblique" ? OBLIQUE_MARGIN : 0;
-        canvas.height = GRID_SIZE * PIXEL_SCALE + marginPx * DEVICE_PIXEL_RATIO;
-        canvas.style.height = `${GRID_SIZE * CELL_PX + marginPx}px`;
+      if (obliqueFallback) {
+        // Needs extra canvas height so a peak near row 0 has room to rise
+        // into without being clipped (see OBLIQUE_MARGIN); top-down doesn't,
+        // so this only grows the canvas when switching in, not permanently.
+        // world.css's `aspect-ratio: 1/1` on #stage (the responsive-canvas
+        // redesign) would otherwise force this taller backing store back to
+        // square - overriding both width and height inline (clearing the
+        // aspect-ratio's effect by giving the browser an explicit size to
+        // use instead) keeps a 1:1 pixel mapping (and canvasToGrid's px/py
+        // math correct). The backing-store attributes (canvas.width/height)
+        // are in PIXEL_SCALE units (device-pixel-ratio aware, Task 4); the
+        // CSS override must stay in logical/CELL_PX units, or the display
+        // box itself would grow with the device pixel ratio instead of just
+        // the resolution behind it.
+        canvas.width = GRID_SIZE * PIXEL_SCALE;
+        canvas.height = GRID_SIZE * PIXEL_SCALE + OBLIQUE_MARGIN * DEVICE_PIXEL_RATIO;
+        canvas.style.aspectRatio = "auto";
+        canvas.style.width = `${GRID_SIZE * CELL_PX}px`;
+        canvas.style.height = `${GRID_SIZE * CELL_PX + OBLIQUE_MARGIN}px`;
+      } else if (!show3D) {
+        // Plain top-down: undo any inline override the fallback branch made
+        // last time it ran, so #stage goes back to world.css's own
+        // responsive aspect-ratio/height rules rather than staying pinned
+        // at a stale fixed size from a previous Oblique-fallback visit.
+        canvas.width = GRID_SIZE * PIXEL_SCALE;
+        canvas.height = GRID_SIZE * PIXEL_SCALE;
+        canvas.style.aspectRatio = "";
+        canvas.style.width = "";
+        canvas.style.height = "";
       }
       redrawAll();
     });
@@ -981,6 +1076,7 @@ function connectEvents() {
 }
 
 wireToolbar();
+wireCategoryRail();
 wireViewToggle();
 wireCameraControls();
 loadTerrain();
