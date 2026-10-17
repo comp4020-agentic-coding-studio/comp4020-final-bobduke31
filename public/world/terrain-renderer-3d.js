@@ -48,18 +48,41 @@ export function isWebGL2Available() {
   }
 }
 
+// BUG (found comparing Top-down against Oblique side by side on a sparse
+// map - large stretches of unpainted grid rendered as solid land in Oblique
+// while Top-down correctly showed open sea): the height DataTexture used to
+// be 8-bit (Uint8Array/UnsignedByteType), round-tripping every elevation
+// through elevationToTexel's quantization to 1 of 256 steps (~0.0078 wide
+// at this app's [-1, 1] range) and back via texelToElevationRange in the
+// shader. An untouched cell's elevation is exactly 0 (SEA_LEVEL) - the
+// *default* for the overwhelming majority of cells on any real map, not an
+// edge case - which quantizes to texel 128, decoding back to +0.00392: just
+// barely *above* SEA_LEVEL. Every unpainted cell in the Oblique view's
+// land/sea test (`vElevation <= uSeaLevel`) was therefore misclassified as
+// land, while the Top-down renderer (plain JS floats, no texture, no
+// quantization) correctly read the same cells as sea - two different
+// land/sea tests silently disagreeing at the one elevation value (exactly
+// 0) nearly every cell on a map actually has. A `SEA_LEVEL + epsilon`
+// comparison nudge (the fix terrain-renderer.js's own computeCoastlineRings
+// already needed for an unrelated d3-contour precision issue) would only
+// patch the symptom here, not the cause - this app's WebGL2 requirement
+// (isWebGL2Available) already guarantees float textures are available, so
+// the real fix is carrying the actual float elevation through with no
+// lossy round-trip at all, the same precision Top-down always had.
 function elevationToTexel(elevation) {
-  const t = (elevation - ELEVATION_MIN) / (ELEVATION_MAX - ELEVATION_MIN);
-  return Math.round(Math.min(1, Math.max(0, t)) * 255);
+  return Math.min(ELEVATION_MAX, Math.max(ELEVATION_MIN, elevation));
 }
 
-// texture2D(...).r on an 8-bit UnsignedByteType texture already comes back
-// hardware-normalized to [0, 1] - NOT the raw 0-255 integer - so this must
-// not divide by 255 again (an earlier version of this did, which collapsed
-// every sampled height to ~ELEVATION_MIN regardless of the real data: the
-// bug that first made the whole mesh render as flat deep sea).
+// The height texture is now FloatType (see createHeightTexture/
+// elevationToTexel) - texture2D(...).r returns the actual stored elevation
+// value directly, with none of the [0, 1]-normalized-integer remapping an
+// 8-bit UnsignedByteType texture needs. This is now the identity; kept as
+// its own named function (rather than inlined as plain `t`) so every call
+// site stays self-documenting about going through "the height texture's
+// decode step," in case a future change (e.g. HalfFloatType for memory)
+// reintroduces one.
 function texelToElevationRange() {
-  return `t * ${(ELEVATION_MAX - ELEVATION_MIN).toFixed(6)} + ${ELEVATION_MIN.toFixed(6)}`;
+  return `t`;
 }
 
 // Bilinearly samples the authoritative (un-detailed) grid directly - used by
@@ -383,8 +406,14 @@ function buildGroundGeometry() {
 }
 
 function createHeightTexture() {
-  const data = new Uint8Array(GRID_SIZE * GRID_SIZE);
-  const texture = new THREE.DataTexture(data, GRID_SIZE, GRID_SIZE, THREE.RedFormat, THREE.UnsignedByteType);
+  // Float32, not the 8-bit texture this used to be - see elevationToTexel's
+  // own comment for the bug that caused (same-precision, no quantization
+  // round-trip, matching the exact-float comparison Top-down always used).
+  // WebGL2 (already required for this renderer - isWebGL2Available) always
+  // supports FloatType textures with linear filtering, unlike WebGL1 where
+  // that combination needs an extension.
+  const data = new Float32Array(GRID_SIZE * GRID_SIZE);
+  const texture = new THREE.DataTexture(data, GRID_SIZE, GRID_SIZE, THREE.RedFormat, THREE.FloatType);
   texture.magFilter = THREE.LinearFilter;
   texture.minFilter = THREE.LinearFilter;
   texture.wrapS = THREE.ClampToEdgeWrapping;
@@ -712,7 +741,18 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     side: THREE.DoubleSide,
   });
   const waterMesh = new THREE.Mesh(waterGeometry, waterMaterial);
-  waterMesh.position.y = SEA_LEVEL * HEIGHT_SCALE;
+  // +0.05, matching the coastline ink-line's own epsilon just below - an
+  // unpainted cell's ground-mesh vertex sits at exactly `base * HEIGHT_SCALE`
+  // with no detail added (detailedHeight's own early return for
+  // aboveSea <= 0.0001), which for an untouched cell is exactly 0, the same
+  // y this plane used to sit at with zero offset. Two coplanar triangles at
+  // an identical depth is a textbook z-fighting setup - GPU-dependent, but
+  // reliably visible as horizontal banding across the water on the hardware
+  // this was caught on (found immediately after fixing the Top-down/Oblique
+  // land-sea mismatch above: that bug had been hiding this one, since sea
+  // used to render as misclassified land almost everywhere, leaving this
+  // plane mostly occluded rather than exposed and coplanar).
+  waterMesh.position.y = SEA_LEVEL * HEIGHT_SCALE + 0.05;
   waterMesh.receiveShadow = true;
   scene.add(waterMesh);
 
