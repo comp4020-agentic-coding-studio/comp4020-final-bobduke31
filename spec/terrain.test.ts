@@ -13,12 +13,18 @@ async function postCells(cells: unknown): Promise<Response> {
 }
 
 // Reads Server-Sent Events frames off a fetch response body until one
-// matching `eventType` arrives, or `timeoutMs` elapses - the real test of
-// "a change reaches every other open session", not just that the create
-// endpoint returns 2xx.
+// matching `eventType` arrives *and* passes `matches`, or `timeoutMs`
+// elapses - the real test of "a change reaches every other open session",
+// not just that the create endpoint returns 2xx. The broadcast channel is
+// shared by the whole running app (src/realtime.ts), and vitest runs spec
+// files concurrently against that one instance, so another spec file's own
+// terrain write can legitimately arrive on this same stream first - without
+// a content filter, this helper could resolve on someone else's event
+// instead of the one this test just caused.
 async function waitForEvent(
   stream: ReadableStream<Uint8Array>,
   eventType: string,
+  matches: (data: unknown) => boolean,
   timeoutMs = 2000,
 ): Promise<unknown> {
   const reader = stream.getReader();
@@ -26,7 +32,7 @@ async function waitForEvent(
   let buffer = "";
 
   const timeout = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error(`no "${eventType}" event within ${timeoutMs}ms`)), timeoutMs),
+    setTimeout(() => reject(new Error(`no matching "${eventType}" event within ${timeoutMs}ms`)), timeoutMs),
   );
 
   const read = (async () => {
@@ -41,7 +47,10 @@ async function waitForEvent(
         buffer = buffer.slice(frameEnd + 2);
         const type = /^event: (.+)$/m.exec(frame)?.[1];
         const data = /^data: (.+)$/m.exec(frame)?.[1];
-        if (type === eventType && data) return JSON.parse(data);
+        if (type === eventType && data) {
+          const parsed = JSON.parse(data);
+          if (matches(parsed)) return parsed;
+        }
       }
     }
   })();
@@ -69,7 +78,11 @@ it("broadcasts a painted cell to an open event stream within a second", async ()
   expect(events.body).not.toBeNull();
 
   const cell = { x: 55, y: 60, elevation: -0.3 };
-  const waiting = waitForEvent(events.body as ReadableStream<Uint8Array>, "terrain:update");
+  const waiting = waitForEvent(
+    events.body as ReadableStream<Uint8Array>,
+    "terrain:update",
+    (data) => (data as { cells: typeof cell[] }).cells.some((c) => c.x === cell.x && c.y === cell.y),
+  );
   await postCells([cell]);
 
   const payload = (await waiting) as { cells: typeof cell[] };
@@ -124,7 +137,11 @@ it("clears a cell's terrain type when it's painted back to sea, and broadcasts t
   await postTypes([{ x: 72, y: 10, terrain: "rock" }]);
 
   const events = await fetch(new URL("/api/events", baseUrl));
-  const waiting = waitForEvent(events.body as ReadableStream<Uint8Array>, "terrain-type:clear");
+  const waiting = waitForEvent(
+    events.body as ReadableStream<Uint8Array>,
+    "terrain-type:clear",
+    (data) => (data as { cells: { x: number; y: number }[] }).cells.some((c) => c.x === 72 && c.y === 10),
+  );
   await postCells([{ x: 72, y: 10, elevation: -0.5 }]); // paint it back to sea
 
   const payload = (await waiting) as { cells: { x: number; y: number }[] };
