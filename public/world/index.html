@@ -3,15 +3,16 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Shared terrain (in development)</title>
+    <title>Shared terrain — multiplayer map editor</title>
     <link rel="stylesheet" href="/world/world.css" />
   </head>
   <body>
     <header class="page-header">
-      <h1>Shared terrain — C9 real-time prototype</h1>
+      <h1>Shared terrain — multiplayer map editor</h1>
       <p>
         Pick a tool, then drag on the map. Open this page in a second window or browser profile to watch changes
-        arrive live, with no reload.
+        arrive live, with no reload. <a href="/logs/">See the live activity log</a> &middot;
+        <a href="/isle/">The Isle (Crit 8)</a>
       </p>
     </header>
 
@@ -67,6 +68,15 @@
       <div class="tool-group">
         <label>Brush size <input id="brush-size" type="range" min="1" max="28" step="1" value="10" /></label>
         <label>Strength <input id="brush-strength" type="range" min="0.01" max="0.3" step="0.01" value="0.15" /></label>
+      </div>
+      <div class="tool-group">
+        <button
+          type="button"
+          id="undo-button"
+          title="Undoes your own last stroke - checked server-side, so this can only ever undo a stroke you painted, never anyone else's."
+        >
+          Undo my last stroke
+        </button>
       </div>
       <div class="tool-group">
         <span class="tool-group-label">View</span>

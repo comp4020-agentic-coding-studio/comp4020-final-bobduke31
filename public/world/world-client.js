@@ -652,6 +652,27 @@ function wireToolbar() {
   strengthInput.addEventListener("input", () => {
     brushStrength = Number(strengthInput.value);
   });
+
+  document.getElementById("undo-button").addEventListener("click", undoLastStroke);
+}
+
+// Server-checked by construction (src/undo.ts): the server restores whatever
+// it snapshotted for *this request's own session cookie*, so there is no
+// field here to set that could undo someone else's stroke. Flushes any
+// still-pending local edits first - otherwise "undo" could race a paint that
+// hasn't even reached the server yet, undoing a stale snapshot instead of
+// what the user actually just drew.
+async function undoLastStroke() {
+  if (flushHandle) clearTimeout(flushHandle);
+  flushHandle = null;
+  await flush();
+  const res = await fetch("/api/terrain/undo", { method: "POST" });
+  if (!res.ok) return; // 409 "nothing to undo" - nothing to show for it locally
+  // The server already broadcasts the restored cells over SSE, which this
+  // same tab also receives - rather than apply the change twice (once from
+  // the fetch, once from our own echoed broadcast), just let loadTerrain's
+  // connectEvents path pick it up the normal way, same as any other
+  // client's edit would arrive here.
 }
 
 function wireViewToggle() {
