@@ -586,6 +586,19 @@ the existing per-mark ownership check (`deleteMarkOwnedBy`) already proved
 this app has the right identity model; what C10 added was extending that
 same pattern to terrain, and giving it a durable, demo-ready log.
 
+**Checkpoints:**
+[`879f109`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/879f1097fa275abdb78021a94ed86fa1d7446432)
+(activity-log table and stdout logging),
+[`2f6e757`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/2f6e7570d2aa02c208ee7cb45d53459290a3ae55)
+(per-session undo snapshot/restore),
+[`25c6b22`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/25c6b22a301e2621a1415df99a4430f31b9f0d10)
+(server wiring: undo endpoint, log endpoints, the homepage/`/isle/` route
+swap),
+[`53871ac`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/53871ac0d8543b36d279f709f369cf85bb1d935d)
+(client undo button),
+[`9ab156b`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/9ab156b4859a8856bb36f1f5d2719662e303531e)
+(automated tests, and the `waitForEvent` race fix).
+
 **The permission chosen, and why not a bigger one.** Terrain itself stays
 the shared, ownerless canvas `ADR.md`'s first entry already decided for C9
 — nothing in C10's brief asks every feature to gain per-user restriction,
