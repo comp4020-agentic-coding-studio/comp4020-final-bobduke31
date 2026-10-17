@@ -1745,6 +1745,51 @@ Direction B, implemented as:
   adopt it, per their own instruction ("Show me the working result before
   we decide whether to adopt it").
 
+### End-of-session note (2026-10-17): known art-quality issues, not fixed tonight
+
+Stopping for the day after the UI/UX redesign above - these four issues were
+named explicitly and confirmed by re-screenshotting the live app (not
+assumed from memory), but intentionally **not** investigated or fixed
+tonight, per instruction. Each already has a home in an existing task below;
+listed here as a single pointer so tomorrow's session can pick up without
+re-discovering them:
+
+- **Stair-stepped coastline.** Confirmed in a fresh zoomed screenshot of the
+  sand/grass and sand/water edges
+  (`research/roadmap/screenshots/2026-10-17-eod-coastline-zoom.png`): both
+  boundaries are visibly blocky/grid-aligned, even though the ink coastline
+  stroke itself is a smoothed vector curve (`d3-contour`, see task 1/9
+  notes) - the blockiness is in the cell-fill boundary, not the stroke.
+  Belongs to **task 5** (top-down art quality, already 🔍 assessed - see
+  finding 2's sibling problem, the dark-streak bug) and **task 7** (natural
+  terrain material blending, "grass/sand/forest/rock currently blend
+  nowhere - a cell is one type, full stop").
+- **Rectangular forest boundaries.** Already root-caused in task 5, finding
+  3: confirmed **not** a renderer defect - the rectangular shape in prior
+  screenshots traces to the dev seed script's own hardcoded box, and a
+  live-painted forest patch is already organic. Still visible in tonight's
+  screenshots because the seeded demo scene itself hasn't changed. No new
+  investigation needed before tomorrow; re-check against a live-painted
+  patch, not the seed scene, before treating this as still open.
+- **Unnatural terrain transitions.** Covered by **task 7** (no blending
+  between painted terrain types) and the brush-shape limitation named in
+  task 5 finding 1 (Mountain/Peak strokes are circular by construction,
+  acknowledged as a disguised-not-fixed limitation even after task 5's
+  planned noise-perturbation mitigation).
+- **Inconsistent 2D/3D art styles.** Confirmed side-by-side tonight
+  (`.../2026-10-17-uiux-after-topdown.png` vs. `.../eod-oblique-full.png`):
+  Top-down's flat, noisy grass fill and Oblique's lit, shaded mesh read as
+  two different rendering styles for the same data, beyond the geometry
+  work tasks 1-2 already did. This is **task 6**'s scope (Oblique fantasy-
+  map art quality, ⬜ not started), which already names the same gap against
+  `research/roadmap/references/reference-painted-mountains-clouds.png` - a
+  warmer, more saturated, ink-outlined target style neither view currently
+  matches, rather than the two views needing to match each other.
+
+No code changes were made for any of these tonight - they're carried
+forward as-is into tasks 5, 6, and 7, in that priority order per phase 1 of
+the "Product phases" section above.
+
 ---
 
 ## Completed work log
@@ -1853,6 +1898,19 @@ Direction B, implemented as:
   real content bug (stale, category-irrelevant hint text) was found and
   fixed during this task's own closing art/usability pass. See task 13
   section above for the full comparison, implementation, and verification
-  trail with screenshot citations. Not yet committed to git - pending the
-  user's review of the working prototype before deciding whether to adopt
-  it, per their own "Show me the working result before we decide" request.
+  trail with screenshot citations. Committed as
+  [`9e198aa`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/9e198aa) -
+  pending the user's review of the working prototype before deciding
+  whether to adopt it, per their own "Show me the working result before we
+  decide" request.
+- **2026-10-17** - End of session: the user ran the redesigned prototype
+  themselves locally (`localhost:8099`, a separate test DB) and named four
+  remaining art-quality issues to carry into tomorrow without investigating
+  or fixing tonight - stair-stepped coastline, rectangular forest
+  boundaries, unnatural terrain transitions, and inconsistent 2D/3D art
+  styles. Each was confirmed against the live app (fresh zoomed screenshots,
+  not assumed) and mapped to its existing home in tasks 5, 6, and 7 rather
+  than treated as new, undiscovered problems - see "End-of-session note" at
+  the end of task 13 above for the evidence and task pointers. `.gitignore`
+  updated to exclude `.localdata/` (local test databases), which had been
+  showing as untracked without actually being ignored.
