@@ -1,43 +1,41 @@
-// A second renderer for the "Oblique" view: a real heightfield mesh (Three.js,
-// vendored MIT, vendor/three/) with an inclined orthographic camera, real
-// lighting/shadows, and GPU-computed ridge detail - replacing the column-
-// extrusion technique in terrain-renderer.js's renderTerrainOblique for any
-// browser with WebGL2. See CLAUDE.md's "Reuse before you build" section and
-// PROCESS.md for why (THREE.Terrain and @interverse/three-terrain-lod were
-// both considered and not adopted directly - see there).
+// The map renderer for BOTH views: one real heightfield mesh (Three.js,
+// vendored MIT, vendor/three/), drawn by an orthographic camera that is
+// either straight overhead ("Top-down") or inclined and rotatable
+// ("Oblique"). See CLAUDE.md's "Reuse before you build" and ROADMAP.md's
+// "Terrain & visual overhaul" for why the two views now share one pipeline:
+// the old Top-down was a separate CPU canvas renderer with its own palette,
+// its own noise, its own light direction and no cast shadows, so the two
+// views could never look like the same map no matter how either was tuned.
+// The CPU canvas renderer (terrain-renderer.js) remains only as the fallback
+// for browsers without WebGL2.
 //
-// Two separate representations, each with one job, so visual-only detail
-// never affects what painting actually hits:
-//
-//  - Picking is a direct ray-heightfield march against the authoritative
-//    `elevationGrid` Float32Array itself (see pick() below) - the same array
-//    world-client.js paints into and the SSE handlers update. No second mesh
-//    to keep in sync.
-//  - The visual mesh is a denser grid (MESH_SEGMENTS, finer than the 256
-//    authoritative cells) whose vertex shader adds ridged-noise detail to
-//    height, scaled by slope and elevation, so mountains get real jagged
-//    geometry instead of a smoothed-out mesh version of the same blob. This
-//    is GPU-computed from two small DataTextures (height, terrain type) -
-//    an elevation edit only has to re-upload those textures (a few hundred
-//    KB covering the whole 256x256 grid, re-uploaded in full since that's
-//    already cheap at this size), not touch any CPU-side vertex buffer.
+// Everything *derived* from the stored grids - the smooth surface, the
+// synthesised ridges, the material boundaries, the coast distance field - is
+// defined once in terrain-fields.js (JS + an identical GLSL twin), so tree
+// placement and picking on the CPU agree exactly with what the GPU draws.
 import * as THREE from "./vendor/three/three.module.js";
-import { GRID_SIZE, ELEVATION_MIN, ELEVATION_MAX, SEA_LEVEL, TERRAIN_TYPES, sampleBilinear } from "./terrain-model.js";
-import { computeCoastlineRings } from "./terrain-renderer.js";
+import { GLTFLoader } from "./vendor/three/GLTFLoader.js";
+import { GRID_SIZE, ELEVATION_MIN, ELEVATION_MAX, SEA_LEVEL, TERRAIN_TYPES } from "./terrain-model.js";
+import {
+  HEIGHT_SCALE,
+  TERRAIN_FIELDS_GLSL,
+  COAST_SDF_RES,
+  SURFACE_RES,
+  bsplineSample,
+  bakeSurface,
+  sampleSurface,
+  mountainMask,
+  snoise,
+  buildTypeWeights,
+  paintedMaterialAt,
+  computeCoastSDF,
+} from "./terrain-fields.js";
 
-// World units: one grid cell = one unit in X/Z, so picking math and the
-// authoritative grid share the same coordinate space with no scale factor
-// to get wrong. Elevation (range [-1, 1]) is scaled up into world Y - purely
-// a visual exaggeration, the same role OBLIQUE_HEIGHT_SCALE plays in the 2D
-// renderer, tuned empirically against research/visual-references/.
-export const HEIGHT_SCALE = 46;
+export { HEIGHT_SCALE };
 
-// Visual-mesh density: finer than the 256 authoritative cells so ridge noise
-// has room to read as real geometric detail rather than being smoothed away
-// between sparse vertices. 384 keeps triangle count (384*384*2 ~= 295k)
-// comfortably cheap for any GPU from the last decade while still giving ~1.5
-// visual vertices per authoritative cell edge.
-const MESH_SEGMENTS = 384;
+// Visual-mesh density: two vertices per authoritative cell, so the
+// synthesised ridges (finest octave ~2.3 cells) read as real geometry.
+const MESH_SEGMENTS = 510;
 
 export function isWebGL2Available() {
   try {
@@ -48,573 +46,531 @@ export function isWebGL2Available() {
   }
 }
 
-// BUG (found comparing Top-down against Oblique side by side on a sparse
-// map - large stretches of unpainted grid rendered as solid land in Oblique
-// while Top-down correctly showed open sea): the height DataTexture used to
-// be 8-bit (Uint8Array/UnsignedByteType), round-tripping every elevation
-// through elevationToTexel's quantization to 1 of 256 steps (~0.0078 wide
-// at this app's [-1, 1] range) and back via texelToElevationRange in the
-// shader. An untouched cell's elevation is exactly 0 (SEA_LEVEL) - the
-// *default* for the overwhelming majority of cells on any real map, not an
-// edge case - which quantizes to texel 128, decoding back to +0.00392: just
-// barely *above* SEA_LEVEL. Every unpainted cell in the Oblique view's
-// land/sea test (`vElevation <= uSeaLevel`) was therefore misclassified as
-// land, while the Top-down renderer (plain JS floats, no texture, no
-// quantization) correctly read the same cells as sea - two different
-// land/sea tests silently disagreeing at the one elevation value (exactly
-// 0) nearly every cell on a map actually has. A `SEA_LEVEL + epsilon`
-// comparison nudge (the fix terrain-renderer.js's own computeCoastlineRings
-// already needed for an unrelated d3-contour precision issue) would only
-// patch the symptom here, not the cause - this app's WebGL2 requirement
-// (isWebGL2Available) already guarantees float textures are available, so
-// the real fix is carrying the actual float elevation through with no
-// lossy round-trip at all, the same precision Top-down always had.
-function elevationToTexel(elevation) {
-  return Math.min(ELEVATION_MAX, Math.max(ELEVATION_MIN, elevation));
+// --- Ground shader -------------------------------------------------------
+// Patched into Three's own MeshLambertMaterial (onBeforeCompile) rather than
+// a from-scratch ShaderMaterial, so the ground gets Three's real lights and
+// shadow maps - the previous ShaderMaterial did its own lighting and never
+// received a shadow, which is half of why mountains read as flat cut-outs.
+
+const GROUND_VERTEX_PARS = /* glsl */ `
+  ${TERRAIN_FIELDS_GLSL}
+  varying vec2 vCell;
+  varying float vDisplayHeight;
+  varying vec3 vTerrainNormal;
+
+  float displayedHeightAt(vec2 cell) { return surfaceHeight(cell); }
+`;
+
+// Runs in place of <beginnormal_vertex>, which Three's chunk order puts
+// before <begin_vertex> - the normal must exist before the position does.
+// Positions are flattened to SEA_LEVEL over the sea: water is drawn by the
+// ground shader itself (colour from depth and coast distance), not by a
+// second transparent plane, so there is no coastal cliff, no z-fighting and
+// no seam between the two.
+const GROUND_BEGIN_VERTEX = /* glsl */ `
+  vec2 cellPos = vec2(position.x, position.z);
+  float hC = displayedHeightAt(cellPos);
+  float nEps = 0.5;
+  float hL = displayedHeightAt(cellPos - vec2(nEps, 0.0));
+  float hR = displayedHeightAt(cellPos + vec2(nEps, 0.0));
+  float hD = displayedHeightAt(cellPos - vec2(0.0, nEps));
+  float hU = displayedHeightAt(cellPos + vec2(0.0, nEps));
+  vTerrainNormal = normalize(vec3(-(hR - hL) * ${HEIGHT_SCALE.toFixed(2)}, 2.0 * nEps, -(hU - hD) * ${HEIGHT_SCALE.toFixed(2)}));
+  vCell = cellPos;
+  vDisplayHeight = hC;
+  vec3 objectNormal = vTerrainNormal;
+`;
+
+const DEPTH_VERTEX_PARS = /* glsl */ `
+  ${TERRAIN_FIELDS_GLSL}
+  float displayedHeightAt(vec2 cell) { return surfaceHeight(cell); }
+`;
+
+const DEPTH_BEGIN_VERTEX = /* glsl */ `
+  vec3 transformed = vec3(position.x, displayedHeightAt(vec2(position.x, position.z)) * ${HEIGHT_SCALE.toFixed(2)}, position.z);
+`;
+
+// Palette: warm, saturated painted-cartography colours picked against
+// research/roadmap/references/reference-painted-mountains-clouds.png (sRGB
+// hex, converted to linear for lighting).
+function srgb(hex) {
+  const c = new THREE.Color(hex);
+  return `vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)})`;
 }
 
-// The height texture is now FloatType (see createHeightTexture/
-// elevationToTexel) - texture2D(...).r returns the actual stored elevation
-// value directly, with none of the [0, 1]-normalized-integer remapping an
-// 8-bit UnsignedByteType texture needs. This is now the identity; kept as
-// its own named function (rather than inlined as plain `t`) so every call
-// site stays self-documenting about going through "the height texture's
-// decode step," in case a future change (e.g. HalfFloatType for memory)
-// reintroduces one.
-function texelToElevationRange() {
-  return `t`;
-}
+const GROUND_FRAGMENT_PARS = /* glsl */ `
+  ${TERRAIN_FIELDS_GLSL}
+  uniform sampler2D uCoastSDF;
+  uniform sampler2D uGrassDetail;
+  uniform float uDetailReady;
+  varying vec2 vCell;
+  varying float vDisplayHeight;
+  varying vec3 vTerrainNormal;
 
-// Bilinearly samples the authoritative (un-detailed) grid directly - used by
-// both tree placement and picking, which must agree with what's actually
-// stored, not the GPU-only ridge detail. Shared with the top-down renderer
-// via terrain-model.js's sampleBilinear - both views interpolate the stored
-// data the same way.
-function sampleElevationBilinear(elevationGrid, x, y) {
-  return sampleBilinear(elevationGrid, x, y);
-}
+  float coastDistance(vec2 cell) {
+    return texture2D(uCoastSDF, (cell + 0.5) / uGridSize).r;
+  }
 
-// --- GLSL noise -------------------------------------------------------
-// A standard, self-contained hash-based value noise (the common "fract(sin(
-// dot(...)))" idiom used throughout shader tutorials/Shadertoy - not a port
-// of vendor/simplex-noise.js's gradient-noise algorithm, which is a JS
-// module and can't be called from a shader). Used the same way
-// terrain-renderer.js's fractalFold uses real simplex noise: ridged
-// (1 - |noise*2-1|) and summed over a few octaves for crease-like detail.
-// The qualitative effect (ridges, not bumps) is what's being reused, not a
-// specific library.
-const NOISE_GLSL = `
-  float hash(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+  // Thin anti-aliased line at signed distance d == at, ~widthPx screen
+  // pixels wide regardless of zoom (fwidth keeps it resolution-independent).
+  float isoLine(float d, float at, float widthPx) {
+    float px = abs(d - at) / max(fwidth(d), 1e-4);
+    return 1.0 - smoothstep(widthPx * 0.5, widthPx * 0.5 + 1.0, px);
   }
-  float valueNoise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    float a = hash(i);
-    float b = hash(i + vec2(1.0, 0.0));
-    float c = hash(i + vec2(0.0, 1.0));
-    float d = hash(i + vec2(1.0, 1.0));
-    vec2 u = f * f * (3.0 - 2.0 * f);
-    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+
+  // Colour-variation noise comes from a small tileable noise texture (one
+  // tap) rather than procedural simplex (~30 ALU ops per call): standard in
+  // game terrain shaders, and it cut this shader's first-compile and
+  // per-pixel cost by most of its weight (measured - ROADMAP.md). Only the
+  // noise that decides *where* things are (material warp/heights, shared
+  // with tree placement) stays procedural, so the CPU and GPU still agree.
+  // Channels are four independent noise fields.
+  uniform sampler2D uNoise;
+  vec4 nz(vec2 p) { return texture2D(uNoise, p) * 2.0 - 1.0; }
+  float fbm2(vec2 p) { vec4 a = nz(p * 0.25); return a.x * 0.65 + nz(p * 0.53 + 0.37).y * 0.35; }
+
+  vec3 waterColor(vec2 cell, float seabed, float d) {
+    float depth = clamp(-seabed / 0.6, 0.0, 1.0);
+    float off = clamp(-d / 14.0, 0.0, 1.0);
+    vec3 shallow = ${srgb("#6ec3c6")};
+    vec3 mid = ${srgb("#2f8fae")};
+    vec3 deep = ${srgb("#1c5c86")};
+    float t = max(off * off * (3.0 - 2.0 * off), depth * 0.85);
+    vec3 c = mix(shallow, mid, smoothstep(0.0, 0.35, t));
+    c = mix(c, deep, smoothstep(0.3, 1.0, t));
+    if (d < -9.0) return c * (0.93 + 0.07 * nz(cell * 0.009).z);
+    // Soft painted "stains" in open water, like a watercolour wash.
+    c *= 0.93 + 0.07 * nz(cell * 0.009).z;
+    // Wonderdraft-style ripple lines parallel to the coast: the distance is
+    // wobbled by noise so lines meander and occasionally merge, and each
+    // line is broken into dashes that fade with distance - hand-drawn
+    // strokes, not three rigid contour rings.
+    // Wobble at a low frequency (long, gently meandering strokes); a
+    // higher one read as scribbled squiggles once zoomed in.
+    vec4 r = nz(cell * 0.018 + 0.3);
+    float dw = d + 0.35 * r.x + 0.12 * nz(cell * 0.07).y;
+    float ripples = 0.0;
+    ripples += isoLine(dw, -1.5, 1.0) * 0.5 * smoothstep(-0.35, 0.15, r.y);
+    ripples += isoLine(dw, -3.3, 0.9) * 0.32 * smoothstep(-0.1, 0.35, r.z);
+    c = mix(c, ${srgb("#d6f0ea")}, ripples);
+    // Pale foam where the water meets the shore.
+    c = mix(c, ${srgb("#cfe9df")}, (1.0 - smoothstep(0.0, 0.9, -d)) * 0.55);
+    return c;
   }
-  float ridged(vec2 p) {
-    return 1.0 - abs(valueNoise(p) * 2.0 - 1.0);
-  }
-  // Four octaves, each finer and fainter - mirrors fractalFold's fBm
-  // construction in terrain-renderer.js.
-  float fractalFold(vec2 p) {
-    float sum = 0.0;
-    float norm = 0.0;
-    float amp = 1.0;
-    float freq = 0.11;
-    for (int i = 0; i < 4; i++) {
-      sum += ridged(p * freq) * amp;
-      norm += amp;
-      freq *= 2.17;
-      amp *= 0.5;
+
+  vec3 grassColor(vec2 cell, vec4 broad, vec4 fine) {
+    float meadow = smoothstep(0.15, 0.7, broad.y);
+    vec3 c = mix(${srgb("#6f9a3f")}, ${srgb("#94b24f")}, 0.5 + 0.5 * broad.x);
+    c = mix(c, ${srgb("#b5b85e")}, meadow * 0.45);
+    c *= 0.94 + 0.06 * fine.x;
+    if (uDetailReady > 0.5) {
+      // Two scales of the painted texture, rotated against each other, so
+      // its tile repeat doesn't show as a grid from far away.
+      float lumA = dot(texture2D(uGrassDetail, cell / 5.0).rgb, vec3(0.33));
+      float lumB = dot(texture2D(uGrassDetail, mat2(0.8, -0.6, 0.6, 0.8) * cell / 13.0).rgb, vec3(0.33));
+      c *= 0.8 + 0.28 * lumA + 0.18 * lumB;
     }
-    return sum / norm;
+    return c;
+  }
+
+  vec3 forestFloorColor(vec4 mid, vec4 fine) {
+    vec3 c = mix(${srgb("#1f3a1c")}, ${srgb("#355a26")}, 0.5 + 0.5 * mid.x);
+    return c * (0.9 + 0.1 * fine.y);
+  }
+
+  vec3 sandColor(vec4 mid, vec4 fine) {
+    vec3 c = mix(${srgb("#d9c08a")}, ${srgb("#ecdcae")}, 0.5 + 0.5 * mid.z);
+    return c * (0.96 + 0.04 * fine.z);
+  }
+
+  vec3 rockColor(vec2 cell, vec4 broad, vec4 fine, float h, float slope) {
+    // Weathered rock: broad tonal patches plus fine streaks running
+    // downhill. (Strata keyed to height alone drew concentric rings around
+    // every summit - read as topographic contour lines, not rock.)
+    float streaks = nz(vec2(cell.x * 0.22 + broad.w * 0.5, cell.y * 0.045)).w;
+    vec3 c = mix(${srgb("#857462")}, ${srgb("#b8a48a")}, 0.5 + 0.35 * broad.z + 0.15 * streaks);
+    c = mix(c, ${srgb("#d4c7b0")}, smoothstep(0.35, 0.8, h) * 0.5);
+    c = mix(c, ${srgb("#6a5c4d")}, smoothstep(0.55, 0.95, slope) * 0.45);
+    return c * (0.92 + 0.08 * fine.w);
+  }
+
+  vec3 terrainColor() {
+    vec2 cell = vCell;
+    float e = smoothElevation(cell);
+    float d = coastDistance(cell);
+    if (e <= ${SEA_LEVEL.toFixed(6)}) return waterColor(cell, e, d);
+
+    vec3 n = normalize(vTerrainNormal);
+    float slope = 1.0 - n.y;
+    float h = vDisplayHeight;
+    float m = mountainMask(e);
+    vec4 heights = materialHeights(cell);
+    vec4 w = heightBlend(paintedWeights(cell), heights);
+    vec4 broad = nz(cell * 0.008);
+    vec4 mid = nz(cell * 0.04 + 0.5);
+    vec4 fine = nz(cell * 0.6 + 0.25);
+
+    // Treeline: forest floor gives way on high ground.
+    float treeline = smoothstep(0.35, 0.7, m);
+    w.x += w.z * treeline;
+    w.z *= 1.0 - treeline;
+
+    // Automatic materials, keyed to the *shape* of the land rather than to
+    // painted cells - the reason a mountain's rock and a beach's sand
+    // follow the terrain instead of the brush's circular footprint. Folded
+    // into the weights so each material's colour is computed at most once.
+    float rockNoise = heights.w - 0.5;
+    float autoRock = clamp(smoothstep(0.18, 0.42, slope + rockNoise * 0.25) * smoothstep(0.08, 0.3, m + rockNoise * 0.2)
+                   + smoothstep(0.45, 0.85, m + rockNoise * 0.35), 0.0, 1.0);
+    w = mix(w, vec4(0.0, 0.0, 0.0, 1.0), autoRock);
+    float beachWidth = 1.3 + 1.1 * (0.5 + 0.5 * mid.w);
+    float beach = (1.0 - smoothstep(beachWidth * 0.6, beachWidth, d)) * (1.0 - smoothstep(0.1, 0.16, h)) * (1.0 - smoothstep(0.2, 0.45, slope));
+    w = mix(w, vec4(0.0, 1.0, 0.0, 0.0), beach);
+
+    vec3 c = vec3(0.0);
+    if (w.x > 0.001) c += grassColor(cell, broad, fine) * w.x;
+    if (w.y > 0.001) c += sandColor(mid, fine) * w.y;
+    if (w.z > 0.001) c += forestFloorColor(mid, fine) * w.z;
+    if (w.w > 0.001) c += rockColor(cell, broad, fine, h, slope) * w.w;
+
+    float snowLine = 0.62 + 0.08 * broad.w;
+    float snow = smoothstep(snowLine, snowLine + 0.1, h) * (1.0 - smoothstep(0.5, 0.8, slope));
+    c = mix(c, ${srgb("#f3f1ea")}, snow);
+
+    // Ink coastline, hand-drawn weight variation.
+    if (d < 3.0) c = mix(c, ${srgb("#3b2f24")}, isoLine(d, 0.0, 1.4 + 0.5 * mid.y) * 0.85);
+    return c;
   }
 `;
 
-const HEIGHT_SAMPLE_GLSL = `
-  uniform sampler2D uHeight;
-  uniform float uGridSize;
+function patchGroundMaterial(material, uniforms) {
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", `#include <common>\n${GROUND_VERTEX_PARS}`)
+      .replace("#include <beginnormal_vertex>", GROUND_BEGIN_VERTEX)
+      .replace("#include <begin_vertex>", `vec3 transformed = vec3(position.x, vDisplayHeight * ${HEIGHT_SCALE.toFixed(2)}, position.z);`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", `#include <common>\n${GROUND_FRAGMENT_PARS}`)
+      .replace("#include <color_fragment>", "diffuseColor.rgb = terrainColor();");
+  };
+}
 
-  float rawElevation(vec2 cell) {
-    vec2 uv = (cell + 0.5) / uGridSize;
-    float t = texture2D(uHeight, uv).r;
-    return ${texelToElevationRange()};
-  }
-
-  // Detail displacement added on top of the painted (authoritative)
-  // elevation: ridged noise at sub-cell frequency, scaled by elevation-
-  // above-sea-level - this envelope (slopeGate/amplitude below) is the
-  // ORIGINAL formula, kept as-is: it already produces smooth, well-tapered,
-  // good-looking mountains (verified against research/ and this app's own
-  // seed scene - see ROADMAP.md task 2), varying smoothly and monotonically
-  // from a mountain's summit down to its base, which a from-scratch slope-
-  // based envelope could not reproduce (tried and reverted here - a pure
-  // local-slope gate is zero at a dome's flat summit and peaks partway down
-  // the flank instead, a "halo ring" shape that let the noise function's own
-  // occasional sharp crests show through as isolated new spikes partway down
-  // otherwise-smooth hillsides - confirmed via a direct before/after
-  // screenshot comparison against the unmodified formula on the same seed
-  // data, visible proof this was a regression and not pre-existing).
-  //
-  // What this task's correction actually needs is narrower than a full
-  // re-gate: don't let this noise pile extra jaggedness onto a slope that's
-  // *already* extreme (a leftover narrow spike/cliff the relaxation pass in
-  // world-client.js hasn't caught, or data painted before that pass
-  // existed) - not a reason to change how normal terrain is textured.
-  // extremeDamping below is a ceiling only: 1.0 (no change at all) for any
-  // slope at or under what the relaxation pass already keeps painted
-  // terrain within, confirmed to cover this seed scene's steepest natural
-  // feature (the dominant peak, ~0.066) and the coastline itself (~0.05 at
-  // this sampling width) with room to spare - it only engages above that,
-  // on genuinely pathological terrain.
-  float detailedHeight(vec2 cell, float base) {
-    float aboveSea = max(0.0, base - ${SEA_LEVEL.toFixed(6)});
-    if (aboveSea <= 0.0001) return base;
-    float slopeGate = smoothstep(0.02, 0.18, aboveSea);
-    float amplitude = 0.05 + 0.22 * smoothstep(0.1, 0.9, aboveSea);
-    // Wider than the vertex shader's own eps=0.6 (used for visual normals,
-    // a different job): a narrow sampling window reads the *pointwise*
-    // gradient, which spikes at any sharp kink in the data - not just a
-    // genuinely steep face, but also the seam where two overlapping
-    // terrain features meet (this app's own seed data combines bumps with
-    // max(), the same shape repeated overlapping brush strokes leave
-    // behind). Widened so this reads *regional* steepness instead.
-    float slopeEps = 2.2;
-    float hl = rawElevation(cell + vec2(-slopeEps, 0.0));
-    float hr = rawElevation(cell + vec2(slopeEps, 0.0));
-    float hd = rawElevation(cell + vec2(0.0, -slopeEps));
-    float hu = rawElevation(cell + vec2(0.0, slopeEps));
-    float slope = length(vec2(hr - hl, hu - hd)) / (2.0 * slopeEps);
-    float extremeDamping = 1.0 - 0.7 * smoothstep(0.15, 0.35, slope);
-    float n = (fractalFold(cell * 1.0) - 0.5) * 2.0;
-    return base + n * amplitude * slopeGate * extremeDamping;
-  }
-
-  float heightAt(vec2 cell) {
-    return detailedHeight(cell, rawElevation(cell));
-  }
-`;
-
-const VERTEX_SHADER = `
-  ${NOISE_GLSL}
-  ${HEIGHT_SAMPLE_GLSL}
-  varying vec3 vWorldPos;
-  varying vec3 vNormal;
-  varying float vElevation;
-
-  void main() {
-    vec2 cell = vec2(position.x, position.z);
-    float h = heightAt(cell);
-    vElevation = h;
-    vec3 displaced = vec3(position.x, h * ${HEIGHT_SCALE.toFixed(2)}, position.z);
-
-    // Finite-difference normal from the same height function, computed
-    // on-the-fly in-shader - no CPU normal buffer, ever, regardless of
-    // how often the authoritative grid changes.
-    float eps = 0.6;
-    float hl = heightAt(cell + vec2(-eps, 0.0));
-    float hr = heightAt(cell + vec2(eps, 0.0));
-    float hd = heightAt(cell + vec2(0.0, -eps));
-    float hu = heightAt(cell + vec2(0.0, eps));
-    vec3 dx = vec3(2.0 * eps, (hr - hl) * ${HEIGHT_SCALE.toFixed(2)}, 0.0);
-    vec3 dz = vec3(0.0, (hu - hd) * ${HEIGHT_SCALE.toFixed(2)}, 2.0 * eps);
-    vNormal = normalize(cross(dz, dx));
-
-    // vWorldPos.xz doubles as the cell coordinate downstream (ground mesh
-    // has no rotation/scale beyond buildGroundGeometry's own translate) -
-    // the terrain-type lookup happens per-FRAGMENT, not here, so it stays a
-    // crisp nearest-neighbour lookup (terrain type 1.5 isn't meaningful)
-    // regardless of how coarse MESH_SEGMENTS is relative to GRID_SIZE.
-    vec4 worldPos = modelMatrix * vec4(displaced, 1.0);
-    vWorldPos = worldPos.xyz;
-    gl_Position = projectionMatrix * viewMatrix * worldPos;
-  }
-`;
-
-// Mirrors terrain-renderer.js's colorFor: sea depth gradient, grass/sand/
-// forest base colours, altitude-tinted rock (bare -> high -> snow), with
-// slope-based rock bleed-through on top so a steep slope reads as rock
-// scree even where the player painted grass - the
-// @interverse/three-terrain-lod *idea* (slope/height-based material
-// blending), hand-written against a standard ShaderMaterial instead of its
-// TSL/WebGPU package (see CLAUDE.md).
-const FRAGMENT_SHADER = `
-  precision highp float;
-  varying vec3 vWorldPos;
-  varying vec3 vNormal;
-  varying float vElevation;
-
-  uniform sampler2D uHeight;
-  uniform sampler2D uType;
-  uniform float uGridSize;
-  uniform vec3 uLightDir;
-  uniform vec3 uLightColor;
-  uniform vec3 uAmbient;
-  uniform float uSeaLevel;
-
-  vec3 lerp3(vec3 a, vec3 b, float t) { return a + (b - a) * clamp(t, 0.0, 1.0); }
-
-  vec3 rockColor(float elevation) {
-    vec3 bare = vec3(118.0, 109.0, 98.0) / 255.0;
-    vec3 high = vec3(168.0, 160.0, 150.0) / 255.0;
-    vec3 snow = vec3(240.0, 242.0, 246.0) / 255.0;
-    float toHigh = smoothstep(0.35, 0.65, elevation);
-    vec3 base = lerp3(bare, high, toHigh);
-    float toSnow = smoothstep(0.78, 0.95, elevation);
-    return lerp3(base, snow, toSnow);
-  }
-
-  float rawElevationFS(vec2 cell) {
-    vec2 uv = (cell + 0.5) / uGridSize;
-    float t = texture2D(uHeight, uv).r;
-    return ${texelToElevationRange()};
-  }
-
-  // Task 4 (ROADMAP.md): the raw per-cell type lookup below is a crisp,
-  // deliberately un-interpolated index (texture2D on uType uses
-  // NearestFilter - an interpolated index like 1.5 isn't a real type), which
-  // is why the terrain-type boundary used to read as a hard, axis-aligned
-  // blocky edge regardless of mesh density. This blends four whole, already-
-  // resolved CORNER COLOURS instead of the raw index - standard bilinear
-  // filtering applied one level up, after the categorical lookup rather than
-  // before it, so it only ever produces a colour that's a real mix of real
-  // neighbouring colours, never a meaningless fractional type. "fallback" is
-  // always this fragment's own already-land-side colour (computed by the
-  // caller before this runs): any corner that turns out to be sea-side is
-  // replaced by it rather than contributing its own colour, so a coastal
-  // fragment's blend degrades to fallback-only (today's exact behaviour) and
-  // never actually mixes a land colour with a sea colour.
-  vec3 paintColorForCell(vec2 cell, vec3 fallback) {
-    float e = rawElevationFS(cell);
-    if (e <= uSeaLevel) return fallback;
-    vec2 uv = (cell + 0.5) / uGridSize;
-    float typeRaw = texture2D(uType, uv).r;
-    int ti = int(typeRaw * 255.0 + 0.5);
-    vec3 grass = vec3(107.0, 142.0, 68.0) / 255.0;
-    vec3 sand = vec3(222.0, 201.0, 148.0) / 255.0;
-    vec3 forest = vec3(45.0, 86.0, 54.0) / 255.0;
-    if (ti == 1) return sand;
-    if (ti == 2) return forest;
-    if (ti == 3) return rockColor(e);
-    return grass;
-  }
-
-  vec3 blendedTypeColor(vec3 selfColor) {
-    vec2 p = vec2(vWorldPos.x, vWorldPos.z);
-    vec2 q = p - 0.5;
-    vec2 c0 = floor(q);
-    vec2 f = clamp(q - c0, 0.0, 1.0);
-    vec3 c00 = paintColorForCell(c0, selfColor);
-    vec3 c10 = paintColorForCell(c0 + vec2(1.0, 0.0), selfColor);
-    vec3 c01 = paintColorForCell(c0 + vec2(0.0, 1.0), selfColor);
-    vec3 c11 = paintColorForCell(c0 + vec2(1.0, 1.0), selfColor);
-    return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
-  }
-
-  void main() {
-    vec3 color;
-    if (vElevation <= uSeaLevel) {
-      vec3 deep = vec3(18.0, 38.0, 66.0) / 255.0;
-      vec3 shallow = vec3(66.0, 120.0, 158.0) / 255.0;
-      float t = smoothstep(-1.0, uSeaLevel, vElevation);
-      color = lerp3(deep, shallow, t);
-    } else {
-      vec2 cellUv = (vec2(vWorldPos.x, vWorldPos.z) + 0.5) / uGridSize;
-      float typeRaw = texture2D(uType, cellUv).r;
-      int typeIndex = int(typeRaw * 255.0 + 0.5);
-      vec3 grass = vec3(107.0, 142.0, 68.0) / 255.0;
-      vec3 sand = vec3(222.0, 201.0, 148.0) / 255.0;
-      vec3 forest = vec3(45.0, 86.0, 54.0) / 255.0;
-      vec3 base = grass;
-      if (typeIndex == 1) base = sand;
-      else if (typeIndex == 2) base = forest;
-      else if (typeIndex == 3) base = rockColor(vElevation);
-
-      // Soften the raw per-cell type edge into a blended boundary (Task 4,
-      // ROADMAP.md) - "base" above is also this blend's domain-safe
-      // fallback, so a fragment right at the coastline degrades to exactly
-      // today's crisp self-colour rather than pulling in a sea-side sample.
-      base = blendedTypeColor(base);
-
-      // Slope-based rock bleed-through: steep ground reads as scree/rock
-      // regardless of painted type, the way a real relief map doesn't let
-      // grass cling to a cliff face.
-      float slope = 1.0 - clamp(normalize(vNormal).y, 0.0, 1.0);
-      float rockBleed = smoothstep(0.35, 0.75, slope);
-      base = lerp3(base, rockColor(vElevation), rockBleed);
-
-      // Snow cap above a height threshold, independent of painted type.
-      float snowLine = smoothstep(0.72, 0.95, vElevation);
-      base = lerp3(base, vec3(240.0, 242.0, 246.0) / 255.0, snowLine * 0.85);
-
-      color = base;
-    }
-
-    vec3 n = normalize(vNormal);
-    float diffuse = max(0.0, dot(n, normalize(uLightDir)));
-    // A hard floor()-quantized "toon band" was tried here for a more
-    // painted look, but it quantizes any smoothly-varying surface into
-    // visible parallel step-lines wherever the banding crosses an integer
-    // boundary - starkly visible on the (intentionally smooth) sea, masked
-    // only by coincidence on the already-noisy mountain detail. Smooth
-    // Lambertian diffuse avoids the artifact; the painted look comes from
-    // the colour ramps and slope-based material blending above instead.
-    vec3 lit = color * (uAmbient + uLightColor * diffuse);
-    gl_FragColor = vec4(lit, 1.0);
-  }
-`;
-
-// A flat, static plane at sea level (Task 1, ROADMAP.md) - fixing the root
-// cause of both "lowering the seabed lowers the water" and "coastlines form
-// cliffs": there was no surface distinct from the seabed mesh itself. This
-// plane never moves and never needs updating when elevation changes (that's
-// the whole point); the seabed underneath can now be sculpted to any depth
-// by Deepen/Shallow without the visible "water" ever dropping; the actual
-// depth still reads visually through its transparency and the ground
-// shader's own existing depth-based colour gradient. A real sunk coastline
-// cliff is now simply occluded by this plane rather than exposed as bare
-// mesh wall - standard depth-tested transparency, no special-casing needed
-// since every land cell's displayed height is by definition above sea level
-// and every sea cell's is at or below it.
-function buildWaterPlaneGeometry() {
-  const geometry = new THREE.PlaneGeometry(GRID_SIZE - 1, GRID_SIZE - 1, 1, 1);
-  geometry.rotateX(-Math.PI / 2);
-  geometry.translate((GRID_SIZE - 1) / 2, 0, (GRID_SIZE - 1) / 2);
-  return geometry;
+function patchDepthMaterial(material, uniforms) {
+  material.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", `#include <common>\n${DEPTH_VERTEX_PARS}`)
+      .replace("#include <begin_vertex>", DEPTH_BEGIN_VERTEX);
+  };
 }
 
 function buildGroundGeometry() {
-  const geometry = new THREE.PlaneGeometry(
-    GRID_SIZE - 1,
-    GRID_SIZE - 1,
-    MESH_SEGMENTS,
-    MESH_SEGMENTS,
-  );
+  const geometry = new THREE.PlaneGeometry(GRID_SIZE - 1, GRID_SIZE - 1, MESH_SEGMENTS, MESH_SEGMENTS);
   geometry.rotateX(-Math.PI / 2);
-  // PlaneGeometry is centered on the origin; shift so grid cell (0,0) sits
-  // at world (0,0) and cell (GRID_SIZE-1, GRID_SIZE-1) at world
-  // (GRID_SIZE-1, GRID_SIZE-1) - the same coordinate space the authoritative
-  // elevationGrid uses, so picking needs no extra offset bookkeeping.
+  // Cell (0,0) at world (0,0), cell (N-1,N-1) at world (N-1,N-1) - the same
+  // coordinate space as the authoritative grid, so picking needs no offset.
   geometry.translate((GRID_SIZE - 1) / 2, 0, (GRID_SIZE - 1) / 2);
   return geometry;
 }
 
 function createHeightTexture() {
-  // Float32, not the 8-bit texture this used to be - see elevationToTexel's
-  // own comment for the bug that caused (same-precision, no quantization
-  // round-trip, matching the exact-float comparison Top-down always used).
-  // WebGL2 (already required for this renderer - isWebGL2Available) always
-  // supports FloatType textures with linear filtering, unlike WebGL1 where
-  // that combination needs an extension.
-  const data = new Float32Array(GRID_SIZE * GRID_SIZE);
-  const texture = new THREE.DataTexture(data, GRID_SIZE, GRID_SIZE, THREE.RedFormat, THREE.FloatType);
+  const texture = new THREE.DataTexture(
+    new Float32Array(GRID_SIZE * GRID_SIZE),
+    GRID_SIZE,
+    GRID_SIZE,
+    THREE.RedFormat,
+    THREE.FloatType,
+  );
   texture.magFilter = THREE.LinearFilter;
   texture.minFilter = THREE.LinearFilter;
-  texture.wrapS = THREE.ClampToEdgeWrapping;
-  texture.wrapT = THREE.ClampToEdgeWrapping;
   texture.needsUpdate = true;
   return texture;
 }
 
+// One channel per terrain type (one-hot, 0 over the sea), linearly filtered:
+// unlike a single type-index texture, weights *can* be meaningfully
+// interpolated, which is what lets the shader B-spline-sample them into
+// smooth boundaries instead of cell-shaped blocks.
 function createTypeTexture() {
-  const data = new Uint8Array(GRID_SIZE * GRID_SIZE);
-  const texture = new THREE.DataTexture(data, GRID_SIZE, GRID_SIZE, THREE.RedFormat, THREE.UnsignedByteType);
-  // Nearest: a terrain-type index must never be hardware-interpolated
-  // between neighbours (index 1.5 isn't a type) - the shader does its own
-  // slope/elevation blending on top of a crisp per-cell type lookup.
-  texture.magFilter = THREE.NearestFilter;
-  texture.minFilter = THREE.NearestFilter;
-  texture.wrapS = THREE.ClampToEdgeWrapping;
-  texture.wrapT = THREE.ClampToEdgeWrapping;
+  const texture = new THREE.DataTexture(
+    new Uint8Array(GRID_SIZE * GRID_SIZE * 4),
+    GRID_SIZE,
+    GRID_SIZE,
+    THREE.RGBAFormat,
+    THREE.UnsignedByteType,
+  );
+  texture.magFilter = THREE.LinearFilter;
+  texture.minFilter = THREE.LinearFilter;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function createSurfaceTexture(data) {
+  const texture = new THREE.DataTexture(data, SURFACE_RES, SURFACE_RES, THREE.RedFormat, THREE.FloatType);
+  texture.magFilter = THREE.LinearFilter;
+  texture.minFilter = THREE.LinearFilter;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+// 256^2 RGBA tileable value noise (four independent channels), generated
+// once at startup - no asset to ship. Tileable by wrapping the lattice.
+function createNoiseTexture() {
+  const N = 256;
+  const data = new Uint8Array(N * N * 4);
+  for (let c = 0; c < 4; c++) {
+    const G = 32; // lattice cells per tile
+    const lattice = new Float32Array(G * G);
+    for (let i = 0; i < lattice.length; i++) lattice[i] = hashCell(i % G, Math.floor(i / G), 101 + c);
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        const fx = (x / N) * G;
+        const fy = (y / N) * G;
+        const ix = Math.floor(fx);
+        const iy = Math.floor(fy);
+        const tx = fx - ix;
+        const ty = fy - iy;
+        const ux = tx * tx * (3 - 2 * tx);
+        const uy = ty * ty * (3 - 2 * ty);
+        const at = (i, j) => lattice[(j % G) * G + (i % G)];
+        const v = at(ix, iy) * (1 - ux) * (1 - uy) + at(ix + 1, iy) * ux * (1 - uy) + at(ix, iy + 1) * (1 - ux) * uy + at(ix + 1, iy + 1) * ux * uy;
+        data[(y * N + x) * 4 + c] = Math.round(v * 255);
+      }
+    }
+  }
+  const texture = new THREE.DataTexture(data, N, N, THREE.RGBAFormat, THREE.UnsignedByteType);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.magFilter = THREE.LinearFilter;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.generateMipmaps = true;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function createCoastTexture(data) {
+  const texture = new THREE.DataTexture(data, COAST_SDF_RES, COAST_SDF_RES, THREE.RedFormat, THREE.FloatType);
+  texture.magFilter = THREE.LinearFilter;
+  texture.minFilter = THREE.LinearFilter;
   texture.needsUpdate = true;
   return texture;
 }
 
 function fillHeightTexture(texture, elevationGrid) {
-  const data = texture.image.data;
-  for (let i = 0; i < elevationGrid.length; i++) data[i] = elevationToTexel(elevationGrid[i]);
+  texture.image.data.set(elevationGrid);
   texture.needsUpdate = true;
 }
 
-function fillTypeTexture(texture, typeGrid) {
-  texture.image.data.set(typeGrid);
+// `region` (cells, inclusive) limits the rewrite to what changed - a brush
+// stroke touches a few hundred cells, not all 65k.
+function fillTypeTexture(texture, elevationGrid, typeGrid, region) {
+  const data = texture.image.data;
+  const x0 = region ? Math.max(0, region.minX) : 0;
+  const x1 = region ? Math.min(GRID_SIZE - 1, region.maxX) : GRID_SIZE - 1;
+  const y0 = region ? Math.max(0, region.minY) : 0;
+  const y1 = region ? Math.min(GRID_SIZE - 1, region.maxY) : GRID_SIZE - 1;
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = y * GRID_SIZE + x;
+      data[i * 4] = data[i * 4 + 1] = data[i * 4 + 2] = data[i * 4 + 3] = 0;
+      if (elevationGrid[i] > SEA_LEVEL) data[i * 4 + typeGrid[i]] = 255;
+    }
+  }
   texture.needsUpdate = true;
+}
+
+// Same one-hot weights as buildTypeWeights, updated in place for a region.
+function updateTypeWeights(weights, elevationGrid, typeGrid, region) {
+  for (let y = Math.max(0, region.minY); y <= Math.min(GRID_SIZE - 1, region.maxY); y++) {
+    for (let x = Math.max(0, region.minX); x <= Math.min(GRID_SIZE - 1, region.maxX); x++) {
+      const i = y * GRID_SIZE + x;
+      for (let t = 0; t < weights.length; t++) weights[t][i] = 0;
+      if (elevationGrid[i] > SEA_LEVEL) weights[typeGrid[i]][i] = 1;
+    }
+  }
 }
 
 // --- Trees --------------------------------------------------------------
-// Forest cells get 1-2 instanced billboard trees each (two textures -
-// deciduous/conifer - for variety), placed with a deterministic seeded
-// jitter so positions are stable across redraws/clients without
-// transmitting per-tree data. Rebuilt in full whenever any terrain-type
-// edit lands (bounded by forest-cell count, not grid size - see PROCESS.md
-// for why this is a simplification of the original dirty-rect-only plan).
-function mulberry32(seed) {
-  let a = seed >>> 0;
-  return function () {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+// Real glTF meshes (KayKit Forest Nature Pack, CC0 - CREDITS.md), instanced.
+// Placement is a deterministic function of the cell (hash-seeded, never
+// Math.random), so every client grows the same trees with nothing sent over
+// the network. Density follows the *rendered* forest-floor weight from
+// terrain-fields.js, not the raw painted cells: trees thin out across the
+// same organic boundary the shader draws, form clumps and glades from a
+// clump-noise field, give way to grass at the treeline and the beach, and a
+// few lone trees dot open grassland - instead of a uniform 22%-per-cell
+// carpet clipped to the painted rectangle.
+const TREE_MODEL_PATHS = [
+  "/world/assets/kaykit-forest/Tree_1_A_Color1.gltf",
+  "/world/assets/kaykit-forest/Tree_3_A_Color1.gltf",
+];
+
+const TREE_CHUNK = 16;
+const TREE_CHUNKS = GRID_SIZE / TREE_CHUNK;
+
+function hashCell(x, y, salt) {
+  let h = Math.imul(x, 374761393) ^ Math.imul(y, 668265263) ^ Math.imul(salt, 2147483647);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 }
 
-const TREE_TEXTURE_PATHS = ["/world/assets/tree-deciduous.png", "/world/assets/tree-conifer.png"];
-const TREE_WORLD_HEIGHT = 2.6;
-const TREE_WORLD_WIDTH = 2.0;
+function sampleCoast(sdf, x, y) {
+  const s = COAST_SDF_RES / GRID_SIZE;
+  const px = Math.min(COAST_SDF_RES - 1, Math.max(0, Math.round((x + 0.5) * s - 0.5)));
+  const py = Math.min(COAST_SDF_RES - 1, Math.max(0, Math.round((y + 0.5) * s - 0.5)));
+  return sdf[py * COAST_SDF_RES + px];
+}
 
-function buildTreeLayer(scene, textureLoader) {
-  const geometry = new THREE.PlaneGeometry(TREE_WORLD_WIDTH, TREE_WORLD_HEIGHT);
-  geometry.translate(0, TREE_WORLD_HEIGHT / 2, 0);
-
-  const meshes = TREE_TEXTURE_PATHS.map((path) => {
-    const texture = textureLoader.load(path);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    // MeshLambertMaterial was tried first (the plan's original intent: tint
-    // trees by the scene's real directional light so they sit in the same
-    // lighting as the terrain). In practice the billboard's single fixed
-    // face normal doesn't reliably face the light, so most instances came
-    // out nearly black - unreadable, worse than the flat green fill this is
-    // supposed to improve on. A flat, fixed daylight tint on an unlit
-    // material keeps the authored canopy colours legible; it doesn't darken
-    // in a mountain's shadow the way the ground does - a real limitation,
-    // not a hidden one (see PROCESS.md).
-    const material = new THREE.MeshBasicMaterial({
-      map: texture,
-      color: new THREE.Color(0.95, 0.97, 0.88),
-      transparent: true,
-      alphaTest: 0.4,
-      side: THREE.DoubleSide,
-    });
-    const mesh = new THREE.InstancedMesh(geometry, material, 1);
-    mesh.count = 0;
-    mesh.castShadow = true;
-    scene.add(mesh);
-    return mesh;
-  });
-
-  // Placement data (world position/scale) is kept here, outside rebuild(),
-  // so updateFacing() below can re-orient every instance toward a moving
-  // camera without recomputing the (expensive, seeded-random) placement
-  // pass itself - placement only changes on a terrain-type edit, facing
-  // changes on every camera move, and they're deliberately decoupled.
-  let placements = [[], []];
-
-  function rebuild(elevationGrid, typeGrid) {
-    const forestIndex = TERRAIN_TYPES.indexOf("forest");
-    placements = [[], []];
-    const rand = mulberry32(90125);
-    // A tree per forest cell would crowd them into a solid dark mass at
-    // TREE_WORLD_WIDTH's footprint (cells are 1 world unit apart, trees are
-    // 2 wide) - skipping most cells spaces individual trees out enough to
-    // actually read as scattered detail rather than a flat dark texture.
-    const PLACEMENT_CHANCE = 0.22;
-    for (let y = 0; y < GRID_SIZE; y++) {
-      for (let x = 0; x < GRID_SIZE; x++) {
-        if (typeGrid[y * GRID_SIZE + x] !== forestIndex) continue;
-        if (elevationGrid[y * GRID_SIZE + x] <= SEA_LEVEL) continue;
-        if (rand() > PLACEMENT_CHANCE) continue;
-        const jx = x + rand() * 0.8 - 0.4 + 0.5;
-        const jz = y + rand() * 0.8 - 0.4 + 0.5;
-        const h = sampleElevationBilinear(elevationGrid, jx, jz);
-        const variant = rand() < 0.65 ? 0 : 1;
-        const scale = 1.1 + rand() * 0.6;
-        placements[variant].push({ x: jx, y: h * HEIGHT_SCALE, z: jz, scale });
+function placeTreesInChunk(cx, cy, fields) {
+  const { elevationGrid, typeWeights, coastSDF, surface } = fields;
+  const placements = [];
+  for (let y = cy * TREE_CHUNK; y < (cy + 1) * TREE_CHUNK; y++) {
+    for (let x = cx * TREE_CHUNK; x < (cx + 1) * TREE_CHUNK; x++) {
+      for (let k = 0; k < 2; k++) {
+        const px = x + hashCell(x, y, 11 + k) - 0.5;
+        const py = y + hashCell(x, y, 23 + k) - 0.5;
+        const e = bsplineSample(elevationGrid, px, py);
+        if (e <= 0.012) continue;
+        const coast = sampleCoast(coastSDF, px, py);
+        if (coast < 1.2) continue;
+        const m = mountainMask(e);
+        if (m > 0.55) continue;
+        // The hash roll is fixed per candidate, so test it against the best
+        // chance this spot could possibly get before paying for the (much
+        // costlier) material-field sample - most candidates stop here.
+        const roll = hashCell(x, y, 37 + k);
+        if (roll > 0.82) continue;
+        const material = paintedMaterialAt(typeWeights, px, py);
+        const clump = 0.5 + 0.5 * snoise(px * 0.11 + 31, py * 0.11 + 17);
+        const forest = material[2] * (1 - m / 0.55);
+        let chance = forest > 0.25 ? (0.32 + 0.5 * clump) * Math.min(1, (forest - 0.25) / 0.35) : 0;
+        // Lone trees and copses in open grassland.
+        const copse = snoise(px * 0.23 + 71, py * 0.23 + 5);
+        chance += material[0] * (1 - m) * (copse > 0.72 ? 0.35 : 0.004);
+        if (roll > chance) continue;
+        const h = sampleSurface(surface, px, py);
+        const edge = Math.min(1, Math.max(0.35, forest + 0.2));
+        placements.push({
+          x: px,
+          y: h * HEIGHT_SCALE,
+          z: py,
+          // Conifers in stands, more of them uphill.
+          variant: snoise(px * 0.05 + 3, py * 0.05 + 9) + m * 2.2 > 0.35 ? 1 : 0,
+          scale: (0.42 + 0.2 * hashCell(x, y, 41 + k)) * (0.75 + 0.25 * edge),
+          rotY: hashCell(x, y, 53 + k) * Math.PI * 2,
+          tint: Math.pow(hashCell(x, y, 67 + k), 1.6) * (0.55 + 0.45 * clump),
+        });
       }
-    }
-
-    for (let v = 0; v < meshes.length; v++) {
-      const mesh = meshes[v];
-      const list = placements[v];
-      if (list.length > mesh.instanceMatrix.count) {
-        mesh.dispose?.();
-        meshes[v] = new THREE.InstancedMesh(mesh.geometry, mesh.material, Math.max(1, list.length));
-        scene.remove(mesh);
-        scene.add(meshes[v]);
-        meshes[v].castShadow = true;
-      }
-      meshes[v].count = list.length;
     }
   }
+  return placements;
+}
 
-  // ROADMAP.md task 3: these were never real billboards (see the comment on
-  // the material above) - each instance kept one fixed world orientation,
-  // which only ever happened to face the camera because there used to be
-  // exactly one fixed camera position. Now that the camera can sit at any
-  // of 4 azimuths (or anywhere continuously via tilt), every instance's
-  // rotation is recomputed here, each time the camera moves - a real
-  // (Y-axis-only, so trees stay upright) billboard rotation, cheap enough
-  // to redo in full every call since tree counts are bounded by forest-cell
-  // count, same reasoning as the full-grid texture re-uploads elsewhere.
+function buildTreeLayer(scene, onLoaded) {
+  const gltfLoader = new GLTFLoader();
+  const meshes = TREE_MODEL_PATHS.map(() => null);
+  const chunks = new Array(TREE_CHUNKS * TREE_CHUNKS).fill(null).map(() => []);
+  const MAX_TREES = 24000;
+
+  TREE_MODEL_PATHS.forEach((path, v) => {
+    gltfLoader.load(path, (gltf) => {
+      let geometry = null;
+      let material = null;
+      gltf.scene.traverse((obj) => {
+        if (obj.isMesh && !geometry) {
+          geometry = obj.geometry;
+          material = obj.material;
+          material.metalness = 0;
+          material.roughness = 1;
+        }
+      });
+      if (!geometry) return;
+      const mesh = new THREE.InstancedMesh(geometry, material, MAX_TREES);
+      mesh.count = 0;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.frustumCulled = false;
+      scene.add(mesh);
+      meshes[v] = mesh;
+      writeInstances();
+      onLoaded();
+    });
+  });
+
   const matrix = new THREE.Matrix4();
   const position = new THREE.Vector3();
   const quaternion = new THREE.Quaternion();
   const scaleVec = new THREE.Vector3();
-  const euler = new THREE.Euler();
-  function updateFacing(camera) {
-    for (let v = 0; v < meshes.length; v++) {
-      const active = meshes[v];
-      const list = placements[v];
-      for (let i = 0; i < list.length; i++) {
-        const p = list[i];
-        const rotY = Math.atan2(camera.position.x - p.x, camera.position.z - p.z);
-        euler.set(0, rotY, 0);
-        quaternion.setFromEuler(euler);
+  const up = new THREE.Vector3(0, 1, 0);
+  const color = new THREE.Color();
+  // Multiplies the model's own green: dark blue-greens through olive to a
+  // few autumn-tinged crowns, so a forest reads as many trees, not one
+  // repeated sprite. Conifers (variant 1) are pushed darker below.
+  const greens = [
+    new THREE.Color("#7f9c6a"),
+    new THREE.Color("#a9c27d"),
+    new THREE.Color("#d4d98e"),
+    new THREE.Color("#e3c27a"),
+  ];
+
+  function writeInstances() {
+    const counts = [0, 0];
+    for (const list of chunks) {
+      for (const p of list) {
+        const mesh = meshes[p.variant];
+        if (!mesh || counts[p.variant] >= MAX_TREES) continue;
+        const i = counts[p.variant]++;
+        quaternion.setFromAxisAngle(up, p.rotY);
         position.set(p.x, p.y, p.z);
-        scaleVec.set(p.scale, p.scale, p.scale);
+        scaleVec.setScalar(p.scale);
         matrix.compose(position, quaternion, scaleVec);
-        active.setMatrixAt(i, matrix);
+        mesh.setMatrixAt(i, matrix);
+        const t = p.tint * (greens.length - 1);
+        const j = Math.min(greens.length - 2, Math.floor(t));
+        color.copy(greens[j]).lerp(greens[j + 1], t - j).multiplyScalar(p.variant === 1 ? 0.62 : 0.82);
+        mesh.setColorAt(i, color);
       }
-      if (list.length > 0) active.instanceMatrix.needsUpdate = true;
     }
+    meshes.forEach((mesh, v) => {
+      if (!mesh) return;
+      mesh.count = counts[v];
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    });
   }
 
-  return { meshes, rebuild, updateFacing };
-}
-
-// --- Coastline ------------------------------------------------------------
-function buildCoastlineLine(scene) {
-  const material = new THREE.LineBasicMaterial({ color: 0x3c2f20, linewidth: 2, transparent: true, opacity: 0.85 });
-  const group = new THREE.Group();
-  scene.add(group);
-
-  function rebuild(elevationGrid) {
-    while (group.children.length) {
-      const child = group.children.pop();
-      child.geometry.dispose();
+  // region (cells, inclusive) limits the rebuild to chunks it can affect:
+  // the material warp (~2.2 cells) + B-spline support (2 cells) + a margin.
+  function rebuild(fields, region) {
+    const pad = 5;
+    const minCx = region ? Math.max(0, Math.floor((region.minX - pad) / TREE_CHUNK)) : 0;
+    const maxCx = region ? Math.min(TREE_CHUNKS - 1, Math.floor((region.maxX + pad) / TREE_CHUNK)) : TREE_CHUNKS - 1;
+    const minCy = region ? Math.max(0, Math.floor((region.minY - pad) / TREE_CHUNK)) : 0;
+    const maxCy = region ? Math.min(TREE_CHUNKS - 1, Math.floor((region.maxY + pad) / TREE_CHUNK)) : TREE_CHUNKS - 1;
+    for (let cy = minCy; cy <= maxCy; cy++) {
+      for (let cx = minCx; cx <= maxCx; cx++) chunks[cy * TREE_CHUNKS + cx] = placeTreesInChunk(cx, cy, fields);
     }
-    for (const ring of computeCoastlineRings(elevationGrid)) {
-      const points = ring.map(([x, y]) => {
-        const h = Math.max(SEA_LEVEL, sampleElevationBilinear(elevationGrid, x, y));
-        return new THREE.Vector3(x, h * HEIGHT_SCALE + 0.05, y);
-      });
-      if (points.length < 2) continue;
-      points.push(points[0]);
-      const geometry = new THREE.BufferGeometry().setFromPoints(points);
-      group.add(new THREE.Line(geometry, material));
-    }
+    writeInstances();
   }
 
-  return { rebuild };
+  return { rebuild, count: () => chunks.reduce((n, list) => n + list.length, 0) };
 }
 
 // --- Picking --------------------------------------------------------------
-// A direct ray-heightfield march against the authoritative elevationGrid -
-// not a raycast against the (detailed, GPU-only) visual mesh, so a paint
-// stroke always lands on exactly the cell the stored data says is there.
-function pickAgainstHeightfield(origin, direction, elevationGrid) {
-  const maxHeight = HEIGHT_SCALE * ELEVATION_MAX + 1;
-  const minHeight = HEIGHT_SCALE * ELEVATION_MIN - 1;
-  // Intersect the ray with the grid's bounding box first, so the march only
-  // covers the volume that could possibly contain the surface.
+// A ray march against the *displayed* surface (the same displayHeight the
+// vertex shader draws, flattened at sea level), so a stroke lands on the
+// ridge actually under the cursor, not on the smoother painted value below
+// it. Returns the nearest authoritative cell.
+function displayedHeightCPU(surface, x, z) {
+  return sampleSurface(surface, x, z) * HEIGHT_SCALE;
+}
+
+function pickAgainstHeightfield(origin, direction, surface) {
+  const maxHeight = HEIGHT_SCALE * (ELEVATION_MAX + 0.4);
+  const minHeight = HEIGHT_SCALE * SEA_LEVEL - 1;
   let tMin = 0;
-  let tMax = 1000;
+  let tMax = 2000;
   const bounds = [
     [0, GRID_SIZE - 1, origin.x, direction.x],
     [0, GRID_SIZE - 1, origin.z, direction.z],
@@ -633,7 +589,7 @@ function pickAgainstHeightfield(origin, direction, elevationGrid) {
   }
   if (tMin > tMax) return null;
 
-  const STEPS = 256;
+  const STEPS = 320;
   const step = (tMax - tMin) / STEPS;
   let prevT = tMin;
   let prevDiff = null;
@@ -642,30 +598,18 @@ function pickAgainstHeightfield(origin, direction, elevationGrid) {
     const x = origin.x + direction.x * t;
     const y = origin.y + direction.y * t;
     const z = origin.z + direction.z * t;
-    if (x < 0 || x > GRID_SIZE - 1 || z < 0 || z > GRID_SIZE - 1) {
-      prevT = t;
-      prevDiff = null;
-      continue;
-    }
-    const surfaceY = sampleElevationBilinear(elevationGrid, x, z) * HEIGHT_SCALE;
-    const diff = y - surfaceY;
+    const diff = y - displayedHeightCPU(surface, x, z);
     if (prevDiff !== null && prevDiff > 0 && diff <= 0) {
-      // Bisect between prevT and t for a tighter crossing estimate.
       let lo = prevT;
       let hi = t;
-      for (let b = 0; b < 8; b++) {
+      for (let b = 0; b < 10; b++) {
         const mid = (lo + hi) / 2;
-        const mx = origin.x + direction.x * mid;
-        const mz = origin.z + direction.z * mid;
         const my = origin.y + direction.y * mid;
-        const sy = sampleElevationBilinear(elevationGrid, mx, mz) * HEIGHT_SCALE;
-        if (my - sy > 0) lo = mid;
+        if (my - displayedHeightCPU(surface, origin.x + direction.x * mid, origin.z + direction.z * mid) > 0) lo = mid;
         else hi = mid;
       }
-      const hitX = origin.x + direction.x * hi;
-      const hitZ = origin.z + direction.z * hi;
-      const gx = Math.round(hitX);
-      const gz = Math.round(hitZ);
+      const gx = Math.round(origin.x + direction.x * hi);
+      const gz = Math.round(origin.z + direction.z * hi);
       if (gx < 0 || gx >= GRID_SIZE || gz < 0 || gz >= GRID_SIZE) return null;
       return { x: gx, y: gz };
     }
@@ -675,16 +619,13 @@ function pickAgainstHeightfield(origin, direction, elevationGrid) {
   return null;
 }
 
-// Task 4 (ROADMAP.md): capped device-pixel-ratio rendering. Without this,
-// the renderer's drawing buffer stayed at `logicalSize` physical pixels
-// regardless of the display, so on any HiDPI screen (devicePixelRatio > 1,
-// most laptops/phones) the browser had to upscale the rendered frame to
-// fill the CSS box - producing a soft/blurry oblique view. `antialias: true`
-// alone doesn't fix this: that's MSAA smoothing triangle edges *within* the
-// undersized buffer, a different concern from the buffer itself being too
-// small for the screen. Capped at 2x (not raw devicePixelRatio, which can be
-// 3+) to bound the fill-rate/shader cost of a much denser backing store.
+// Capped device-pixel-ratio rendering (ROADMAP.md task 4).
 export const MAX_DEVICE_PIXEL_RATIO = 2;
+
+// Coast distance field recompute is ~30-60ms at 512^2, so while a stroke is
+// being painted it's throttled to at most once per this interval; the last
+// change always gets a trailing recompute, so it's never left stale.
+const COAST_RECOMPUTE_MS = 140;
 
 export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSize) {
   let renderer;
@@ -697,162 +638,228 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
 
   const pixelRatio = Math.min(window.devicePixelRatio || 1, MAX_DEVICE_PIXEL_RATIO);
   renderer.setPixelRatio(pixelRatio);
-  // `false` = don't touch canvas.style - world.css already fixes the CSS
-  // display size; only the backing-store resolution (canvas.width/height)
-  // should change with pixelRatio.
   renderer.setSize(logicalSize, logicalSize, false);
-
   renderer.setClearColor(0x11161b, 1);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // The sun never moves and the shadow camera covers the whole map, so the
+  // shadow map only changes when terrain or trees do - not on every camera
+  // move. Re-rendering it (a 4096^2 pass over the full displaced mesh and
+  // every tree) is the single heaviest GPU cost per frame.
+  renderer.shadowMap.autoUpdate = false;
+  renderer.shadowMap.needsUpdate = true;
+  const invalidateShadows = () => {
+    renderer.shadowMap.needsUpdate = true;
+  };
 
   const scene = new THREE.Scene();
 
   const heightTexture = createHeightTexture();
   const typeTexture = createTypeTexture();
-  fillHeightTexture(heightTexture, elevationGrid);
-  fillTypeTexture(typeTexture, typeGrid);
+  const coastData = new Float32Array(COAST_SDF_RES * COAST_SDF_RES);
+  const coastTexture = createCoastTexture(coastData);
+  const surfaceData = new Float32Array(SURFACE_RES * SURFACE_RES);
+  bakeSurface(elevationGrid, surfaceData);
+  const surfaceTexture = createSurfaceTexture(surfaceData);
+  let typeWeights = buildTypeWeights(elevationGrid, typeGrid);
 
-  const groundMaterial = new THREE.ShaderMaterial({
-    uniforms: {
-      uHeight: { value: heightTexture },
-      uType: { value: typeTexture },
-      uGridSize: { value: GRID_SIZE },
-      uLightDir: { value: new THREE.Vector3(-0.5, 0.85, 0.35).normalize() },
-      uLightColor: { value: new THREE.Color(1, 0.98, 0.92) },
-      uAmbient: { value: new THREE.Color(0.38, 0.42, 0.48) },
-      uSeaLevel: { value: SEA_LEVEL },
-    },
-    vertexShader: VERTEX_SHADER,
-    fragmentShader: FRAGMENT_SHADER,
-    side: THREE.DoubleSide,
+  const uniforms = {
+    uHeight: { value: heightTexture },
+    uType: { value: typeTexture },
+    uGridSize: { value: GRID_SIZE },
+    uCoastSDF: { value: coastTexture },
+    uSurface: { value: surfaceTexture },
+    uNoise: { value: createNoiseTexture() },
+    uGrassDetail: { value: null },
+    uDetailReady: { value: 0 },
+  };
+  // A real CC0 hand-painted grass texture (CREDITS.md) used only as a
+  // low-contrast luminance grain under the procedural colour, so grass has
+  // brush texture up close without the photo-turf look it had as a fill.
+  new THREE.TextureLoader().load("/world/assets/textures/grass-cethiel.png", (tex) => {
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    uniforms.uGrassDetail.value = tex;
+    uniforms.uDetailReady.value = 1;
   });
+
+  const groundMaterial = new THREE.MeshLambertMaterial({ color: 0xffffff });
+  patchGroundMaterial(groundMaterial, uniforms);
+  const depthMaterial = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+  patchDepthMaterial(depthMaterial, uniforms);
+
   const groundGeometry = buildGroundGeometry();
   const groundMesh = new THREE.Mesh(groundGeometry, groundMaterial);
-  scene.add(groundMesh);
-
-  const waterGeometry = buildWaterPlaneGeometry();
-  const waterMaterial = new THREE.MeshStandardMaterial({
-    color: new THREE.Color(0.16, 0.34, 0.52),
-    transparent: true,
-    opacity: 0.82,
-    roughness: 0.4,
-    metalness: 0.05,
-    side: THREE.DoubleSide,
-  });
-  const waterMesh = new THREE.Mesh(waterGeometry, waterMaterial);
-  // +0.05, matching the coastline ink-line's own epsilon just below - an
-  // unpainted cell's ground-mesh vertex sits at exactly `base * HEIGHT_SCALE`
-  // with no detail added (detailedHeight's own early return for
-  // aboveSea <= 0.0001), which for an untouched cell is exactly 0, the same
-  // y this plane used to sit at with zero offset. Two coplanar triangles at
-  // an identical depth is a textbook z-fighting setup - GPU-dependent, but
-  // reliably visible as horizontal banding across the water on the hardware
-  // this was caught on (found immediately after fixing the Top-down/Oblique
-  // land-sea mismatch above: that bug had been hiding this one, since sea
-  // used to render as misclassified land almost everywhere, leaving this
-  // plane mostly occluded rather than exposed and coplanar).
-  waterMesh.position.y = SEA_LEVEL * HEIGHT_SCALE + 0.05;
-  waterMesh.receiveShadow = true;
-  scene.add(waterMesh);
-
-  // A real DirectionalLight (not baked into the ground shader's own light
-  // term) exists purely to cast shadows - the ground shader computes its own
-  // diffuse term from uLightDir for consistent shading, but shadow-casting
-  // needs an actual light/shadow-camera pair in the scene.
-  const sun = new THREE.DirectionalLight(0xfff4e0, 1.1);
-  sun.position.set(-80, 160, 60);
-  sun.target.position.set((GRID_SIZE - 1) / 2, 0, (GRID_SIZE - 1) / 2);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  // Without a bias, a surface self-shadows in stripes following its own
-  // triangle diagonals ("shadow acne") - most visible on the near-flat sea,
-  // which should never show it at all.
-  sun.shadow.bias = -0.0015;
-  sun.shadow.normalBias = 0.6;
-  const shadowCam = sun.shadow.camera;
-  shadowCam.left = -160;
-  shadowCam.right = 160;
-  shadowCam.top = 160;
-  shadowCam.bottom = -160;
-  shadowCam.near = 1;
-  shadowCam.far = 400;
-  scene.add(sun);
-  scene.add(sun.target);
+  groundMesh.customDepthMaterial = depthMaterial;
   groundMesh.castShadow = true;
   groundMesh.receiveShadow = true;
+  groundMesh.frustumCulled = false; // vertices move in the shader
+  scene.add(groundMesh);
 
-  scene.add(new THREE.AmbientLight(0xffffff, 0.25));
-
-  const textureLoader = new THREE.TextureLoader();
-  const trees = buildTreeLayer(scene, textureLoader);
-  trees.rebuild(elevationGrid, typeGrid);
-
-  const coastline = buildCoastlineLine(scene);
-  coastline.rebuild(elevationGrid);
-
-  // --- Camera (ROADMAP.md task 3) -----------------------------------------
-  // A parametric orthographic camera - azimuth (4 fixed presets), tilt
-  // (continuous), zoom and pan - replacing what used to be a handful of
-  // fixed constants. `azimuthIndex 1` ("s-n", angleDeg 0) reproduces the
-  // exact camera position this renderer always had, so nothing about the
-  // default look changes unless a control is touched.
+  // Cartographic convention: light from the north-west (upper-left in the
+  // default north-up view), fairly low so relief casts readable shadows.
   const GRID_CENTER = new THREE.Vector3((GRID_SIZE - 1) / 2, 0, (GRID_SIZE - 1) / 2);
-  // Orthographic - distance only matters for near/far planes and shadow
-  // setup, never apparent size (that's viewSize/zoom below), so this stays
-  // a fixed constant generous enough for any zoom level.
-  const DISTANCE = 260;
-  // Degrees from vertical (0 = directly overhead/top-down, 90 = fully
-  // horizontal/grazing) - matches the original fixed camera's own
-  // convention exactly, just made continuous. Kept off exactly 0/90 so the
-  // ray-march's bounding-box math never degenerates.
-  const MIN_TILT_DEG = 12; // near-top-down
-  const MAX_TILT_DEG = 82; // near-horizontal, a low dramatic side view
-  const DEFAULT_TILT_DEG = 58; // matches the original fixed camera's angle
+  const sun = new THREE.DirectionalLight(0xfff1dc, 2.1);
+  sun.position.copy(GRID_CENTER).add(new THREE.Vector3(-150, 150, -110));
+  sun.target.position.copy(GRID_CENTER);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(4096, 4096);
+  sun.shadow.bias = -0.0004;
+  sun.shadow.normalBias = 0.35;
+  sun.shadow.radius = 2;
+  const shadowCam = sun.shadow.camera;
+  shadowCam.left = -200;
+  shadowCam.right = 200;
+  shadowCam.top = 200;
+  shadowCam.bottom = -200;
+  shadowCam.near = 1;
+  shadowCam.far = 520;
+  scene.add(sun, sun.target);
+  // Warm sky / cool ground fill keeps shadowed slopes painterly rather than
+  // black, the way the reference maps tint their shade sides.
+  scene.add(new THREE.HemisphereLight(0xe8eefc, 0x6b5a45, 1.05));
+
+  // Declared before the tree layer so a model finishing its load can mark
+  // shadows stale and ask for a redraw.
+  let onAsyncChange = () => {};
+  const trees = buildTreeLayer(scene, () => {
+    invalidateShadows();
+    onAsyncChange();
+  });
+
+  function currentFields() {
+    return { elevationGrid: currentElevationGridRef, typeWeights, coastSDF: coastData, surface: surfaceData };
+  }
+
+  let currentElevationGridRef = elevationGrid;
+  let currentTypeGridRef = typeGrid;
+  // Tree re-placement is the costliest per-edit CPU work (~6ms per 16x16
+  // chunk, measured), so it's never done inside a paint frame: changed
+  // regions accumulate and are re-placed on a short trailing throttle.
+  let treeRegion = null;
+  let treeTimer = null;
+  const TREE_REBUILD_MS = 120;
+  function flushTrees() {
+    treeTimer = null;
+    const region = treeRegion;
+    treeRegion = null;
+    trees.rebuild(currentFields(), region === "all" ? undefined : region);
+    invalidateShadows();
+    onAsyncChange();
+  }
+  function scheduleTrees(region) {
+    if (!region || treeRegion === "all") treeRegion = "all";
+    else if (!treeRegion) treeRegion = { ...region };
+    else {
+      treeRegion.minX = Math.min(treeRegion.minX, region.minX);
+      treeRegion.minY = Math.min(treeRegion.minY, region.minY);
+      treeRegion.maxX = Math.max(treeRegion.maxX, region.maxX);
+      treeRegion.maxY = Math.max(treeRegion.maxY, region.maxY);
+    }
+    if (!treeTimer && !strokeActive) treeTimer = setTimeout(flushTrees, TREE_REBUILD_MS);
+  }
+  let coastTimer = null;
+  let lastCoastAt = 0;
+
+  function recomputeCoast() {
+    coastTimer = null;
+    lastCoastAt = performance.now();
+    computeCoastSDF(currentElevationGridRef, coastData);
+    coastTexture.needsUpdate = true;
+    invalidateShadows();
+    // Trees near the shore depend on the coast distance; a full re-place
+    // after a coastline move keeps beaches clear of trees.
+    scheduleTrees(lastCoastRegion === "all" ? null : lastCoastRegion);
+    lastCoastRegion = null;
+    onAsyncChange();
+  }
+
+  let lastCoastRegion = null;
+  // While the user is mid-stroke, the two expensive derived updates (coast
+  // distance field ~50ms, tree re-placement up to ~100ms) are held back and
+  // run once on pointerup: firing them mid-stroke on a throttle is what made
+  // painting hitch. The terrain itself (height, surface, materials) still
+  // updates every frame, so the stroke is never visually behind the cursor;
+  // only foam/ripples and trees catch up when the stroke ends.
+  let strokeActive = false;
+  let coastPending = false;
+  function setStrokeActive(active) {
+    strokeActive = active;
+    if (active) return;
+    if (coastPending) {
+      coastPending = false;
+      scheduleCoast(null);
+    }
+    if (treeRegion && !treeTimer) treeTimer = setTimeout(flushTrees, 0);
+  }
+  function scheduleCoast(region) {
+    if (region && lastCoastRegion !== "all") {
+      lastCoastRegion = lastCoastRegion
+        ? {
+            minX: Math.min(lastCoastRegion.minX, region.minX),
+            minY: Math.min(lastCoastRegion.minY, region.minY),
+            maxX: Math.max(lastCoastRegion.maxX, region.maxX),
+            maxY: Math.max(lastCoastRegion.maxY, region.maxY),
+          }
+        : { ...region };
+    } else lastCoastRegion = "all";
+    if (coastTimer) return;
+    const wait = Math.max(0, COAST_RECOMPUTE_MS - (performance.now() - lastCoastAt));
+    if (strokeActive) {
+      coastTimer = null;
+      coastPending = true;
+      return;
+    }
+    coastTimer = setTimeout(recomputeCoast, wait);
+  }
+
+  fillHeightTexture(heightTexture, elevationGrid);
+  fillTypeTexture(typeTexture, elevationGrid, typeGrid);
+  computeCoastSDF(elevationGrid, coastData);
+  trees.rebuild(currentFields());
+
+  // --- Camera ---------------------------------------------------------------
+  // Two independent camera states, one per view: switching views never
+  // loses the other view's zoom/pan/rotation. Top-down is the same scene
+  // seen from straight overhead, north up - so both views are literally the
+  // same rendered terrain, not two renderers kept in visual agreement.
+  const DISTANCE = 340;
+  const MIN_TILT_DEG = 12;
+  const MAX_TILT_DEG = 82;
+  const DEFAULT_TILT_DEG = 55;
   const MIN_ZOOM = 0.4;
-  const MAX_ZOOM = 3;
-  const FIT_MARGIN = 1.12; // breathing room beyond the tightest possible fit
+  const MAX_ZOOM = 8;
+  const FIT_MARGIN = 1.08;
   const AZIMUTH_PRESETS = [
     { id: "n-s", label: "N→S", angleDeg: 180 },
     { id: "s-n", label: "S→N", angleDeg: 0 },
     { id: "e-w", label: "E→W", angleDeg: 90 },
     { id: "w-e", label: "W→E", angleDeg: 270 },
   ];
-  const DEFAULT_AZIMUTH_INDEX = 1; // "s-n" - today's unchanged default
 
-  const camView = {
-    // Continuous now (ROADMAP.md task 3 revisit: free 360 deg rotation, not
-    // just 4 snapped presets) - degrees, wrapped into [0, 360). The 4 preset
-    // buttons remain as shortcuts (setAzimuthPreset below), not the only way
-    // to set this.
-    azimuthDeg: AZIMUTH_PRESETS[DEFAULT_AZIMUTH_INDEX].angleDeg,
-    tiltDeg: DEFAULT_TILT_DEG,
-    zoom: 1,
-    // A full 3D offset (not two scalars decomposed back onto world X/Z) so
-    // panning along the camera's own "up" screen axis is exact at any tilt:
-    // that axis has a real world-Y component once the camera is tilted, and
-    // the previous panX/panZ-only representation silently dropped it. Kept
-    // as the camera's look-at center's offset from GRID_CENTER.
-    panOffset: new THREE.Vector3(0, 0, 0),
-    baseViewSize: GRID_SIZE * 0.62, // overwritten by fitView() before first render
+  const views = {
+    top: { azimuthDeg: 0, tiltDeg: 0, zoom: 1, panOffset: new THREE.Vector3(), baseViewSize: GRID_SIZE },
+    oblique: {
+      azimuthDeg: 0,
+      tiltDeg: DEFAULT_TILT_DEG,
+      zoom: 1,
+      panOffset: new THREE.Vector3(),
+      baseViewSize: GRID_SIZE * 0.62,
+    },
   };
+  let mode = "top";
+  let camView = views[mode];
 
   const aspect = canvas.width / canvas.height || 1;
-  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 800);
+  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 900);
 
   function clamp(v, lo, hi) {
     return Math.min(hi, Math.max(lo, v));
   }
 
-  // Recomputes camera position/orientation/frustum from camView - the one
-  // function every control below goes through, so "the camera" is always
-  // fully determined by that one small state object.
   function applyCameraState() {
     const angleRad = (camView.azimuthDeg * Math.PI) / 180;
     const tiltRad = (camView.tiltDeg * Math.PI) / 180;
-    // Degrees-from-vertical convention (see MIN_TILT_DEG above): vertical
-    // offset shrinks and horizontal offset grows as tilt increases from 0
-    // (overhead) toward 90 (grazing) - cos/sin, not swapped.
     const horizontal = DISTANCE * Math.sin(tiltRad);
     const vertical = DISTANCE * Math.cos(tiltRad);
     const center = GRID_CENTER.clone().add(camView.panOffset);
@@ -861,11 +868,14 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
       center.y + vertical,
       center.z + horizontal * Math.cos(angleRad),
     );
+    // "Up" is the horizontal direction the camera faces: identical to
+    // world-up for any tilt, but still well-defined when looking straight
+    // down (tilt 0), where world-up would be parallel to the view ray.
+    camera.up.set(-Math.sin(angleRad), 0, -Math.cos(angleRad));
     camera.lookAt(center);
     camera.updateMatrixWorld();
 
-    const viewSize = camView.baseViewSize / camView.zoom;
-    const halfH = viewSize / 2;
+    const halfH = camView.baseViewSize / camView.zoom / 2;
     camera.left = -halfH * aspect;
     camera.right = halfH * aspect;
     camera.top = halfH;
@@ -873,45 +883,19 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     camera.updateProjectionMatrix();
   }
 
-  // Sizes baseViewSize so the *actually painted* elevation range (not the
-  // theoretical min/max) fits the current azimuth/tilt with margin, fixing
-  // the known clipping bug as a side effect of always framing correctly
-  // rather than as a one-off constant tweak. Projects the data's bounding
-  // box into the camera's own right/up axes (read directly off its world
-  // matrix, which applyCameraState() above already keeps current) - the
-  // standard way to size an orthographic frustum around a 3D box, not
-  // guessed from the grid footprint alone, since a low tilt needs much more
-  // vertical frustum room for the same mountain than a near-top-down one
-  // does.
-  // Only ever called from three places (see createTerrainScene3D's return
-  // value and world-client.js's wireCameraControls): initial load and the
-  // explicit "Reset / Fit view" button. Revisited camera-controls task: an
-  // azimuth/tilt change used to call this too (auto-refit on every
-  // direction/tilt change), which the user explicitly asked to stop -
-  // rotating, tilting, zooming and panning must now preserve each other's
-  // state and never silently reset the camera. fitView() itself still needs
-  // to zero zoom/pan while it measures the fit, since "fit" means exactly
-  // "forget the current zoom/pan and reframe" - that's what the button is
-  // for.
-  function fitView(currentElevationGrid) {
-    let minE = Infinity;
-    let maxE = -Infinity;
-    for (let i = 0; i < currentElevationGrid.length; i++) {
-      const e = currentElevationGrid[i];
-      if (e < minE) minE = e;
-      if (e > maxE) maxE = e;
-    }
-    if (!Number.isFinite(minE)) {
-      minE = ELEVATION_MIN;
-      maxE = ELEVATION_MAX;
-    }
-    const minY = minE * HEIGHT_SCALE;
-    const maxY = maxE * HEIGHT_SCALE;
-
+  function fitView() {
     camView.zoom = 1;
     camView.panOffset.set(0, 0, 0);
-    applyCameraState(); // so the right/up axes below reflect the current azimuth/tilt
-
+    if (mode === "top") {
+      camView.baseViewSize = GRID_SIZE * 1.002;
+      applyCameraState();
+      return;
+    }
+    let maxE = SEA_LEVEL;
+    for (let i = 0; i < currentElevationGridRef.length; i++) maxE = Math.max(maxE, currentElevationGridRef[i]);
+    const minY = SEA_LEVEL * HEIGHT_SCALE;
+    const maxY = (maxE + 0.25) * HEIGHT_SCALE;
+    applyCameraState();
     const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
     const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
     let minR = Infinity;
@@ -925,16 +909,20 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
           corner.set(x, y, z).sub(GRID_CENTER);
           const r = corner.dot(right);
           const u = corner.dot(up);
-          if (r < minR) minR = r;
-          if (r > maxR) maxR = r;
-          if (u < minU) minU = u;
-          if (u > maxU) maxU = u;
+          minR = Math.min(minR, r);
+          maxR = Math.max(maxR, r);
+          minU = Math.min(minU, u);
+          maxU = Math.max(maxU, u);
         }
       }
     }
-    const neededHeight = (maxU - minU) * FIT_MARGIN;
-    const neededWidth = (maxR - minR) * FIT_MARGIN;
-    camView.baseViewSize = Math.max(neededHeight, neededWidth / aspect, GRID_SIZE * 0.1);
+    camView.baseViewSize = Math.max((maxU - minU) * FIT_MARGIN, ((maxR - minR) * FIT_MARGIN) / aspect, GRID_SIZE * 0.1);
+    applyCameraState();
+  }
+
+  function setMode(next) {
+    mode = next === "top" ? "top" : "oblique";
+    camView = views[mode];
     applyCameraState();
   }
 
@@ -942,21 +930,18 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     return ((deg % 360) + 360) % 360;
   }
 
-  // Free, continuous rotation (360 deg) - the compass dial in the toolbar
-  // drives this directly with the pointer's absolute angle around the dial.
-  // Deliberately does NOT call fitView(): see the comment on fitView above.
   function setAzimuth(deg) {
+    if (mode === "top") return;
     camView.azimuthDeg = wrapDeg(deg);
     applyCameraState();
   }
 
-  // The four direction buttons remain as named shortcuts onto the same
-  // continuous azimuth the dial controls - not a separate discrete mode.
   function setAzimuthPreset(index) {
     setAzimuth(AZIMUTH_PRESETS[clamp(index, 0, AZIMUTH_PRESETS.length - 1)].angleDeg);
   }
 
   function setTilt(deg) {
+    if (mode === "top") return;
     camView.tiltDeg = clamp(deg, MIN_TILT_DEG, MAX_TILT_DEG);
     applyCameraState();
   }
@@ -966,46 +951,23 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     applyCameraState();
   }
 
-  // Cursor-centred zoom (wheel): keeps the world point under the pointer
-  // fixed on screen, rather than zooming about the view center the way the
-  // slider does. ndcX/ndcY are in [-1, 1] clip-space, the same convention
-  // THREE.Raycaster.setFromCamera uses. Derivation: for an orthographic
-  // camera, the world point under a clip-space offset (ndcX, ndcY) from the
-  // look-at center is `center + right*ndcX*halfWidth + up*ndcY*halfHeight`,
-  // where half-width/height scale linearly with viewSize (1/zoom). Solving
-  // for the new panOffset that keeps that same world point under the same
-  // ndcX/ndcY after zoom changes from `oldZoom` to `newZoom` reduces to
-  // shifting panOffset by `(right*offsetR + up*offsetU) * (1 - oldZoom/newZoom)`
-  // - i.e. only the *ratio* of old to new zoom matters, not the absolute
-  // view size.
+  // Cursor-centred zoom: keeps the world point under the pointer fixed.
   function zoomAtCursor(zoomDeltaFactor, ndcX, ndcY) {
     const oldZoom = camView.zoom;
     const newZoom = clamp(oldZoom * zoomDeltaFactor, MIN_ZOOM, MAX_ZOOM);
     if (newZoom === oldZoom) return;
     const viewSize = camView.baseViewSize / oldZoom;
-    const halfWidth = (viewSize * aspect) / 2;
-    const halfHeight = viewSize / 2;
     const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
     const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
-    const offsetR = ndcX * halfWidth;
-    const offsetU = ndcY * halfHeight;
     const ratio = 1 - oldZoom / newZoom;
-    camView.panOffset.addScaledVector(right, offsetR * ratio);
-    camView.panOffset.addScaledVector(up, offsetU * ratio);
+    camView.panOffset.addScaledVector(right, ndcX * ((viewSize * aspect) / 2) * ratio);
+    camView.panOffset.addScaledVector(up, ndcY * (viewSize / 2) * ratio);
     camView.zoom = newZoom;
     applyCameraState();
   }
 
-  // dRight/dUp are fractions of the current view size, in the camera's own
-  // screen-aligned right/up directions (not raw world axes), so "pan right"
-  // means the same thing on screen regardless of which azimuth/tilt is
-  // currently active. Using the full 3D up vector (not just its X/Z, which
-  // an earlier version of this silently dropped) matters once the camera is
-  // tilted: screen-"up" then has a real world-Y component. Called
-  // continuously with small per-pointermove fractions by the toolbar's drag
-  // trackpad, which is what makes panning precise while zoomed in (the
-  // fraction is always relative to what's actually on screen right now)
-  // rather than a fixed-size nudge per click.
+  // dRight/dUp are fractions of the current view size along the camera's
+  // own screen axes, so a pan means the same thing at any azimuth/tilt.
   function panBy(dRight, dUp) {
     const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
     const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
@@ -1017,6 +979,7 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
 
   function getCameraState() {
     return {
+      mode,
       azimuthDeg: camView.azimuthDeg,
       azimuthPresets: AZIMUTH_PRESETS.map((p) => ({ id: p.id, label: p.label, angleDeg: p.angleDeg })),
       tiltDeg: camView.tiltDeg,
@@ -1028,75 +991,93 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     };
   }
 
-  // fitView() needs the current elevationGrid but is also called from
-  // setAzimuth/setTilt, which don't otherwise receive it - updateHeight()
-  // below keeps this reference current the same way it already does for
-  // the coastline rebuild.
-  let currentElevationGridRef = elevationGrid;
-  fitView(currentElevationGridRef);
+  // Both views start framed; the oblique state is fitted once up front so
+  // its first appearance is already framed for whatever data is loaded.
+  function fitAll() {
+    const was = mode;
+    setMode("oblique");
+    fitView();
+    setMode("top");
+    fitView();
+    setMode(was);
+  }
+  fitAll();
 
   function render() {
-    trees.updateFacing(camera);
     renderer.render(scene, camera);
   }
 
-  function setAspect() {
-    // Canvas is always square (GRID_SIZE * CELL_PX on each side) in
-    // practice, so `aspect` above never actually changes after creation;
-    // kept as a no-op entry point (rather than removed) in case that
-    // changes later - re-deriving it would need re-running fitView() too.
-  }
+  function setAspect() {}
 
-  function updateHeight(currentElevationGrid) {
+  // `region` (cells, inclusive) bounds what changed, so only nearby tree
+  // chunks are re-placed; omit it for a full reload.
+  function update(currentElevationGrid, currentTypeGrid, { elevationChanged = true, typeChanged = true, region } = {}) {
     currentElevationGridRef = currentElevationGrid;
-    fillHeightTexture(heightTexture, currentElevationGrid);
-    coastline.rebuild(currentElevationGrid);
-  }
-
-  function updateType(currentElevationGrid, currentTypeGrid) {
-    fillTypeTexture(typeTexture, currentTypeGrid);
-    trees.rebuild(currentElevationGrid, currentTypeGrid);
+    currentTypeGridRef = currentTypeGrid;
+    if (elevationChanged) {
+      fillHeightTexture(heightTexture, currentElevationGrid);
+      bakeSurface(currentElevationGrid, surfaceData, region);
+      surfaceTexture.needsUpdate = true;
+      invalidateShadows();
+    }
+    if (elevationChanged || typeChanged) {
+      // +1: a cell crossing sea level changes its own type weight only, but
+      // pad anyway so the region is never off by one at a brush edge.
+      const r = region && { minX: region.minX - 1, minY: region.minY - 1, maxX: region.maxX + 1, maxY: region.maxY + 1 };
+      fillTypeTexture(typeTexture, currentElevationGrid, currentTypeGrid, r);
+      if (r) updateTypeWeights(typeWeights, currentElevationGrid, currentTypeGrid, r);
+      else typeWeights = buildTypeWeights(currentElevationGrid, currentTypeGrid);
+      scheduleTrees(region);
+    }
+    if (elevationChanged) scheduleCoast(region);
   }
 
   const raycaster = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
 
-  // px, py in canvas backing-store pixels (same convention world-client.js
-  // already uses for the top-down/old-oblique pick functions). Needs no
-  // change for any camera state: it reads whatever `camera`'s current
-  // position/orientation actually is, the same object every control above
-  // mutates in place.
-  function pick(px, py, currentElevationGrid) {
+  function pick(px, py) {
     ndc.x = (px / canvas.width) * 2 - 1;
     ndc.y = -(py / canvas.height) * 2 + 1;
     raycaster.setFromCamera(ndc, camera);
-    return pickAgainstHeightfield(raycaster.ray.origin, raycaster.ray.direction, currentElevationGrid);
+    return pickAgainstHeightfield(raycaster.ray.origin, raycaster.ray.direction, surfaceData);
   }
 
   function dispose() {
     groundGeometry.dispose();
     groundMaterial.dispose();
-    waterGeometry.dispose();
-    waterMaterial.dispose();
+    depthMaterial.dispose();
     heightTexture.dispose();
     typeTexture.dispose();
+    coastTexture.dispose();
+    surfaceTexture.dispose();
     renderer.dispose();
   }
 
   return {
     render,
-    updateHeight,
-    updateType,
+    update,
+    // Kept for callers of the old two-call API.
+    updateHeight: (g) => update(g, currentTypeGridRef, { typeChanged: false }),
+    updateType: (g, t) => update(g, t, { elevationChanged: false }),
+    setStrokeActive,
     pick,
     setAspect,
     dispose,
+    setMode,
     setAzimuth,
     setAzimuthPreset,
     setTilt,
     setZoom,
     zoomAtCursor,
     panBy,
-    fitView: () => fitView(currentElevationGridRef),
+    fitView: () => fitView(),
+    fitAll,
     getCameraState,
+    treeCount: () => trees.count(),
+    // Called after work that finishes outside a render request (the
+    // throttled coast recompute), so the caller can redraw.
+    onAsyncChange: (fn) => {
+      onAsyncChange = fn;
+    },
   };
 }

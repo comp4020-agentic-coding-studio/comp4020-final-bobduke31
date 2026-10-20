@@ -42,6 +42,21 @@ Kenney's Nature Kit (CC0, real 3D tree models) remains on record as the
 option if the project wants to replace the billboards with real meshes
 later.
 
+**Both views are one renderer** (validated 2026-10-20 on
+`final-redesign-prototype`, see ROADMAP.md "Terrain & visual overhaul"):
+with WebGL2, Top-down is the same Three.js scene as Oblique, seen from an
+overhead orthographic camera. Don't reintroduce a separate Top-down
+renderer - two implementations is what made the views look like two
+products. Everything derived from the stored grids (smooth B-spline
+surface, synthesised ridges, material boundaries, coast distance field)
+lives once in `terrain-fields.js`, with a GLSL twin that must stay
+identical to the JS; the displayed surface is baked on the CPU so picking,
+tree placement and geometry agree by construction. Fix shape problems at
+their layer - seed data, brush, or derived fields - not with more noise or
+texture on top: the circular mountains and rectangular forests were data
+and brush problems, not shading ones. `terrain-renderer.js` (canvas) is
+only the no-WebGL2 fallback.
+
 ## Verify the rendered result, not a description of it
 
 A passing check or a plausible description is not evidence. Before calling

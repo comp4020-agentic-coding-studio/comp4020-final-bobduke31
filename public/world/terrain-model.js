@@ -10,6 +10,15 @@ export const ELEVATION_MAX = 1;
 export const SEA_LEVEL = 0;
 
 export const TERRAIN_TYPES = ["grassland", "sand", "forest", "rock"];
+
+// PROTOTYPE TRIAL (final-redesign-prototype branch): grid units per repeat
+// of the painted grass texture (assets/textures/grass-cethiel.png, a real
+// CC0 hand-painted texture - see CREDITS.md) - shared by both
+// terrain-renderer.js (Top-down, Canvas2D) and terrain-renderer-3d.js
+// (Oblique, WebGL shader) so the same texture tiles at the same physical
+// scale in both views, rather than each view picking its own tiling
+// frequency and visually disagreeing about how big a grass tuft is.
+export const GRASS_TEXTURE_TILE_SIZE = 10;
 const DEFAULT_TYPE_INDEX = 0; // grassland, for any land with no explicit type yet
 
 export function clamp(value, min, max) {

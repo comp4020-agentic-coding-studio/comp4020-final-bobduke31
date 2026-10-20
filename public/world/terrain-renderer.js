@@ -1,3 +1,9 @@
+// FALLBACK ONLY (ROADMAP.md, "Terrain & visual overhaul"): with WebGL2,
+// both Top-down and Oblique are drawn by terrain-renderer-3d.js, so the two
+// views are one art style. This canvas renderer now runs only on browsers
+// without WebGL2; its palette is kept in step with the GPU one below so a
+// fallback map still reads as the same product.
+//
 // Contract: grids in, pixels out - nothing else in this app knows how an
 // elevation and a terrain type become a colour. The coastline is a genuine
 // vector contour (d3-contour, vendored in vendor/, ISC licence) extracted
@@ -9,28 +15,76 @@
 // mountains read as ridges and creases instead of one smooth lit blob.
 // Swap the fill technique for real textures later without touching this
 // boundary logic, the model, or the network code.
-import { GRID_SIZE, SEA_LEVEL, ELEVATION_MAX, TERRAIN_TYPES, sampleBilinear } from "./terrain-model.js";
+import {
+  GRID_SIZE,
+  SEA_LEVEL,
+  ELEVATION_MAX,
+  TERRAIN_TYPES,
+  GRASS_TEXTURE_TILE_SIZE,
+  sampleBilinear,
+} from "./terrain-model.js";
 import { createNoise2D } from "./vendor/simplex-noise.js";
+
+// PROTOTYPE TRIAL (final-redesign-prototype branch, not merged to main):
+// a real painted grass texture (AI-generated for this project - see
+// research/c10-ai-assets/README.md and CREDITS.md - confirmed seamless-
+// tiling) in place of the flat TYPE_COLORS.grassland fill, to test whether
+// a real painted surface reads closer to the Inkarnate/Wonderdraft target
+// than a flat colour does. Decoded once into a plain pixel buffer (not kept
+// as an <img>/ImageBitmap) so continuousColorAt's hot per-pixel loop can
+// read it synchronously - canvas APIs that return promises or need a draw
+// call aren't usable inside that loop. Starts null and the flat colour is
+// used as a fallback until it decodes, so there's no load-order dependency
+// between this module and world-client.js.
+let grassTexture = null; // { data: Uint8ClampedArray, width, height } once loaded
+
+export function loadGrassTexture(url) {
+  const img = new Image();
+  img.onload = () => {
+    const off = document.createElement("canvas");
+    off.width = img.naturalWidth;
+    off.height = img.naturalHeight;
+    const octx = off.getContext("2d");
+    octx.drawImage(img, 0, 0);
+    const { data, width, height } = octx.getImageData(0, 0, off.width, off.height);
+    grassTexture = { data, width, height };
+  };
+  img.src = url;
+}
+
+// Wraps (gx, gy) - in GRASS_TEXTURE_TILE_SIZE-sized grid units, not pixels -
+// into the decoded texture's own pixel space and returns its colour, or null
+// before the texture has loaded (caller falls back to the flat colour).
+function sampleGrassTexture(gx, gy) {
+  if (!grassTexture) return null;
+  const { data, width, height } = grassTexture;
+  const u = (((gx / GRASS_TEXTURE_TILE_SIZE) % 1) + 1) % 1;
+  const v = (((gy / GRASS_TEXTURE_TILE_SIZE) % 1) + 1) % 1;
+  const px = Math.min(width - 1, Math.floor(u * width));
+  const py = Math.min(height - 1, Math.floor(v * height));
+  const i = (py * width + px) * 4;
+  return [data[i], data[i + 1], data[i + 2]];
+}
 
 const COASTLINE_COLOR = "#3c2f20";
 const COASTLINE_HIGHLIGHT = "#e9dfc4";
 
-const SEA_DEEP = [18, 38, 66];
-const SEA_SHALLOW = [66, 120, 158];
+const SEA_DEEP = [28, 92, 134];
+const SEA_SHALLOW = [110, 195, 198];
 
 const TYPE_COLORS = {
-  grassland: [107, 142, 68],
-  sand: [222, 201, 148],
-  forest: [45, 86, 54],
+  grassland: [130, 166, 71],
+  sand: [226, 206, 156],
+  forest: [42, 74, 33],
 };
 
 // Rock isn't one flat colour: bare rock lightens with height, and the
 // highest ground is snow - the same altitude-tinting real relief maps use,
 // so a peak reads as a peak (bright cap, darker base) even before
 // hillshading is added on top.
-const ROCK_BARE = [118, 109, 98];
-const ROCK_HIGH = [168, 160, 150];
-const SNOW = [240, 242, 246];
+const ROCK_BARE = [133, 116, 98];
+const ROCK_HIGH = [184, 164, 138];
+const SNOW = [243, 241, 234];
 
 function lerp(a, b, t) {
   return a + (b - a) * t;
@@ -383,9 +437,19 @@ function continuousColorAt(elevationGrid, typeGrid, gx, gy) {
   const { light, curvature } = continuousReliefAt(elevationGrid, gx, gy);
   const nx = Math.min(GRID_SIZE - 1, Math.max(0, Math.floor(gx)));
   const ny = Math.min(GRID_SIZE - 1, Math.max(0, Math.floor(gy)));
-  const selfColor = baseColorFor(elevationGrid[ny * GRID_SIZE + nx], typeGrid[ny * GRID_SIZE + nx]);
+  const selfTypeIndex = typeGrid[ny * GRID_SIZE + nx];
+  const selfColor = baseColorFor(elevationGrid[ny * GRID_SIZE + nx], selfTypeIndex);
   const blendedBase = continuousTypeBlend(elevationGrid, typeGrid, gx, gy, selfColor);
-  return applyRelief(blendedBase, light, curvature);
+  // PROTOTYPE TRIAL: only swapped in for grassland (TERRAIN_TYPES[0]), and
+  // only once decoded - applied to the blended base colour's position, so a
+  // texture seam never lands exactly on the already-blended coastal/type
+  // boundary. Lighting (applyRelief) still runs on top, same as the flat
+  // colour, so mountain folds and hillshading still read correctly over the
+  // textured surface.
+  const grassSample =
+    selfTypeIndex === 0 && elevation > SEA_LEVEL ? sampleGrassTexture(gx, gy) : null;
+  const base = grassSample ?? blendedBase;
+  return applyRelief(base, light, curvature);
 }
 
 // d3.contours() wants one threshold and returns the polygon(s) enclosing

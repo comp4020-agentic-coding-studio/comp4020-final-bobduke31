@@ -25,3 +25,8 @@ mise.local.toml
 # spikes. Useful while building, not required by any spec, and not something
 # that should ship in a repo that goes public at the cutoff.
 research/
+
+# Local test databases (e.g. DB_PATH=.localdata/seed.db for a dev server run) -
+# generated fresh by scripts/seed-test-scene.ts, never a saved/authoritative
+# file, and never production data.
+.localdata/

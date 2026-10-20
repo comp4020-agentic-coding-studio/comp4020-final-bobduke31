@@ -14,25 +14,57 @@ import {
   clearTypeCells,
   setTypesFromList,
 } from "./terrain-model.js";
-import { renderTerrain, renderTerrainOblique, obliqueRise, OBLIQUE_MAX_RISE } from "./terrain-renderer.js";
+import {
+  renderTerrain,
+  renderTerrainOblique,
+  obliqueRise,
+  OBLIQUE_MAX_RISE,
+  loadGrassTexture,
+} from "./terrain-renderer.js";
 import { createTerrainScene3D, isWebGL2Available, MAX_DEVICE_PIXEL_RATIO } from "./terrain-renderer-3d.js";
+import { snoise } from "./terrain-fields.js";
 
-// Canvas footprint stays the same (256 * 3 = 768, same as the old 128 * 6)
-// - resolution doubles by making cells smaller, not the map physically
-// bigger, which is what actually makes individual cells less noticeable.
-// CELL_PX stays the CSS/logical pixel size (matches world.css's fixed
-// 768px display box and everything UI-facing); PIXEL_SCALE is what the top-
-// down canvas's backing store, renderer, and pixel<->grid picking math
-// actually use - CELL_PX scaled up by the device pixel ratio (Task 4,
-// ROADMAP.md) so the canvas's own pixel buffer matches the screen's real
-// pixel density instead of being upscaled and softened by the browser.
-// Capped the same way the 3D renderer caps it, for the same reason (bound
-// the cost of a much denser backing store on a 3x+ display).
-const CELL_PX = 3;
+const canvasArea = document.getElementById("canvas-area");
+
+// PROTOTYPE (final-redesign-prototype branch, UI/UX redesign): CELL_PX used
+// to be a hardcoded constant (a fixed 768px square canvas regardless of the
+// browser window) - the single biggest usability problem found comparing
+// UI directions for this redesign: on any wide monitor the map sat in a
+// small square surrounded by wasted dark background, while world.css's
+// toolbar/panel chrome took a fixed slice off the top. world.css now gives
+// the canvas a flexible box (grid/flex layout, no fixed pixel size) that
+// fills whatever space is actually available; this derives CELL_PX from
+// that real, measured space once at load, so the backing-store resolution
+// matches the box the CSS layout actually gives it instead of a guessed
+// constant. Not re-derived on every window resize (no ResizeObserver) - the
+// CSS layout itself still responds live to a resize (the canvas visually
+// scales like any image/video element), only the backing-store resolution
+// stays fixed at whatever it was on load. A live re-render-at-full-
+// resolution-on-every-resize pipeline is a real future refinement (noted in
+// ROADMAP.md), not something this layout-focused prototype needs to solve.
+function computeCellPx() {
+  const rect = canvasArea.getBoundingClientRect();
+  const available = Math.max(200, Math.min(rect.width, rect.height) - 40);
+  return clamp(available / GRID_SIZE, 2, 6);
+}
+
+// PIXEL_SCALE is what the top-down canvas's backing store, renderer, and
+// pixel<->grid picking math actually use - CELL_PX scaled up by the device
+// pixel ratio (Task 4, ROADMAP.md) so the canvas's own pixel buffer matches
+// the screen's real pixel density instead of being upscaled and softened by
+// the browser. Capped the same way the 3D renderer caps it, for the same
+// reason (bound the cost of a much denser backing store on a 3x+ display).
+const CELL_PX = computeCellPx();
 const DEVICE_PIXEL_RATIO = Math.min(window.devicePixelRatio || 1, MAX_DEVICE_PIXEL_RATIO);
 const PIXEL_SCALE = CELL_PX * DEVICE_PIXEL_RATIO;
 const FLUSH_INTERVAL_MS = 100;
-const LAND_PUSH = 0.35; // how far "create land" / "paint sea" push past sea level
+// How far "create land" / "paint sea" push past sea level. Create Land
+// targets low coastal ground, not hill height: the renderer now reads
+// elevation as terrain *shape* (mountainMask starts at 0.1 - ridges, rock),
+// so the old 0.35 turned every new strip of land into a rocky dome. Raise /
+// Mountain are for height; Create Land is for coastline.
+const LAND_PUSH = 0.06;
+const SEA_PUSH = 0.25;
 
 // The oblique view (see terrain-renderer.js) shifts elevated cells upward
 // on screen, so a tall peak near the top of the grid needs real headroom
@@ -47,8 +79,16 @@ let viewMode = "top"; // "top" | "oblique" - see wireViewToggle
 // floor is the one place that rule is enforced, so every land-sculpting
 // tool shares it rather than each clamping its own way.
 const LAND_FLOOR = SEA_LEVEL + 0.02;
-const MOUNTAIN_TARGET = 0.6;
-const PEAK_TARGET = 0.95;
+// Mountain/Peak raise land toward a ceiling, but additively and with a
+// noise-perturbed footprint (see mountainFalloff) - not by converging every
+// cell in a disc to one fixed target, which is what made every stroke a
+// flat-topped circle with a rim, and two strokes a "figure 8" (ROADMAP.md
+// task 5, finding 1). Ridgelines and rock are no longer painted at all: the
+// renderer synthesises ridges from elevation and draws rock where the land
+// is steep or high (terrain-fields.js), so they follow the terrain's shape
+// instead of the brush's.
+const MOUNTAIN_CEILING = 0.72;
+const PEAK_CEILING = 0.98;
 
 // Mirrors LAND_FLOOR on the other side of the coastline (Task 1, ROADMAP.md):
 // Deepen/Shallow sculpt existing sea and must never cross into land, the
@@ -72,13 +112,26 @@ const typeGrid = createTypeGrid();
 // Its backing-store sizing is handled internally by createTerrainScene3D
 // (renderer.setPixelRatio/setSize), not set directly here, since Three.js
 // owns that relationship between logical size and device pixel ratio.
+//
+// With WebGL2, BOTH views render through this one scene (Top-down is the
+// same terrain from a straight-overhead camera - see terrain-renderer-3d.js),
+// which is what makes the two views one consistent art style rather than two
+// renderers kept in rough agreement. The canvas renderers on #stage are only
+// the fallback for browsers without WebGL2.
 const canvas3d = document.getElementById("stage-3d");
 const scene3d = isWebGL2Available()
   ? createTerrainScene3D(canvas3d, elevationGrid, typeGrid, GRID_SIZE * CELL_PX)
   : null;
+if (scene3d) {
+  canvas.classList.add("hidden");
+  canvas3d.classList.remove("hidden");
+  scene3d.onAsyncChange(() => scene3d.render());
+} else {
+  loadGrassTexture("/world/assets/textures/grass-cethiel.png");
+}
 
 function activeCanvas() {
-  return viewMode === "oblique" && scene3d ? canvas3d : canvas;
+  return scene3d ? canvas3d : canvas;
 }
 
 let currentTool = "raise";
@@ -107,6 +160,10 @@ function smoothstep(t) {
 // is deferred and coalesced here. ---
 let renderScheduled = false;
 let dirty = null; // {minX, minY, maxX, maxY} - the union of cells touched since the last paint
+// What kind of data changed since the last paint, so a terrain-type stroke
+// doesn't rebake the surface or recompute the coastline (both elevation-only).
+let dirtyElevation = false;
+let dirtyType = false;
 
 function markDirty(x, y) {
   if (!dirty) {
@@ -124,9 +181,11 @@ function markDirty(x, y) {
 // cheap enough to redo in full on every batched update rather than tracking
 // a sub-rectangle, the same "small enough that simple is fine" call
 // terrain-renderer.js already makes for its own coastline recompute.
-function render3D() {
-  scene3d.updateHeight(elevationGrid);
-  scene3d.updateType(elevationGrid, typeGrid);
+function render3D(region) {
+  const elevationChanged = !region || dirtyElevation;
+  const typeChanged = !region || dirtyType || dirtyElevation;
+  dirtyElevation = dirtyType = false;
+  scene3d.update(elevationGrid, typeGrid, { region, elevationChanged, typeChanged });
   scene3d.render();
 }
 
@@ -136,9 +195,10 @@ function scheduleRender() {
   requestAnimationFrame(() => {
     renderScheduled = false;
     if (!dirty) return;
-    if (viewMode === "oblique" && scene3d) {
+    if (scene3d) {
+      const region = dirty;
       dirty = null;
-      render3D();
+      render3D(region);
       return;
     }
     // The canvas-column oblique fallback has no safe "just the changed
@@ -163,7 +223,7 @@ function scheduleRender() {
 
 function redrawAll() {
   dirty = null;
-  if (viewMode === "oblique" && scene3d) {
+  if (scene3d) {
     render3D();
     return;
   }
@@ -172,10 +232,12 @@ function redrawAll() {
 }
 
 function queueElevation(x, y, elevation) {
+  dirtyElevation = true;
   pendingElevation.set(`${x},${y}`, { x, y, elevation });
 }
 
 function queueType(x, y, terrain) {
+  dirtyType = true;
   pendingTypes.set(`${x},${y}`, { x, y, terrain });
 }
 
@@ -249,6 +311,19 @@ function forEachBrushCell(cx, cy, apply) {
   }
 }
 
+// Brush falloff with its edge pushed in and out by world-anchored noise, so
+// a dab's footprint is an irregular blob and a drag leaves a ragged-edged
+// range rather than a tube of perfect circles. The perturbation is a
+// function of absolute position (not of the stamp), so overlapping dabs
+// agree about where the edge is and build one coherent shape. Only ever
+// scales the existing falloff (zero outside the radius stays zero), so the
+// brush never reaches farther than its circle shows (the brush-precision
+// constraint from task 2).
+function mountainFalloff(x, y, falloff) {
+  const n = 0.6 * snoise(x * 0.11 + 13.1, y * 0.11 + 5.7) + 0.4 * snoise(x * 0.27 + 2.3, y * 0.27 + 9.1);
+  return clamp(falloff * (1 + 0.55 * n) - 0.08 * Math.max(0, -n), 0, 1);
+}
+
 function lerpTowards(current, target, t) {
   return current + (target - current) * t;
 }
@@ -297,11 +372,6 @@ function setLandElevation(x, y, elevation) {
   elevationGrid[index] = clamped;
   queueElevation(x, y, clamped);
   markDirty(x, y);
-}
-
-function setRockType(x, y) {
-  typeGrid[y * GRID_SIZE + x] = TERRAIN_TYPES.indexOf("rock");
-  queueType(x, y, "rock");
 }
 
 // The mirror image of setLandElevation, for Deepen/Shallow (ROADMAP.md
@@ -420,41 +490,22 @@ function paintAt(cx, cy) {
       });
       break;
     case "mountain":
-      // Raises land toward a high ridge band and marks it rocky - a
-      // mountain is height and material together, not a grey tint on flat
-      // ground (see ADR.md / CLAUDE.md on not faking elevation with colour).
-      // ROADMAP.md task 2: this used to lerp by `falloff` alone, ignoring
-      // the Strength slider entirely - a single click at the brush centre
-      // jumped straight to MOUNTAIN_TARGET regardless of Strength, which is
-      // what made even a small, modest-radius stroke read as an instant
-      // narrow cone rather than something that builds up gradually like
-      // every other elevation tool. Multiplying by brushStrength (same as
-      // Raise/Lower/Smooth already do) fixes that without touching the
-      // brush's radius or falloff shape at all - still exactly the cells
-      // forEachBrushCell selects, just a smaller step toward the target per
-      // stamp, same "fine, bounded, predictable control" the brush-
-      // precision fix established for the additive tools.
+    case "peak": {
+      // Additive uplift that eases off as it nears the ceiling, so repeated
+      // strokes build broad, connected massifs instead of saturating to a
+      // plateau. Peak is the same gesture with a higher ceiling and a
+      // tighter profile (falloff squared), for a dominant summit.
+      const ceiling = currentTool === "peak" ? PEAK_CEILING : MOUNTAIN_CEILING;
       forEachBrushCell(cx, cy, (x, y, falloff) => {
         const current = elevationGrid[y * GRID_SIZE + x];
         if (current <= SEA_LEVEL) return;
-        setLandElevation(x, y, lerpTowards(current, MOUNTAIN_TARGET, falloff * brushStrength));
-        setRockType(x, y);
-        markDirty(x, y);
+        let f = mountainFalloff(x, y, falloff);
+        if (currentTool === "peak") f *= f;
+        const room = Math.max(0, ceiling - current);
+        setLandElevation(x, y, current + room * f * brushStrength * 1.6);
       });
       break;
-    case "peak":
-      // Same idea, pushed toward the elevation ceiling for a prominent
-      // summit; the renderer tints the highest rock as snow, so a peak
-      // reads as a peak even with colour turned off (hillshading alone).
-      // Same Strength fix as Mountain above, same reason.
-      forEachBrushCell(cx, cy, (x, y, falloff) => {
-        const current = elevationGrid[y * GRID_SIZE + x];
-        if (current <= SEA_LEVEL) return;
-        setLandElevation(x, y, lerpTowards(current, PEAK_TARGET, falloff * brushStrength));
-        setRockType(x, y);
-        markDirty(x, y);
-      });
-      break;
+    }
     case "land":
       // Blends toward "comfortably land", stronger at the brush centre -
       // repeated strokes still make progress on reluctant deep water. The
@@ -467,7 +518,7 @@ function paintAt(cx, cy) {
     case "sea":
       forEachBrushCell(cx, cy, (x, y, falloff) => {
         const current = elevationGrid[y * GRID_SIZE + x];
-        setElevation(x, y, lerpTowards(current, SEA_LEVEL - LAND_PUSH, falloff));
+        setElevation(x, y, lerpTowards(current, SEA_LEVEL - SEA_PUSH, falloff));
       });
       break;
     case "deepen":
@@ -569,15 +620,17 @@ function canvasToGrid(event) {
   const rect = el.getBoundingClientRect();
   const px = ((event.clientX - rect.left) / rect.width) * el.width;
   const py = ((event.clientY - rect.top) / rect.height) * el.height;
-  if (viewMode === "oblique" && scene3d) {
-    // The 3D renderer's own ray-heightfield march (against the same
-    // elevationGrid this file paints into) is the single source of truth
-    // for picking in that view - see terrain-renderer-3d.js. Its own
+  if (scene3d) {
+    // The 3D renderer's own ray march against the displayed surface is the
+    // single source of truth for picking in BOTH views - Top-down is the
+    // same scene from an overhead camera, and once it's wheel-zoomed or
+    // panned, dividing by PIXEL_SCALE would paint the wrong cells. See
+    // terrain-renderer-3d.js. Its own
     // canvas.width/height already reflect the device pixel ratio (see
     // createTerrainScene3D), and px/py above are already computed in that
     // same backing-store space via the el.width/el.height ratio, so no
     // extra scaling is needed here.
-    const hit = scene3d.pick(px, py, elevationGrid);
+    const hit = scene3d.pick(px, py);
     return hit ?? { x: -1, y: -1 };
   }
   if (viewMode === "oblique") return obliqueScreenToGrid(px, py - OBLIQUE_MARGIN * DEVICE_PIXEL_RATIO);
@@ -595,6 +648,7 @@ function isOffTerrain(pos) {
 
 function handlePointerDown(event) {
   painting = true;
+  scene3d?.setStrokeActive(true);
   event.currentTarget.setPointerCapture(event.pointerId);
   const pos = canvasToGrid(event);
   // lastStampPos is fractional (the exact point stampAlong last walked to),
@@ -605,6 +659,9 @@ function handlePointerDown(event) {
 
 function handlePointerMove(event) {
   if (!painting) return;
+  // A pointerup lost to alt-tab or a system dialog: end the stroke instead
+  // of painting on hover and leaving coast/tree rebuilds deferred forever.
+  if (event.buttons === 0) return stopPainting();
   const pos = canvasToGrid(event);
   if (isOffTerrain(pos)) return;
   if (lastStampPos) lastStampPos = stampAlong(lastStampPos.x, lastStampPos.y, pos.x, pos.y);
@@ -617,6 +674,7 @@ function handlePointerMove(event) {
 function stopPainting() {
   if (!painting) return;
   painting = false;
+  scene3d?.setStrokeActive(false);
   lastStampPos = null;
   flush();
 }
@@ -630,10 +688,17 @@ for (const el of [canvas, canvas3d]) {
   el.addEventListener("pointermove", handlePointerMove);
   el.addEventListener("pointerup", stopPainting);
   el.addEventListener("pointercancel", stopPainting);
+  el.addEventListener("lostpointercapture", stopPainting);
   el.addEventListener("contextmenu", (event) => event.preventDefault());
 }
 
 function wireToolbar() {
+  // One shared "active" tool across all three category panels (`data-tool`
+  // buttons live in all of them, but only one panel is visible at a time -
+  // see wireCategoryRail) - clearing every button's `.active` class, not
+  // just the clicked button's own panel, so switching categories can never
+  // leave a stale active button highlighted in a panel that's about to be
+  // hidden.
   const buttons = document.querySelectorAll("[data-tool]");
   for (const button of buttons) {
     button.addEventListener("click", () => {
@@ -654,6 +719,57 @@ function wireToolbar() {
   });
 
   document.getElementById("undo-button").addEventListener("click", undoLastStroke);
+}
+
+// PROTOTYPE (final-redesign-prototype branch, UI/UX redesign): the left
+// icon rail picks which category's <section> is visible in the right
+// options panel (Wonderdraft/Inkarnate-style category tabs + tool-options
+// panel, replacing the old single flat toolbar of every tool at once - see
+// CLAUDE.md's named visual bar and CREDITS.md). Switching category also
+// selects that category's first tool as the active one, so the current
+// brush is always one of the tools actually visible on screen - without
+// this, switching to "Terrain" while "Raise" was still the active tool
+// would leave the user painting an invisible, unselected tool with no
+// feedback as to which panel it belongs to.
+const CATEGORY_FIRST_TOOL = {
+  land: "raise",
+  terrain: "grassland",
+  water: "land",
+};
+
+// Each category's tools behave differently enough (land tools only ever
+// reshape height, terrain tools only ever repaint material at whatever
+// height is already there, water tools are the only ones that can turn
+// land into sea or back) that one hint sentence can't honestly describe
+// all three - the old copy was land/water-specific but stayed on screen
+// unchanged while Terrain was selected, describing tools that weren't
+// even visible.
+const CATEGORY_HINT = {
+  land: "Raise / Lower / Smooth / Mountain / Peak only ever reshape existing land - they never touch the sea. Open this page in a second window or browser profile to watch changes arrive live, with no reload.",
+  terrain:
+    "Grassland / Sand / Forest / Rock only ever repaint material at whatever height the land already is - they never raise, lower, or touch the coastline.",
+  water:
+    "Create Land and Paint Sea are the only tools that move the coastline itself. Deepen / Shallow only ever reshape existing sea - neither side can turn into the other.",
+};
+
+function wireCategoryRail() {
+  const railButtons = document.querySelectorAll("[data-category]");
+  const sections = document.querySelectorAll("[data-panel]");
+  const toolButtons = document.querySelectorAll("[data-tool]");
+  const categoryHint = document.getElementById("category-hint");
+  for (const railButton of railButtons) {
+    railButton.addEventListener("click", () => {
+      const category = railButton.dataset.category;
+      for (const other of railButtons) other.classList.remove("active");
+      railButton.classList.add("active");
+      for (const section of sections) section.classList.toggle("hidden", section.dataset.panel !== category);
+      currentTool = CATEGORY_FIRST_TOOL[category];
+      for (const toolButton of toolButtons) {
+        toolButton.classList.toggle("active", toolButton.dataset.tool === currentTool);
+      }
+      categoryHint.textContent = CATEGORY_HINT[category];
+    });
+  }
 }
 
 // Server-checked by construction (src/undo.ts): the server restores whatever
@@ -686,29 +802,60 @@ function wireViewToggle() {
       viewMode = mode;
       for (const other of buttons) other.classList.remove("active");
       button.classList.add("active");
-      const show3D = viewMode === "oblique" && scene3d;
+      // With WebGL2 both views are the same 3D scene - switching just swaps
+      // its camera; the camera panel (rotation/tilt) only means anything in
+      // Oblique, but wheel zoom/pan works in both.
+      if (scene3d) {
+        scene3d.setMode(viewMode);
+        // Zoom, pan and reset apply to both views (Top-down is zoomable
+        // too); only the compass and tilt are Oblique-specific.
+        cameraToolbar.classList.toggle("top-mode", viewMode === "top");
+        syncCameraUI();
+        scene3d.render();
+        return;
+      }
+      const show3D = false;
+      // The canvas-COLUMN fallback (no WebGL2) is the only mode that ever
+      // reuses #stage itself for Oblique - distinct from `show3D`, which is
+      // about which <canvas> ELEMENT is visible. Only this path needs the
+      // extra-height/non-square treatment below; ordinary top-down (with or
+      // without a scene3d) and the WebGL2 Oblique scene3d path (on
+      // #stage-3d, sized independently by createTerrainScene3D) both just
+      // use world.css's own responsive `aspect-ratio: 1/1` box unmodified.
+      const obliqueFallback = viewMode === "oblique" && !scene3d;
       canvas3d.classList.toggle("hidden", !show3D);
       canvas.classList.toggle("hidden", show3D);
       cameraToolbar.classList.toggle("hidden", !show3D);
       cameraHint.classList.toggle("hidden", !show3D);
-      if (!show3D) {
-        // The canvas-column fallback oblique view needs extra canvas height
-        // so a peak near row 0 has room to rise into without being clipped
-        // (see OBLIQUE_MARGIN); top-down doesn't, so this only grows the
-        // canvas when switching in, not permanently. world.css gives
-        // #stage a fixed CSS height, which would otherwise squash this
-        // taller backing store back down and throw off its aspect ratio -
-        // overriding it inline keeps a 1:1 pixel mapping (and
-        // canvasToGrid's px/py math correct) either way. The 3D canvas's
-        // size is fixed (the camera frustum handles rise, not canvas
-        // height), so it never needs this. The backing-store attribute
-        // (canvas.height) is in PIXEL_SCALE units (device-pixel-ratio
-        // aware, Task 4); the CSS override must stay in logical/CELL_PX
-        // units, or the display box itself would grow with the device
-        // pixel ratio instead of just the resolution behind it.
-        const marginPx = viewMode === "oblique" ? OBLIQUE_MARGIN : 0;
-        canvas.height = GRID_SIZE * PIXEL_SCALE + marginPx * DEVICE_PIXEL_RATIO;
-        canvas.style.height = `${GRID_SIZE * CELL_PX + marginPx}px`;
+      if (obliqueFallback) {
+        // Needs extra canvas height so a peak near row 0 has room to rise
+        // into without being clipped (see OBLIQUE_MARGIN); top-down doesn't,
+        // so this only grows the canvas when switching in, not permanently.
+        // world.css's `aspect-ratio: 1/1` on #stage (the responsive-canvas
+        // redesign) would otherwise force this taller backing store back to
+        // square - overriding both width and height inline (clearing the
+        // aspect-ratio's effect by giving the browser an explicit size to
+        // use instead) keeps a 1:1 pixel mapping (and canvasToGrid's px/py
+        // math correct). The backing-store attributes (canvas.width/height)
+        // are in PIXEL_SCALE units (device-pixel-ratio aware, Task 4); the
+        // CSS override must stay in logical/CELL_PX units, or the display
+        // box itself would grow with the device pixel ratio instead of just
+        // the resolution behind it.
+        canvas.width = GRID_SIZE * PIXEL_SCALE;
+        canvas.height = GRID_SIZE * PIXEL_SCALE + OBLIQUE_MARGIN * DEVICE_PIXEL_RATIO;
+        canvas.style.aspectRatio = "auto";
+        canvas.style.width = `${GRID_SIZE * CELL_PX}px`;
+        canvas.style.height = `${GRID_SIZE * CELL_PX + OBLIQUE_MARGIN}px`;
+      } else if (!show3D) {
+        // Plain top-down: undo any inline override the fallback branch made
+        // last time it ran, so #stage goes back to world.css's own
+        // responsive aspect-ratio/height rules rather than staying pinned
+        // at a stale fixed size from a previous Oblique-fallback visit.
+        canvas.width = GRID_SIZE * PIXEL_SCALE;
+        canvas.height = GRID_SIZE * PIXEL_SCALE;
+        canvas.style.aspectRatio = "";
+        canvas.style.width = "";
+        canvas.style.height = "";
       }
       redrawAll();
     });
@@ -732,11 +879,18 @@ function wireViewToggle() {
 // by construction rather than by button/key-modifier convention. Only wheel
 // events are attached to the canvas (zoom has no existing canvas gesture to
 // conflict with - painting is pointer-drag-based, not wheel-based).
+let syncCameraUI = () => {};
+
 function wireCameraControls() {
-  if (!scene3d) return; // no WebGL2 - this toolbar never leaves "hidden"
+  if (!scene3d) {
+    // No WebGL2: nothing drives these controls, so don't show them.
+    document.getElementById("camera-toolbar").classList.add("hidden");
+    document.getElementById("camera-hint").classList.add("hidden");
+    return;
+  }
 
   function renderOnce() {
-    if (viewMode === "oblique") scene3d.render();
+    scene3d.render();
   }
 
   function angularDiff(a, b) {
@@ -881,7 +1035,6 @@ function wireCameraControls() {
   canvas3d.addEventListener(
     "wheel",
     (event) => {
-      if (viewMode !== "oblique") return;
       event.preventDefault();
       const rect = canvas3d.getBoundingClientRect();
       const px = ((event.clientX - rect.left) / rect.width) * canvas3d.width;
@@ -907,7 +1060,39 @@ function wireCameraControls() {
     renderOnce();
   });
 
+  syncCameraUI = () => {
+    syncCompass();
+    syncZoomSlider();
+    tiltInput.value = String(scene3d.getCameraState().tiltDeg);
+  };
   syncCompass();
+  document.getElementById("camera-toolbar").classList.toggle("top-mode", viewMode === "top");
+
+  // Middle- or right-button drag pans in either view (left drag paints).
+  // Kept on the canvas because Top-down has no camera panel at all, and a
+  // zoomed-in Top-down view with no way to pan would be unusable.
+  let panDrag = null;
+  canvas3d.addEventListener("pointerdown", (event) => {
+    if (event.button !== 1 && event.button !== 2) return;
+    event.stopImmediatePropagation();
+    panDrag = { x: event.clientX, y: event.clientY };
+    canvas3d.setPointerCapture(event.pointerId);
+  }, true);
+  canvas3d.addEventListener("pointermove", (event) => {
+    if (!panDrag) return;
+    event.stopImmediatePropagation();
+    const rect = canvas3d.getBoundingClientRect();
+    scene3d.panBy(-(event.clientX - panDrag.x) / rect.width, (event.clientY - panDrag.y) / rect.height);
+    panDrag = { x: event.clientX, y: event.clientY };
+    renderOnce();
+  }, true);
+  const endPan = (event) => {
+    if (!panDrag) return;
+    event.stopImmediatePropagation();
+    panDrag = null;
+  };
+  canvas3d.addEventListener("pointerup", endPan, true);
+  canvas3d.addEventListener("pointercancel", endPan, true);
 }
 
 async function loadTerrain() {
@@ -917,11 +1102,19 @@ async function loadTerrain() {
   ]);
   setElevationFromList(elevationGrid, await elevationRes.json());
   setTypesFromList(typeGrid, await typesRes.json());
+  // The snapshot can predate local edits still waiting to flush (e.g. an
+  // SSE reconnect mid-stroke) - re-apply them so they don't snap back.
+  applyElevationCells(elevationGrid, [...pendingElevation.values()]);
+  applyTypeCells(typeGrid, [...pendingTypes.values()]);
+  dirtyElevation = dirtyType = true;
   // The 3D scene auto-fit once already at construction time, against the
   // locally-created blank starting grid (before this real data arrived) -
   // redone here so the first Oblique view is framed for the actual loaded
   // terrain, not an empty map.
-  if (scene3d) scene3d.fitView();
+  if (scene3d) {
+    scene3d.fitAll();
+    syncCameraUI();
+  }
   redrawAll();
 }
 
@@ -947,6 +1140,7 @@ function connectEvents() {
     const { cells } = JSON.parse(event.data);
     const toApply = withoutPendingOverrides(cells, pendingElevation);
     applyElevationCells(elevationGrid, toApply);
+    if (toApply.length) dirtyElevation = true;
     for (const { x, y } of toApply) markDirty(x, y);
     scheduleRender();
   });
@@ -954,6 +1148,7 @@ function connectEvents() {
     const { cells } = JSON.parse(event.data);
     const toApply = withoutPendingOverrides(cells, pendingTypes);
     applyTypeCells(typeGrid, toApply);
+    if (toApply.length) dirtyType = true;
     for (const { x, y } of toApply) markDirty(x, y);
     scheduleRender();
   });
@@ -961,12 +1156,14 @@ function connectEvents() {
     const { cells } = JSON.parse(event.data);
     const toApply = withoutPendingOverrides(cells, pendingTypes);
     clearTypeCells(typeGrid, toApply);
+    if (toApply.length) dirtyType = true;
     for (const { x, y } of toApply) markDirty(x, y);
     scheduleRender();
   });
 }
 
 wireToolbar();
+wireCategoryRail();
 wireViewToggle();
 wireCameraControls();
 loadTerrain();

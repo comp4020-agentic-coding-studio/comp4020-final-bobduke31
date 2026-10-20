@@ -4,7 +4,7 @@ A persistent, ordered list of the remaining work toward the Final project's
 visual and functional bar (Inkarnate/Wonderdraft-style cartography, per
 `CLAUDE.md`), tracked here so status, chosen approaches, and open problems
 survive across sessions instead of living only in chat history. Work happens
-on a local development branch (currently `c10-3d-terrain`); nothing here
+on a local development branch (currently `final-redesign-prototype`); nothing here
 touches the deployed C9 release or production data unless a task explicitly
 says so and is approved first.
 
@@ -31,6 +31,41 @@ better (for "implementation cost," 10 = cheap/fast, 1 = expensive/slow).
 - 🔍 Assessed - comparison written, awaiting approval to implement
 - 🔨 In progress
 - ✅ Done (remaining known limitations stated inline, not hidden)
+
+## Product phases (how the numbered tasks below add up to a whole product)
+
+The list below reads as 12 (now 13) separate feature tickets, but it's
+actually working through four phases of one product - stated here so the
+ordering reads as a plan toward "a real multiplayer map editor," not a grab
+bag:
+
+1. **Make the one shared map itself correct and good-looking** (tasks 1, 2,
+   4, 5, 6, 7) - fixed sea level, natural slopes, rendering resolution, and
+   both views' art quality. Everything here is about the *terrain data and
+   its rendering*, independent of how a person interacts with it. This phase
+   is mostly done; tasks 6 and 7 remain.
+2. **Make editing and navigating that map not fight the user** (task 3,
+   task 13) - camera controls and, as of this entry, the whole editor
+   workspace (canvas space, tool organization, panel layout). This phase
+   exists because phase 1's fidelity is wasted if the UI around it is a
+   cramped fixed-size canvas with every tool visible at once - task 13 was
+   pulled forward out of numeric order for exactly this reason, at explicit
+   user request, rather than waiting for tasks 6-12.
+3. **Grow what can be depicted on one map** (tasks 8, 9) - real vegetation,
+   rivers and lakes - content breadth within the existing single-map,
+   single-scale model.
+4. **Grow the product beyond one fixed map** (tasks 10, 11, 12) - multiple/
+   larger maps, procedural starting terrain, and placeable objects (roads,
+   buildings, walls). Per `CLAUDE.md`, a regional-scale map is the near-term
+   fidelity target and continent-scale is "the same engine at a later,
+   larger scope" via task 10/11, not a separate system; an isometric city
+   view is explicitly out of scope for now, not a deferred task.
+
+Phases are sequential in intent (no point hand-placing buildings on a map
+whose terrain still looks wrong), but, as task 13 shows, a phase-2 problem
+severe enough to undermine everything else can jump the queue - the numbered
+list is a priority order within a phase, not a rule that blocks reordering
+across phases.
 
 ## Already completed (context, not part of this ordered list)
 
@@ -1242,9 +1277,255 @@ incorrectly between terrain types or across coastlines.
   neither adds temporal/motion anti-aliasing or supersampling beyond the
   2x device-pixel cap, which remains the practical ceiling on a 3x+ display.
 
+## Terrain & visual overhaul (2026-10-20) - supersedes the approach planned in tasks 5-8
+
+**Status:** 🔨 Prototyped on `final-redesign-prototype` (not merged, not
+deployed). Integrated, editable, verified in a real browser - awaiting the
+user's own hands-on judgement before tasks 5-8 are closed against it.
+
+The user's hands-on review named four problems: polygonal/stepped
+coastlines with unnatural beaches; mountains as separate circular stamps in
+Top-down and needle peaks in Oblique; rectangular, repetitive forests with
+poor transitions; and no shared art style between the two views - with an
+explicit instruction not to treat them as unrelated small fixes or hide
+them under more noise.
+
+### Root causes (verified in code and screenshots, separated by layer)
+
+Baseline screenshots: `research/roadmap/screenshots/terrain-overhaul/before-*.png`.
+
+| Symptom | Test-map data | Generation / brush | Rendering |
+| --- | --- | --- | --- |
+| Polygonal, stepped coast; green fringe past the beach | beach was a hard elevation clamp + a per-row `y > cy-10` sand rule, with land continuing past it | - | elevation read *bilinearly* (C0): every contour is straight segments kinking at cell edges; grass texture swapped on `floor(gx)` = cell-shaped blocks |
+| Circular mountain stamps / needle peaks | range was `max()` of six radial bumps - literal circles | Mountain/Peak converged a disc to one fixed target (plateau + rim) and stamped `rock` on the whole disc | 3D ridge noise only on high ground, at `HEIGHT_SCALE` 46, so summits became isolated spikes |
+| Rectangular, repetitive forest | hardcoded `x>150&&x<220&&y>90&&y<160` box | - | trees at a flat 22% per forest cell, 2 models, one tint, clipped to painted cells |
+| Two art styles | - | - | **two separate renderers**: CPU canvas hillshade (own palette, own noise, NW light, no cast shadows) vs. GPU shader (different palette, different noise, a light from a different direction, ground received no shadows) - they could never match by tuning |
+
+The last row is the structural one: as long as Top-down and Oblique were
+two implementations, "consistent style" meant keeping two codebases in
+visual agreement forever.
+
+### Approaches compared
+
+| | A. Patch both renderers (texture/noise per complaint) | B. Unify on the GPU renderer + shared derived-field model | C. Pre-render painted tiles (Inkarnate-style raster stamps) |
+| --- | --- | --- | --- |
+| Summary | Keep both renderers; add smoothing, textures and noise to each, per symptom | One Three.js pipeline draws both views (Top-down = the same scene from an overhead orthographic camera); a shared module derives smooth surface, ridges, material boundaries and coast distance from the grids, in JS *and* an identical GLSL twin | Composite authored raster stamps (mountain/tree sprites) on a 2D canvas, Wonderdraft-style |
+| Fixes the structural style split | 2 (two codebases still drift) | 10 | 6 (2D only; Oblique would need its own) |
+| Fixes data-shape causes (circles, boxes) | 3 (hides them) | 9 (fixed at source: seed + brush) | 5 |
+| Stays fully editable / real-time synced | 9 | 9 | 6 (stamp placement per edit) |
+| Reuses proven techniques | 5 | 9 (see CREDITS.md "Ported code and published techniques") | 7 |
+| Implementation cost (10 = cheap) | 7 | 5 | 3 (needs an art pipeline that doesn't exist yet) |
+
+**Chosen: B.** It is the only option that removes the style split instead
+of managing it, and it fixes the data/brush causes at their source rather
+than disguising them - which is exactly what the user ruled out.
+
+### Implementation
+
+- **`public/world/terrain-fields.js` (new) - one definition of every
+  derived field**, mirrored line-for-line in GLSL:
+  - C2 cubic B-spline reconstruction of the 256x256 grids (GPU: 4 bilinear
+    taps, Sigg & Hadwiger) - smooth coastlines and material edges at any zoom
+    with no extra stored data.
+  - Display height = painted elevation + mapgen4-style render-time relief:
+    gentle hill noise on lowland, a domain-warped, weighted ridged
+    multifractal on high ground. A brush stroke becomes a branching range.
+    **Baked** into a 512^2 float surface texture on the CPU (full ~70ms on
+    load, ~1ms per brush-sized region on edit, measured), which the vertex
+    shader, picking and tree placement all read - so geometry, picking and
+    tree heights are identical by construction.
+  - Material boundaries: per-type weight channels, B-spline sampled at a
+    domain-warped position, then height-based blending (Mishkinis 2013)
+    with per-material procedural heights - clumpy forest edges and rock
+    outcrops instead of cell blocks or a soft fade.
+  - Coast signed distance field (exact EDT, Felzenszwalb & Huttenlocher,
+    seeded with sub-pixel crossings so it has no staircase), 512^2, ~35-50ms,
+    throttled during strokes.
+- **`terrain-renderer-3d.js` - draws both views.** Ground is Three's own
+  `MeshLambertMaterial` patched via `onBeforeCompile` (so it receives real
+  shadows - the old `ShaderMaterial` never did), one warm painted palette
+  picked against `reference-painted-mountains-clouds.png`, automatic rock on
+  steep/high ground and beaches by coast distance (so materials follow the
+  land's shape, not the brush's), snow line, ink coastline, foam, and broken
+  Wonderdraft-style ripple strokes. Water is drawn by the ground shader
+  (seabed flattened to sea level), removing the separate transparent plane
+  and its coastal cliff/z-fighting. Trees: KayKit meshes placed
+  deterministically (hash-seeded) by the *rendered* forest weight, with
+  clump/glade noise, treeline, beach exclusion, conifers uphill, per-tree
+  tint and scale, lone copses on grassland; re-placed per 16x16 chunk.
+  Two independent camera states (Top-down / Oblique) so switching never
+  loses either view's zoom/pan/rotation; wheel zoom and right/middle-drag
+  pan now work in Top-down too.
+- **Brush (`world-client.js`)**: Mountain/Peak are now an additive uplift
+  toward a ceiling with a world-anchored, noise-perturbed footprint (never
+  beyond the brush circle), and no longer stamp rock. Create Land targets
+  low coastal ground (0.06, was 0.35 - which, under the new renderer, turned
+  every new strip of land into a rocky dome; found by painting it for real).
+- **Seed scene (`scripts/seed-test-scene.ts`)**: rewritten as a believable
+  region - fractal coast with a bay, headland, cape and an irregular island;
+  one connected spine range with a spur; foothill and coastal forests from
+  noise, not boxes; rock/snow/beach left to the renderer.
+- **Fallback**: `terrain-renderer.js` (canvas) now runs only without
+  WebGL2, with its palette aligned to the GPU one.
+
+### Performance - measured, and fixed where it was real
+
+A first painting test in headless Chromium hung. Profiling (CDP CPU
+profile, then bisecting shader features by request interception) showed:
+JS ~0.5s total; the rest was SwiftShader (software GL) compiling/running
+the shaders - fragment colour ~19s, trees under shadow ~15s, shadows ~5s.
+Much of that is the test environment (no GPU in WSL headless), but the
+underlying shader was genuinely over-heavy, so it was reduced at the source:
+each material's colour computed at most once and only where its weight is
+non-zero; colour-variation noise from a generated tileable noise texture (1
+tap) instead of procedural simplex (~30 ALU ops/call) - positional noise
+that the CPU must match stays procedural; the per-vertex fBm replaced by the
+baked surface; the shadow map re-rendered only on terrain/tree changes, not
+camera moves; tree re-placement taken out of paint frames onto a 120ms
+trailing throttle with cheap rejection before the costly material sample.
+Result in the same software-GL harness: fragment cost ~19s -> ~3s over a
+flat colour; camera/paint frames ~14/19ms once loaded. Not yet measured on
+real GPU hardware - the user's own run is the real check.
+
+### Verification (real browser, Playwright + SwiftShader WebGL2, 1600x1000)
+
+Iterated v1 -> v7 against the reference images, each round looked at, not
+just run - `research/roadmap/screenshots/terrain-overhaul/v*-*.png`:
+
+- v1: unified views confirmed, but too much land, a thin "T" wall of a
+  range, foothill forest on the wrong (north) side - an offset sign error -
+  rigid three-ring ripples ("target" look), rock strata keyed to height that
+  drew topographic contour rings round every summit. All fixed.
+- v2-v4: massif widened with foothills both sides; forests darker and
+  varied (floor colour, tints, conifers uphill); ripples broken into
+  hand-drawn strokes; organic island. `v4-oblique-lowangle`: the range reads
+  as one skyline with saddles, no isolated spikes.
+- v5: a real painting session's strokes (Mountain across open plain, Peak,
+  Forest, Create Land) - the Mountain stroke produced a ragged ridge with
+  rock following its slopes, **not** a circle. It also exposed the Create
+  Land pillar-island bug above.
+- v6: after the Create Land fix, a new strip of land is a low sandbar that
+  sits at sea level in both views; at high zoom the coastline is a smooth
+  curve with ink line, foam and ripples - no steps, no polygon facets.
+  Picking in Oblique after wheel-zoom landed on the right spot.
+- **Picking bug found in diff review, fixed and verified numerically**:
+  `canvasToGrid` only used the 3D ray-march in Oblique; with Top-down now
+  being the same zoomable scene, Top-down strokes were computed as
+  `px / PIXEL_SCALE` - correct only at zoom 1 with no pan. Fixed to pick
+  through the scene in both views. Verified by intercepting the POSTed cell
+  batch for a 1-cell Raise click (`.localdata/pickcheck.mjs`): zoom 1 ->
+  (76.0, 76.0) vs expected (76.5, 76.5); after cursor-centred wheel zoom x2
+  -> (140.0, 44.0) vs (140.3, 44.6); after a right-drag pan -> (153.0, 44.0)
+  vs (153.0, 44.6). All within one cell.
+- Behaviour change to note: right/middle-drag on the map now pans (both
+  views) instead of painting; left-drag still paints.
+- v8 (final code, real strokes): two passes of the Mountain brush across
+  open plain gave an irregular ridge with rock on its slopes and a cast
+  shadow, plus an organic Forest stand - `v8-plain-before/after.png`,
+  `v8-oblique-after.png`.
+- **Server-side functional checks** (`.localdata/func.mjs`, two clients with
+  separate session cookies, scratch DB): painting elevation and type
+  persists (204); client B receives `terrain:update`,
+  `terrain-type:update` and `activity:new` over SSE; B's undo of A's
+  stroke is refused (409); A's undo restores elevation 0.500 -> 0.507 and
+  type forest -> grassland; the activity log records paint and undo.
+- `pnpm check` (typecheck + 23 tests) passes. (One run showed 9 failures -
+  traced to a stale scratch server from an earlier run still bound to the
+  test port with its DB file deleted; rerun on a clean server: 23/23.)
+- **Not completed under software rendering, by decision**: long multi-step
+  Playwright painting sessions. In headless WSL Chromium (SwiftShader, no
+  GPU) each stroke took 1-2 minutes, so the full scripted session (wheel-
+  zoom + 1-cell brush + Oblique stroke + undo in-browser) was stopped rather
+  than retried. Covered instead by the numeric picking check, the v5/v6/v8
+  real-stroke screenshots, the HTTP checks above, and the user's own manual
+  testing at `localhost:8802`.
+
+### Remaining limitations (not hidden)
+
+- Freshly painted *narrow* mountains (a ~9-cell brush) get needle-like
+  summits in a close Oblique view (`v8-oblique-after.png`): the ridge noise
+  amplitude is tuned for broad massifs. Needs the amplitude to scale with
+  local ridge width, not just height.
+
+- Not yet measured on real GPU hardware; SwiftShader numbers are a
+  pessimistic proxy. First load still compiles a substantial shader.
+- The 512^2 surface texture is re-uploaded in full per paint frame (~1MB;
+  Three r169 has no sub-rect DataTexture upload) - fine on a GPU, a known
+  cost.
+- Material warp/height noise is evaluated in both JS (float64) and GLSL
+  (float32); they agree to well under a cell, but a tree can occasionally
+  sit a hair outside the drawn forest edge.
+- Forest uses only two KayKit models; variety comes from tint, scale and
+  stands. More models from the same CC0 pack would help.
+- Rivers/lakes, roads and settlements are still task 9/12 - the reference
+  maps have them and this map doesn't yet.
+- The CPU fallback renderer only shares the palette, not the new material
+  model.
+
+### Release audit before merging to main (2026-10-20)
+
+User-reported, both fixed:
+
+- **Lag while painting.** Each paint frame rebuilt the whole type-weight
+  texture, the coast distance field and every tree instance. Fixed by
+  updating type weights only inside the dirty region, and deferring the
+  coast SDF and tree rebuild to stroke end (`setStrokeActive` in
+  `terrain-renderer-3d.js`). Elevation and type edits now each trigger only
+  their own work.
+- **Navigation controls missing in Top-down.** The camera panel was being
+  hidden outright. It now always shows. Compass, direction presets and tilt
+  are hidden only in Top-down, where they don't apply. Zoom, the pan pad and
+  Reset stay visible in both views.
+
+Production-data compatibility. The live map was painted with the old tools
+(plains around 0.35, Mountain 0.6, Peak 0.95). Rendered from a read-only
+copy, those plains came out as rocky, snowy foothills with coastal cliffs. The
+fix recalibrated the renderer only: mountain band 0.42-0.85, lowland heights
+compressed, beaches gated on displayed height. Stored data is untouched.
+Before/after screenshots: `prodcopy-v2-*.png`. Side effect: the local demo
+seed's ranges now read as low hills (`seed-v2-*.png`). The seed should be
+re-tuned to the new band. That's a follow-up, since only the live map ships.
+
+Independent code audit (server, client, deploy). Fixed:
+
+- Activity entries (API and SSE) carried raw session ids. The session cookie
+  is the only credential behind undo and mark-delete ownership, so anyone
+  could impersonate anyone. Ids were removed from client-facing entries; they
+  remain in the DB and server stdout.
+- Session cookies now must be UUID-shaped, so arbitrary strings can't grow
+  the per-session undo map. A malformed `%` escape no longer 500s the request.
+- Request bodies are capped at 4MB, and batches at one grid's worth of cells.
+  `cellsSummary` no longer spreads a huge array into `Math.min`, which could
+  throw after the write had already applied.
+- Client: a lost `pointerup` (alt-tab mid-drag) could leave a stroke active
+  forever, which painted on hover and deferred coast/tree rebuilds. Fixed by
+  ending the stroke on `lostpointercapture` and when `buttons === 0`.
+- An SSE reconnect reloads the snapshot. It now re-applies pending local
+  edits, so they no longer snap back.
+- `.dockerignore` now excludes `research/`, `.localdata/` and `*.db`.
+
+Audit items left open (low severity for a class-sized deployment):
+
+- No per-session rate limit and no SSE connection cap or backpressure.
+- No CSP or security headers. Runs as root in the container. No SIGTERM
+  handler; SQLite's journal makes a SIGKILL safe.
+- Tree instances are capped at 24k per model, so a very densely forested map
+  loses trees in its last chunks.
+
+Verified: `pnpm check` (typecheck plus 23/23 tests against a fresh scratch
+server) and `pnpm check:evidence`. A two-session HTTP run confirmed paint, SSE
+fan-out to the other session, cross-session undo refused (409), own undo
+restored, and both activity entries logged. Also probed: a forged cookie gets
+a fresh id, an oversized body is cut off, an over-cap batch gets 400, a
+60k-cell batch is accepted, and a static path-traversal attempt gets 404.
+`/`, `/world/`, `/readme/`, `/credits/` and `/logs/` all return 200.
+
 ## 5. Top-down fantasy-map art quality
 
-**Status:** 🔍 Assessed - comparison written, awaiting approval to implement.
+**Status:** 🔍 Assessed - superseded by "Terrain & visual overhaul"
+above, which fixes findings 1-4 at the data/brush/renderer level instead of
+the texture-only approach compared below. Kept for the history of the
+investigation.
 
 The user's own framing of this task named four complaints: isolated
 circular mountains, severe dark streaks toward the coast, rectangular
@@ -1546,6 +1827,215 @@ than to the terrain grid. Likely needs its own data model decision (a
 third SQLite table alongside `marks` and `terrain_cells`) and its own
 concurrency note in `ADR.md` once scoped.
 
+## 13. Editor workspace UI/UX redesign
+
+**Status:** ✅ Prototyped on `final-redesign-prototype` (branched from
+`main` at `bf0a08e`, not merged - built and shown for a decision, not shipped
+yet). Pulled forward out of numeric order (see "Product phases" above) at
+explicit user request: "Prioritise UI/UX now, rather than more isolated
+asset experiments."
+
+### Root cause (verified against the running app, not assumed)
+
+Every prior task in this file improved the *rendered map itself*; none
+touched the chrome around it. Direct inspection of the pre-redesign app
+(`research/roadmap/screenshots/2026-10-17-uiux-before-{topdown,oblique}.png`)
+showed one dominant, structural problem shared by every tool and both map
+views, not a cosmetic one: `#stage`/`#stage-3d` were hardcoded to a fixed
+768×768px box (`CELL_PX = 3` constant × `GRID_SIZE = 256`) regardless of
+actual window size, so on any wide monitor the map - the entire point of the
+product - occupied a small fraction of the viewport, surrounded by empty
+dark background. On top of that, all 13 tools (5 `tool-group`s: Elevation,
+Relief, Terrain, Land, Water) were shown simultaneously in one wrapping
+toolbar, and the camera controls (direction/tilt/zoom/pan, relevant only in
+Oblique view) lived in a second toolbar permanently reserving vertical space
+even in Top-down.
+
+### Approaches compared
+
+Three complete, real HTML/CSS mockups were built (not described) using an
+actual captured map screenshot as content rather than placeholder boxes, so
+canvas-to-chrome proportions could be judged honestly - rendered via
+Playwright for side-by-side comparison, not eyeballed as markup:
+
+| | A. Fixed left sidebar, flat tool list | B. Category rail + right "Tool Options" panel (Wonderdraft-style) | C. Canvas-first, floating panels over the map |
+|---|---|---|---|
+| **Summary** | Keep one always-visible sidebar listing every tool (grouped, not tabbed); canvas fills the remaining space. | Left icon rail selects a tool *category* (Land/Terrain/Water); a right panel shows only that category's tools and options - mirrors Wonderdraft's documented tabs + Tool Options split and Inkarnate's icon-rail + contextual-options pattern (researched via WebSearch, since `CLAUDE.md` names both as the visual target). | No fixed chrome at all - all panels float, semi-transparent, directly over a full-bleed canvas; closest to a "canvas is the whole app" feel. |
+| Reuses target apps' real patterns | 4 | 9 | 5 |
+| Canvas space at rest | 7 | 8 | 10 |
+| Tool discoverability (new user) | 6 | 8 | 5 |
+| Scales to more tools later (tasks 8-12 add vegetation density, rivers, buildings...) | 5 | 9 | 4 |
+| Implementation cost (10=cheap) | 8 | 7 | 6 |
+| Screenshot | `research/roadmap/screenshots/2026-10-17-uiux-direction-a-sidebar-mockup.png` | `research/roadmap/screenshots/2026-10-17-uiux-direction-b-wonderdraft-mockup.png` | `research/roadmap/screenshots/2026-10-17-uiux-direction-c-floating-mockup.png` |
+
+**Risks:** Direction C's floating-everything look is the most visually
+striking in a single screenshot, but a map editor needs tools to stay
+discoverable and fitted to a long editing session, not just look good in a
+marketing shot - panels drifting over live terrain also risks occluding the
+exact area being edited, with no fixed-chrome alternative to glance at.
+Direction A's flat always-visible list doesn't scale: tasks 8-12 (real
+vegetation controls, rivers/lakes, procedural generation, buildings/roads)
+each add more tools, and a flat sidebar grows linearly with no grouping
+mechanism beyond what already exists today.
+
+**Recommendation:** Direction B. It's the one option backed by a real,
+documented precedent from the project's own named visual target (Wonderdraft
+specifically ships left category tabs + a right Tool Options panel), it
+scales to future tool growth via categories rather than list length, and it
+devotes the most space to the canvas of any option that keeps tools
+persistently discoverable (C only wins on raw canvas space by hiding tools
+behind floating panels, which trades discoverability for it).
+
+### Implementation
+
+Direction B, implemented as:
+
+- **Root cause fix (applies regardless of chosen direction):** `index.html`
+  and `world.css` rewritten around a CSS Grid app shell
+  (`grid-template-columns: 76px 1fr 230px`) with the canvas column as the
+  only `1fr` track. `#stage`/`#stage-3d` changed from a fixed 768×768px box
+  to `max-width/max-height: 100%` + `aspect-ratio: 1/1` inside a
+  flex-centered `.canvas-area`, so the square grid's *absolute* size now
+  responds to real available viewport space. `world-client.js`'s hardcoded
+  `CELL_PX = 3` replaced with `computeCellPx()`, which measures
+  `#canvas-area`'s actual bounding box once at load and derives a backing-
+  store resolution from it (clamped 2-6px/cell), rather than assuming a
+  fixed window size.
+- **Category rail + options panel:** the old 5 `tool-group`s consolidated
+  into 3 categories - Land (Elevation + Relief), Terrain (material), Water
+  (Coastline + Seabed) - as a left icon rail (`wireCategoryRail()` in
+  `world-client.js`) toggling which `<section data-panel="...">` is visible
+  in a right `.options-panel`. Switching category also selects that
+  category's first tool as the active one (`CATEGORY_FIRST_TOOL`), so the
+  active brush is never a tool hidden in a panel that just closed. Icons are
+  hand-authored inline SVG, not emoji - emoji was tried first in the mockups
+  and rendered as empty "tofu" boxes under headless Chromium, a concrete bug
+  avoided in the real implementation.
+- **Camera controls demoted to a floating overlay:** `#camera-toolbar`
+  moved from a second permanent toolbar to `.camera-float`, an absolutely-
+  positioned panel inside `.canvas-area` itself, shown only in Oblique view.
+  Justification: camera direction/tilt/zoom/pan is view-*navigation*, not a
+  terrain-*editing* tool category, so it doesn't belong beside Raise/Lower/
+  etc. in the rail/panel split, and keeping it permanently docked in
+  Top-down (where it has nothing to control) was pure wasted space.
+- **Shared brush controls:** one Brush size / Strength footer pinned to the
+  bottom of the options panel, used by every category (an earlier draft
+  duplicated these per-category; removed as unnecessary per this task's own
+  "do not add unnecessary features" constraint - it was the same two
+  sliders three times, not three different concerns).
+- **Per-category hint text:** found and fixed during this task's own final
+  art/usability pass (not part of the original three-direction comparison):
+  the bottom hint paragraph was still showing fixed land/water-specific copy
+  ("Raise / Lower / Smooth / Mountain / Peak only ever reshape existing
+  land...") while the Terrain panel was active, describing tools that
+  weren't even visible. Replaced the single static hint with
+  `CATEGORY_HINT`, a per-category sentence swapped in `wireCategoryRail()`.
+- **Responsive breakpoint:** below 900px width, the grid collapses to a
+  single column (rail becomes a horizontal strip, options panel moves below
+  the canvas, page becomes scrollable) rather than clipping the canvas.
+
+### Verification (real browser, Playwright, against `localhost:8099`, seeded scene)
+
+- **Canvas space:** `research/roadmap/screenshots/2026-10-17-uiux-before-topdown.png`
+  vs. `.../2026-10-17-uiux-after-topdown.png` - the map now fills nearly the
+  entire viewport at 1600×1000 instead of a ~768px box in a sea of empty
+  background.
+- **Both map views carry the new chrome correctly:**
+  `.../2026-10-17-uiux-after-topdown.png` and `.../2026-10-17-uiux-after-oblique.png`.
+- **Category switching works and updates the right state:** verified via
+  precise `[data-category="..."]` locators (an earlier ambiguous
+  `text=Terrain` selector falsely suggested switching was broken - it was
+  matching 3 different elements, not a real bug; re-verified with
+  `.evaluate(el => el.classList.contains("hidden"))` against both panels
+  directly). Screenshots:
+  `.../2026-10-17-uiux-after-terrain-panel.png`,
+  `.../2026-10-17-uiux-after-water-panel.png`.
+- **Actual editing workflow still works:** a real paint stroke was driven
+  through Playwright and confirmed to fire a `POST /api/terrain/cells`
+  request and visibly change the rendered terrain -
+  `.../2026-10-17-uiux-after-paint-workflow.png`.
+- **Camera controls still work after being moved into the floating panel:**
+  dragging the compass dial rotated the view (needle moved, `W→E` preset
+  activated) and the Tilt slider produced a visibly flatter viewing angle -
+  `.../2026-10-17-uiux-after-camera-rotated.png`,
+  `.../2026-10-17-uiux-after-camera-tilted.png`. Confirmed by actually
+  viewing both renders, not just checking for a thrown error.
+- **Responsive breakpoint:** `.../2026-10-17-uiux-after-narrow-viewport.png`
+  at <900px width shows the stacked, scrollable layout working as designed.
+- **Per-category hint-text fix:** `.../2026-10-17-uiux-category-hint-fix-terrain.png`
+  confirms the Terrain panel now shows terrain-specific copy instead of the
+  stale land/water text.
+- `pnpm typecheck` passes clean after every change in this task.
+
+### Remaining limitations (not fixed by this change, not hidden)
+
+- `computeCellPx()` measures available layout space once at load, not on
+  window resize (no `ResizeObserver`) - the CSS layout itself still scales
+  visually on resize via `max-width`/`max-height`, but the canvas's backing-
+  store resolution (and therefore paint-brush pixel precision) stays fixed
+  to whatever size the window was at load. Not needed for this prototype's
+  purpose (proving the layout direction), but a real follow-up before this
+  is adopted as the final UI.
+- No automated test coverage added for the new category-rail/panel wiring
+  (`wireCategoryRail`, `CATEGORY_HINT`) - verified manually via Playwright
+  in this session only, the same gap every other UI-only task in this file
+  currently has.
+- A full fresh art-consistency pass was done (new UI chrome's dark palette,
+  spacing, and icon style against the terrain rendering, KayKit trees, and
+  the CC0 grass texture) but did not surface changes beyond the hint-text
+  fix above - recorded here as a pass that was actually performed, not
+  skipped, per this task's own "check art consistency... and fix obvious
+  problems yourself" instruction.
+- This is a prototype on `final-redesign-prototype`, not yet adopted,
+  merged, or deployed - the next step is the user's decision on whether to
+  adopt it, per their own instruction ("Show me the working result before
+  we decide whether to adopt it").
+
+### End-of-session note (2026-10-17): known art-quality issues, not fixed tonight
+
+Stopping for the day after the UI/UX redesign above - these four issues were
+named explicitly and confirmed by re-screenshotting the live app (not
+assumed from memory), but intentionally **not** investigated or fixed
+tonight, per instruction. Each already has a home in an existing task below;
+listed here as a single pointer so tomorrow's session can pick up without
+re-discovering them:
+
+- **Stair-stepped coastline.** Confirmed in a fresh zoomed screenshot of the
+  sand/grass and sand/water edges
+  (`research/roadmap/screenshots/2026-10-17-eod-coastline-zoom.png`): both
+  boundaries are visibly blocky/grid-aligned, even though the ink coastline
+  stroke itself is a smoothed vector curve (`d3-contour`, see task 1/9
+  notes) - the blockiness is in the cell-fill boundary, not the stroke.
+  Belongs to **task 5** (top-down art quality, already 🔍 assessed - see
+  finding 2's sibling problem, the dark-streak bug) and **task 7** (natural
+  terrain material blending, "grass/sand/forest/rock currently blend
+  nowhere - a cell is one type, full stop").
+- **Rectangular forest boundaries.** Already root-caused in task 5, finding
+  3: confirmed **not** a renderer defect - the rectangular shape in prior
+  screenshots traces to the dev seed script's own hardcoded box, and a
+  live-painted forest patch is already organic. Still visible in tonight's
+  screenshots because the seeded demo scene itself hasn't changed. No new
+  investigation needed before tomorrow; re-check against a live-painted
+  patch, not the seed scene, before treating this as still open.
+- **Unnatural terrain transitions.** Covered by **task 7** (no blending
+  between painted terrain types) and the brush-shape limitation named in
+  task 5 finding 1 (Mountain/Peak strokes are circular by construction,
+  acknowledged as a disguised-not-fixed limitation even after task 5's
+  planned noise-perturbation mitigation).
+- **Inconsistent 2D/3D art styles.** Confirmed side-by-side tonight
+  (`.../2026-10-17-uiux-after-topdown.png` vs. `.../eod-oblique-full.png`):
+  Top-down's flat, noisy grass fill and Oblique's lit, shaded mesh read as
+  two different rendering styles for the same data, beyond the geometry
+  work tasks 1-2 already did. This is **task 6**'s scope (Oblique fantasy-
+  map art quality, ⬜ not started), which already names the same gap against
+  `research/roadmap/references/reference-painted-mountains-clouds.png` - a
+  warmer, more saturated, ink-outlined target style neither view currently
+  matches, rather than the two views needing to match each other.
+
+No code changes were made for any of these tonight - they're carried
+forward as-is into tasks 5, 6, and 7, in that priority order per phase 1 of
+the "Product phases" section above.
+
 ---
 
 ## Completed work log
@@ -1632,3 +2122,41 @@ concurrency note in `ADR.md` once scoped.
   committing to it over a hand-rolled procedural-texture fallback. Not yet
   implemented; the image-generation experiment and final approach choice
   are still pending.
+- **2026-10-16/17** - On `final-redesign-prototype` (branched from `main` at
+  `bf0a08e`, test data, not merged): real art-asset trials for task 8
+  (Kenney Nature Kit glTF tree meshes vs. billboards, KayKit Forest Nature
+  Pack, and a real CC0 grass texture replacing an AI-generated placeholder
+  the user flagged as exactly the "fall back to self-generated assets"
+  pattern they'd forbidden) - see `CREDITS.md` for the sourcing trail.
+  Commits
+  [`f6c391d`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/f6c391d939b17601ff58152caad46cfc3a896399)
+  and
+  [`4c18d5f`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/4c18d5fac32d3d977c38cb2553bda45a39383875).
+- **2026-10-17** - Task 13 (editor workspace UI/UX redesign) assessed,
+  implemented, and verified in the same session on `final-redesign-prototype`,
+  pulled forward out of numeric order at the user's explicit request to
+  prioritize UI/UX over further isolated asset experiments. Three complete
+  design directions built as real, Playwright-rendered mockups and compared
+  before writing any application code; Direction B (Wonderdraft-style
+  category rail + right tool-options panel) implemented, along with the
+  underlying root-cause fix both other directions would have needed too (the
+  canvas's fixed 768px size, independent of which chrome surrounds it). A
+  real content bug (stale, category-irrelevant hint text) was found and
+  fixed during this task's own closing art/usability pass. See task 13
+  section above for the full comparison, implementation, and verification
+  trail with screenshot citations. Committed as
+  [`9e198aa`](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/9e198aa) -
+  pending the user's review of the working prototype before deciding
+  whether to adopt it, per their own "Show me the working result before we
+  decide" request.
+- **2026-10-17** - End of session: the user ran the redesigned prototype
+  themselves locally (`localhost:8099`, a separate test DB) and named four
+  remaining art-quality issues to carry into tomorrow without investigating
+  or fixing tonight - stair-stepped coastline, rectangular forest
+  boundaries, unnatural terrain transitions, and inconsistent 2D/3D art
+  styles. Each was confirmed against the live app (fresh zoomed screenshots,
+  not assumed) and mapped to its existing home in tasks 5, 6, and 7 rather
+  than treated as new, undiscovered problems - see "End-of-session note" at
+  the end of task 13 above for the evidence and task pointers. `.gitignore`
+  updated to exclude `.localdata/` (local test databases), which had been
+  showing as untracked without actually being ignored.
