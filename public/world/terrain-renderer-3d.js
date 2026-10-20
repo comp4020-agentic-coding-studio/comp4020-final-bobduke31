@@ -274,13 +274,31 @@ function buildGroundGeometry() {
   return geometry;
 }
 
+// Half-float (not full 32-bit float): a *filterable* (LINEAR) R32F texture
+// needs `OES_texture_float_linear`, which iOS Safari/WebKit has never
+// reliably supported on iPhone (inconsistent across iOS versions, and
+// reported non-functional even when advertised) - sampling a non-filterable
+// format with LINEAR filtering makes the texture "incomplete" per the WebGL2
+// spec, so every `texture2D` read silently returns zero. That reads every
+// cell as sea level, which is exactly the "terrain and water vanish, only
+// trees remain" failure (trees are placed from the CPU's own Float32Array
+// data, never through these textures). R16F is filterable in core WebGL2
+// with no extension (MDN: `OES_texture_half_float_linear`'s functionality is
+// built into WebGL2 by default), and its ~0.05% relative precision is far
+// finer than the 8-bit quantization bug this renderer already fixed once
+// (ROADMAP.md, "land/sea misclassification") - see `floatToHalf` below for
+// the conversion from the CPU's full-precision Float32Array data.
+function floatToHalf(src, dst) {
+  for (let i = 0; i < src.length; i++) dst[i] = THREE.DataUtils.toHalfFloat(src[i]);
+}
+
 function createHeightTexture() {
   const texture = new THREE.DataTexture(
-    new Float32Array(GRID_SIZE * GRID_SIZE),
+    new Uint16Array(GRID_SIZE * GRID_SIZE),
     GRID_SIZE,
     GRID_SIZE,
     THREE.RedFormat,
-    THREE.FloatType,
+    THREE.HalfFloatType,
   );
   texture.magFilter = THREE.LinearFilter;
   texture.minFilter = THREE.LinearFilter;
@@ -306,8 +324,17 @@ function createTypeTexture() {
   return texture;
 }
 
-function createSurfaceTexture(data) {
-  const texture = new THREE.DataTexture(data, SURFACE_RES, SURFACE_RES, THREE.RedFormat, THREE.FloatType);
+// Takes its own half-float backing buffer, separate from the full-precision
+// Float32Array (`surfaceData`) picking and tree placement read on the CPU -
+// see `floatToHalf` above for why the GPU copy is downconverted.
+function createSurfaceTexture() {
+  const texture = new THREE.DataTexture(
+    new Uint16Array(SURFACE_RES * SURFACE_RES),
+    SURFACE_RES,
+    SURFACE_RES,
+    THREE.RedFormat,
+    THREE.HalfFloatType,
+  );
   texture.magFilter = THREE.LinearFilter;
   texture.minFilter = THREE.LinearFilter;
   texture.needsUpdate = true;
@@ -349,8 +376,17 @@ function createNoiseTexture() {
   return texture;
 }
 
-function createCoastTexture(data) {
-  const texture = new THREE.DataTexture(data, COAST_SDF_RES, COAST_SDF_RES, THREE.RedFormat, THREE.FloatType);
+// Same split as the surface texture: `data` (the coast SDF, in cells, range
+// roughly ±64) is the full-precision CPU copy; the GPU gets its own
+// half-float conversion.
+function createCoastTexture() {
+  const texture = new THREE.DataTexture(
+    new Uint16Array(COAST_SDF_RES * COAST_SDF_RES),
+    COAST_SDF_RES,
+    COAST_SDF_RES,
+    THREE.RedFormat,
+    THREE.HalfFloatType,
+  );
   texture.magFilter = THREE.LinearFilter;
   texture.minFilter = THREE.LinearFilter;
   texture.needsUpdate = true;
@@ -358,7 +394,7 @@ function createCoastTexture(data) {
 }
 
 function fillHeightTexture(texture, elevationGrid) {
-  texture.image.data.set(elevationGrid);
+  floatToHalf(elevationGrid, texture.image.data);
   texture.needsUpdate = true;
 }
 
@@ -656,11 +692,15 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
 
   const heightTexture = createHeightTexture();
   const typeTexture = createTypeTexture();
+  // Full-precision CPU copies (picking, tree placement); the textures above
+  // hold their own half-float conversion, written by fillHeightTexture /
+  // the coast/surface updates below.
   const coastData = new Float32Array(COAST_SDF_RES * COAST_SDF_RES);
-  const coastTexture = createCoastTexture(coastData);
+  const coastTexture = createCoastTexture();
   const surfaceData = new Float32Array(SURFACE_RES * SURFACE_RES);
   bakeSurface(elevationGrid, surfaceData);
-  const surfaceTexture = createSurfaceTexture(surfaceData);
+  const surfaceTexture = createSurfaceTexture();
+  floatToHalf(surfaceData, surfaceTexture.image.data);
   let typeWeights = buildTypeWeights(elevationGrid, typeGrid);
 
   const uniforms = {
@@ -765,6 +805,7 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     coastTimer = null;
     lastCoastAt = performance.now();
     computeCoastSDF(currentElevationGridRef, coastData);
+    floatToHalf(coastData, coastTexture.image.data);
     coastTexture.needsUpdate = true;
     invalidateShadows();
     // Trees near the shore depend on the coast distance; a full re-place
@@ -816,6 +857,8 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
   fillHeightTexture(heightTexture, elevationGrid);
   fillTypeTexture(typeTexture, elevationGrid, typeGrid);
   computeCoastSDF(elevationGrid, coastData);
+  floatToHalf(coastData, coastTexture.image.data);
+  coastTexture.needsUpdate = true;
   trees.rebuild(currentFields());
 
   // --- Camera ---------------------------------------------------------------
@@ -1016,7 +1059,12 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     currentTypeGridRef = currentTypeGrid;
     if (elevationChanged) {
       fillHeightTexture(heightTexture, currentElevationGrid);
-      bakeSurface(currentElevationGrid, surfaceData, region);
+      const baked = bakeSurface(currentElevationGrid, surfaceData, region);
+      const halfData = surfaceTexture.image.data;
+      for (let j = baked.j0; j <= baked.j1; j++) {
+        const row = j * SURFACE_RES;
+        for (let i = baked.i0; i <= baked.i1; i++) halfData[row + i] = THREE.DataUtils.toHalfFloat(surfaceData[row + i]);
+      }
       surfaceTexture.needsUpdate = true;
       invalidateShadows();
     }
