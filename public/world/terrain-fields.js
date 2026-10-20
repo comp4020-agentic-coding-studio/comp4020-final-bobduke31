@@ -160,22 +160,48 @@ function ridgeNoise(x, y) {
 }
 
 // How "mountainous" painted elevation e is - 0 on plains, 1 on high ground.
-// Everything mountain-specific (fold displacement, auto-rock, treeline)
-// keys off this one curve.
+// Everything mountain-specific (fold displacement, auto-rock, treeline,
+// snow) keys off this one curve.
+//
+// The band is set by the data that actually exists, not just by the new
+// tools: the live map was painted with the earlier tools, whose Create
+// Land put plains at ~0.35 (median of ~24k production grassland cells)
+// and whose Mountain/Peak targeted 0.6/0.95. A band starting at 0.1 read
+// that whole map as foothills - rippled folds over every plain. Starting
+// at 0.42 reads both conventions (new plains ~0.06, old ~0.35) as lowland,
+// and both generations of mountains (new Mountain ceiling 0.72, old
+// 0.6-1.0) as mountains, with no change to anyone's stored data.
+export const MOUNTAIN_BAND_START = 0.42;
+export const MOUNTAIN_BAND_END = 0.85;
 export function mountainMask(e) {
-  return smoothstep(0.1, 0.55, e);
+  return smoothstep(MOUNTAIN_BAND_START, MOUNTAIN_BAND_END, e);
 }
 
-const RIDGE_AMPLITUDE = 0.26;
+const RIDGE_AMPLITUDE = 0.22;
 const RIDGE_BIAS = 0.3;
 
+// Lowland (everything below the mountain band) is drawn compressed into a
+// gentle 0..LOWLAND_TOP rise: plains read as plains whether they were
+// painted at 0.06 or 0.35, and an old 0.35-high strip of land beside the
+// sea becomes a shore rather than a 10-unit cliff. The mountain band then
+// climbs from LOWLAND_TOP back up to the full painted value, so peaks keep
+// their real height. Monotone in e, so painting stays predictable: raising
+// land always raises what's drawn.
+const LOWLAND_TOP = 0.12;
+function lowlandHeight(e) {
+  const t = Math.min(1, e / MOUNTAIN_BAND_START);
+  // ease-out: the first few hundredths of elevation carry the most rise,
+  // so a shoreline climbs naturally, then plains level off
+  return LOWLAND_TOP * (1 - (1 - t) * (1 - t));
+}
+
 // Elevation as the 3D renderer actually draws it (before HEIGHT_SCALE and
-// before the sea is flattened to SEA_LEVEL). The GLSL twin is
-// terrainDisplayHeight; the two must stay identical.
+// before the sea is flattened to SEA_LEVEL), baked by bakeSurface.
 export function displayHeight(e, x, y) {
   if (e <= SEA_LEVEL) return e;
   const m = mountainMask(e);
-  let h = e + 0.014 * hillNoise(x, y) * smoothstep(0, 0.06, e) * (1 - m);
+  const base = lowlandHeight(e) * (1 - m) + e * m;
+  let h = base + 0.012 * hillNoise(x, y) * smoothstep(0, 0.06, e) * (1 - m);
   h += m * (ridgeNoise(x, y) - RIDGE_BIAS) * RIDGE_AMPLITUDE * (0.35 + 0.65 * m);
   return h;
 }
@@ -456,7 +482,7 @@ export const TERRAIN_FIELDS_GLSL = /* glsl */ `
 
   float tf_smooth(float e0, float e1, float x) { return smoothstep(e0, e1, x); }
 
-  float mountainMask(float e) { return smoothstep(0.1, 0.55, e); }
+  float mountainMask(float e) { return smoothstep(${MOUNTAIN_BAND_START.toFixed(4)}, ${MOUNTAIN_BAND_END.toFixed(4)}, e); }
 
   float smoothElevation(vec2 cell) { return bsplineSample(uHeight, cell).r; }
 

@@ -57,8 +57,17 @@ async function serveStatic(urlPath: string): Promise<StaticFile | null> {
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  // Well above any real client flush (a few hundred cells); caps what a
+  // malicious client can make the small production machine buffer.
+  const MAX_BODY_BYTES = 4 * 1024 * 1024;
   const chunks: Buffer[] = [];
+  let size = 0;
   for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    if (size > MAX_BODY_BYTES) {
+      req.destroy();
+      throw new Error("request body too large");
+    }
     chunks.push(chunk as Buffer);
   }
   const raw = Buffer.concat(chunks).toString("utf8");
@@ -77,10 +86,18 @@ function isPercentage(value: unknown): value is number {
 // not the raw cell array, so a several-hundred-cell brush stroke logs as one
 // legible line instead of flooding `flyctl logs` with per-cell noise. See
 // src/activity.ts's own comment on why detail is a summary, not a dump.
+// One grid's worth: a real flush is far smaller, and this bounds the
+// per-request DB transaction, undo snapshot and SSE broadcast size.
+const MAX_CELLS_PER_BATCH = 256 * 256;
+
 function cellsSummary(cells: { x: number; y: number }[]): string {
-  const xs = cells.map((c) => c.x);
-  const ys = cells.map((c) => c.y);
-  const bbox = `(${Math.min(...xs)},${Math.min(...ys)})-(${Math.max(...xs)},${Math.max(...ys)})`;
+  // A loop, not Math.min(...xs): spreading a large array overflows the stack.
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const c of cells) {
+    x0 = Math.min(x0, c.x); y0 = Math.min(y0, c.y);
+    x1 = Math.max(x1, c.x); y1 = Math.max(y1, c.y);
+  }
+  const bbox = `(${x0},${y0})-(${x1},${y1})`;
   return `${cells.length} cell${cells.length === 1 ? "" : "s"}, bbox ${bbox}`;
 }
 
@@ -218,7 +235,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return;
     }
     const { cells } = (payload ?? {}) as Record<string, unknown>;
-    if (!Array.isArray(cells) || cells.length === 0 || !cells.every(isValidCell)) {
+    if (!Array.isArray(cells) || cells.length === 0 || cells.length > MAX_CELLS_PER_BATCH || !cells.every(isValidCell)) {
       res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
       res.end(
         JSON.stringify({
@@ -289,7 +306,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return;
     }
     const { cells } = (payload ?? {}) as Record<string, unknown>;
-    if (!Array.isArray(cells) || cells.length === 0 || !cells.every(isValidTerrainTypeCell)) {
+    if (!Array.isArray(cells) || cells.length === 0 || cells.length > MAX_CELLS_PER_BATCH || !cells.every(isValidTerrainTypeCell)) {
       res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
       res.end(
         JSON.stringify({

@@ -224,7 +224,7 @@ const GROUND_FRAGMENT_PARS = /* glsl */ `
                    + smoothstep(0.45, 0.85, m + rockNoise * 0.35), 0.0, 1.0);
     w = mix(w, vec4(0.0, 0.0, 0.0, 1.0), autoRock);
     float beachWidth = 1.3 + 1.1 * (0.5 + 0.5 * mid.w);
-    float beach = (1.0 - smoothstep(beachWidth * 0.6, beachWidth, d)) * (1.0 - smoothstep(0.06, 0.11, e)) * (1.0 - smoothstep(0.2, 0.45, slope));
+    float beach = (1.0 - smoothstep(beachWidth * 0.6, beachWidth, d)) * (1.0 - smoothstep(0.1, 0.16, h)) * (1.0 - smoothstep(0.2, 0.45, slope));
     w = mix(w, vec4(0.0, 1.0, 0.0, 0.0), beach);
 
     vec3 c = vec3(0.0);
@@ -362,13 +362,33 @@ function fillHeightTexture(texture, elevationGrid) {
   texture.needsUpdate = true;
 }
 
-function fillTypeTexture(texture, elevationGrid, typeGrid) {
+// `region` (cells, inclusive) limits the rewrite to what changed - a brush
+// stroke touches a few hundred cells, not all 65k.
+function fillTypeTexture(texture, elevationGrid, typeGrid, region) {
   const data = texture.image.data;
-  data.fill(0);
-  for (let i = 0; i < typeGrid.length; i++) {
-    if (elevationGrid[i] > SEA_LEVEL) data[i * 4 + typeGrid[i]] = 255;
+  const x0 = region ? Math.max(0, region.minX) : 0;
+  const x1 = region ? Math.min(GRID_SIZE - 1, region.maxX) : GRID_SIZE - 1;
+  const y0 = region ? Math.max(0, region.minY) : 0;
+  const y1 = region ? Math.min(GRID_SIZE - 1, region.maxY) : GRID_SIZE - 1;
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const i = y * GRID_SIZE + x;
+      data[i * 4] = data[i * 4 + 1] = data[i * 4 + 2] = data[i * 4 + 3] = 0;
+      if (elevationGrid[i] > SEA_LEVEL) data[i * 4 + typeGrid[i]] = 255;
+    }
   }
   texture.needsUpdate = true;
+}
+
+// Same one-hot weights as buildTypeWeights, updated in place for a region.
+function updateTypeWeights(weights, elevationGrid, typeGrid, region) {
+  for (let y = Math.max(0, region.minY); y <= Math.min(GRID_SIZE - 1, region.maxY); y++) {
+    for (let x = Math.max(0, region.minX); x <= Math.min(GRID_SIZE - 1, region.maxX); x++) {
+      const i = y * GRID_SIZE + x;
+      for (let t = 0; t < weights.length; t++) weights[t][i] = 0;
+      if (elevationGrid[i] > SEA_LEVEL) weights[typeGrid[i]][i] = 1;
+    }
+  }
 }
 
 // --- Trees --------------------------------------------------------------
@@ -736,7 +756,7 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
       treeRegion.maxX = Math.max(treeRegion.maxX, region.maxX);
       treeRegion.maxY = Math.max(treeRegion.maxY, region.maxY);
     }
-    if (!treeTimer) treeTimer = setTimeout(flushTrees, TREE_REBUILD_MS);
+    if (!treeTimer && !strokeActive) treeTimer = setTimeout(flushTrees, TREE_REBUILD_MS);
   }
   let coastTimer = null;
   let lastCoastAt = 0;
@@ -755,6 +775,23 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
   }
 
   let lastCoastRegion = null;
+  // While the user is mid-stroke, the two expensive derived updates (coast
+  // distance field ~50ms, tree re-placement up to ~100ms) are held back and
+  // run once on pointerup: firing them mid-stroke on a throttle is what made
+  // painting hitch. The terrain itself (height, surface, materials) still
+  // updates every frame, so the stroke is never visually behind the cursor;
+  // only foam/ripples and trees catch up when the stroke ends.
+  let strokeActive = false;
+  let coastPending = false;
+  function setStrokeActive(active) {
+    strokeActive = active;
+    if (active) return;
+    if (coastPending) {
+      coastPending = false;
+      scheduleCoast(null);
+    }
+    if (treeRegion && !treeTimer) treeTimer = setTimeout(flushTrees, 0);
+  }
   function scheduleCoast(region) {
     if (region && lastCoastRegion !== "all") {
       lastCoastRegion = lastCoastRegion
@@ -768,6 +805,11 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     } else lastCoastRegion = "all";
     if (coastTimer) return;
     const wait = Math.max(0, COAST_RECOMPUTE_MS - (performance.now() - lastCoastAt));
+    if (strokeActive) {
+      coastTimer = null;
+      coastPending = true;
+      return;
+    }
     coastTimer = setTimeout(recomputeCoast, wait);
   }
 
@@ -979,8 +1021,12 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
       invalidateShadows();
     }
     if (elevationChanged || typeChanged) {
-      fillTypeTexture(typeTexture, currentElevationGrid, currentTypeGrid);
-      typeWeights = buildTypeWeights(currentElevationGrid, currentTypeGrid);
+      // +1: a cell crossing sea level changes its own type weight only, but
+      // pad anyway so the region is never off by one at a brush edge.
+      const r = region && { minX: region.minX - 1, minY: region.minY - 1, maxX: region.maxX + 1, maxY: region.maxY + 1 };
+      fillTypeTexture(typeTexture, currentElevationGrid, currentTypeGrid, r);
+      if (r) updateTypeWeights(typeWeights, currentElevationGrid, currentTypeGrid, r);
+      else typeWeights = buildTypeWeights(currentElevationGrid, currentTypeGrid);
       scheduleTrees(region);
     }
     if (elevationChanged) scheduleCoast(region);
@@ -1013,6 +1059,7 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     // Kept for callers of the old two-call API.
     updateHeight: (g) => update(g, currentTypeGridRef, { typeChanged: false }),
     updateType: (g, t) => update(g, t, { elevationChanged: false }),
+    setStrokeActive,
     pick,
     setAspect,
     dispose,

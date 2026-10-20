@@ -1462,6 +1462,64 @@ just run - `research/roadmap/screenshots/terrain-overhaul/v*-*.png`:
 - The CPU fallback renderer only shares the palette, not the new material
   model.
 
+### Release audit before merging to main (2026-10-20)
+
+User-reported, both fixed:
+
+- **Lag while painting.** Each paint frame rebuilt the whole type-weight
+  texture, the coast distance field and every tree instance. Fixed by
+  updating type weights only inside the dirty region, and deferring the
+  coast SDF and tree rebuild to stroke end (`setStrokeActive` in
+  `terrain-renderer-3d.js`). Elevation and type edits now each trigger only
+  their own work.
+- **Navigation controls missing in Top-down.** The camera panel was being
+  hidden outright. It now always shows. Compass, direction presets and tilt
+  are hidden only in Top-down, where they don't apply. Zoom, the pan pad and
+  Reset stay visible in both views.
+
+Production-data compatibility. The live map was painted with the old tools
+(plains around 0.35, Mountain 0.6, Peak 0.95). Rendered from a read-only
+copy, those plains came out as rocky, snowy foothills with coastal cliffs. The
+fix recalibrated the renderer only: mountain band 0.42-0.85, lowland heights
+compressed, beaches gated on displayed height. Stored data is untouched.
+Before/after screenshots: `prodcopy-v2-*.png`. Side effect: the local demo
+seed's ranges now read as low hills (`seed-v2-*.png`). The seed should be
+re-tuned to the new band. That's a follow-up, since only the live map ships.
+
+Independent code audit (server, client, deploy). Fixed:
+
+- Activity entries (API and SSE) carried raw session ids. The session cookie
+  is the only credential behind undo and mark-delete ownership, so anyone
+  could impersonate anyone. Ids were removed from client-facing entries; they
+  remain in the DB and server stdout.
+- Session cookies now must be UUID-shaped, so arbitrary strings can't grow
+  the per-session undo map. A malformed `%` escape no longer 500s the request.
+- Request bodies are capped at 4MB, and batches at one grid's worth of cells.
+  `cellsSummary` no longer spreads a huge array into `Math.min`, which could
+  throw after the write had already applied.
+- Client: a lost `pointerup` (alt-tab mid-drag) could leave a stroke active
+  forever, which painted on hover and deferred coast/tree rebuilds. Fixed by
+  ending the stroke on `lostpointercapture` and when `buttons === 0`.
+- An SSE reconnect reloads the snapshot. It now re-applies pending local
+  edits, so they no longer snap back.
+- `.dockerignore` now excludes `research/`, `.localdata/` and `*.db`.
+
+Audit items left open (low severity for a class-sized deployment):
+
+- No per-session rate limit and no SSE connection cap or backpressure.
+- No CSP or security headers. Runs as root in the container. No SIGTERM
+  handler; SQLite's journal makes a SIGKILL safe.
+- Tree instances are capped at 24k per model, so a very densely forested map
+  loses trees in its last chunks.
+
+Verified: `pnpm check` (typecheck plus 23/23 tests against a fresh scratch
+server) and `pnpm check:evidence`. A two-session HTTP run confirmed paint, SSE
+fan-out to the other session, cross-session undo refused (409), own undo
+restored, and both activity entries logged. Also probed: a forged cookie gets
+a fresh id, an oversized body is cut off, an over-cap batch gets 400, a
+60k-cell batch is accepted, and a static path-traversal attempt gets 404.
+`/`, `/world/`, `/readme/`, `/credits/` and `/logs/` all return 200.
+
 ## 5. Top-down fantasy-map art quality
 
 **Status:** 🔍 Assessed - superseded by "Terrain & visual overhaul"

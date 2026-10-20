@@ -308,6 +308,19 @@ body {
   display: none;
 }
 
+/* Top-down is zoomable and pannable too, so the panel stays visible there;
+   only the compass and tilt (meaningless looking straight down) hide. */
+.camera-float .oblique-only {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+}
+.camera-float.top-mode .oblique-only {
+  display: none;
+}
+
 .camera-float h4 {
   margin: 0;
   align-self: flex-start;
@@ -448,5 +461,29 @@ body {
     grid-row: 4;
     border-left: none;
     border-top: 1px solid #2a333b;
+  }
+
+  .canvas-area {
+    flex-direction: column;
+  }
+
+  /* On a phone the floating panel would cover much of the map: make it a
+     compact strip under the canvas instead of an overlay. */
+  .camera-float {
+    position: static;
+    width: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    margin: 0.5rem;
+  }
+  .camera-float .oblique-only {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+    width: auto;
+  }
+  .camera-float .pan-trackpad {
+    width: 96px;
   }
 }

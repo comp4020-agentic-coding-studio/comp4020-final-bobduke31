@@ -160,6 +160,10 @@ function smoothstep(t) {
 // is deferred and coalesced here. ---
 let renderScheduled = false;
 let dirty = null; // {minX, minY, maxX, maxY} - the union of cells touched since the last paint
+// What kind of data changed since the last paint, so a terrain-type stroke
+// doesn't rebake the surface or recompute the coastline (both elevation-only).
+let dirtyElevation = false;
+let dirtyType = false;
 
 function markDirty(x, y) {
   if (!dirty) {
@@ -178,7 +182,10 @@ function markDirty(x, y) {
 // a sub-rectangle, the same "small enough that simple is fine" call
 // terrain-renderer.js already makes for its own coastline recompute.
 function render3D(region) {
-  scene3d.update(elevationGrid, typeGrid, { region });
+  const elevationChanged = !region || dirtyElevation;
+  const typeChanged = !region || dirtyType || dirtyElevation;
+  dirtyElevation = dirtyType = false;
+  scene3d.update(elevationGrid, typeGrid, { region, elevationChanged, typeChanged });
   scene3d.render();
 }
 
@@ -225,10 +232,12 @@ function redrawAll() {
 }
 
 function queueElevation(x, y, elevation) {
+  dirtyElevation = true;
   pendingElevation.set(`${x},${y}`, { x, y, elevation });
 }
 
 function queueType(x, y, terrain) {
+  dirtyType = true;
   pendingTypes.set(`${x},${y}`, { x, y, terrain });
 }
 
@@ -639,6 +648,7 @@ function isOffTerrain(pos) {
 
 function handlePointerDown(event) {
   painting = true;
+  scene3d?.setStrokeActive(true);
   event.currentTarget.setPointerCapture(event.pointerId);
   const pos = canvasToGrid(event);
   // lastStampPos is fractional (the exact point stampAlong last walked to),
@@ -649,6 +659,9 @@ function handlePointerDown(event) {
 
 function handlePointerMove(event) {
   if (!painting) return;
+  // A pointerup lost to alt-tab or a system dialog: end the stroke instead
+  // of painting on hover and leaving coast/tree rebuilds deferred forever.
+  if (event.buttons === 0) return stopPainting();
   const pos = canvasToGrid(event);
   if (isOffTerrain(pos)) return;
   if (lastStampPos) lastStampPos = stampAlong(lastStampPos.x, lastStampPos.y, pos.x, pos.y);
@@ -661,6 +674,7 @@ function handlePointerMove(event) {
 function stopPainting() {
   if (!painting) return;
   painting = false;
+  scene3d?.setStrokeActive(false);
   lastStampPos = null;
   flush();
 }
@@ -674,6 +688,7 @@ for (const el of [canvas, canvas3d]) {
   el.addEventListener("pointermove", handlePointerMove);
   el.addEventListener("pointerup", stopPainting);
   el.addEventListener("pointercancel", stopPainting);
+  el.addEventListener("lostpointercapture", stopPainting);
   el.addEventListener("contextmenu", (event) => event.preventDefault());
 }
 
@@ -792,8 +807,9 @@ function wireViewToggle() {
       // Oblique, but wheel zoom/pan works in both.
       if (scene3d) {
         scene3d.setMode(viewMode);
-        cameraToolbar.classList.toggle("hidden", viewMode !== "oblique");
-        cameraHint.classList.toggle("hidden", viewMode !== "oblique");
+        // Zoom, pan and reset apply to both views (Top-down is zoomable
+        // too); only the compass and tilt are Oblique-specific.
+        cameraToolbar.classList.toggle("top-mode", viewMode === "top");
         syncCameraUI();
         scene3d.render();
         return;
@@ -866,7 +882,12 @@ function wireViewToggle() {
 let syncCameraUI = () => {};
 
 function wireCameraControls() {
-  if (!scene3d) return; // no WebGL2 - this toolbar never leaves "hidden"
+  if (!scene3d) {
+    // No WebGL2: nothing drives these controls, so don't show them.
+    document.getElementById("camera-toolbar").classList.add("hidden");
+    document.getElementById("camera-hint").classList.add("hidden");
+    return;
+  }
 
   function renderOnce() {
     scene3d.render();
@@ -1045,6 +1066,7 @@ function wireCameraControls() {
     tiltInput.value = String(scene3d.getCameraState().tiltDeg);
   };
   syncCompass();
+  document.getElementById("camera-toolbar").classList.toggle("top-mode", viewMode === "top");
 
   // Middle- or right-button drag pans in either view (left drag paints).
   // Kept on the canvas because Top-down has no camera panel at all, and a
@@ -1080,6 +1102,11 @@ async function loadTerrain() {
   ]);
   setElevationFromList(elevationGrid, await elevationRes.json());
   setTypesFromList(typeGrid, await typesRes.json());
+  // The snapshot can predate local edits still waiting to flush (e.g. an
+  // SSE reconnect mid-stroke) - re-apply them so they don't snap back.
+  applyElevationCells(elevationGrid, [...pendingElevation.values()]);
+  applyTypeCells(typeGrid, [...pendingTypes.values()]);
+  dirtyElevation = dirtyType = true;
   // The 3D scene auto-fit once already at construction time, against the
   // locally-created blank starting grid (before this real data arrived) -
   // redone here so the first Oblique view is framed for the actual loaded
@@ -1113,6 +1140,7 @@ function connectEvents() {
     const { cells } = JSON.parse(event.data);
     const toApply = withoutPendingOverrides(cells, pendingElevation);
     applyElevationCells(elevationGrid, toApply);
+    if (toApply.length) dirtyElevation = true;
     for (const { x, y } of toApply) markDirty(x, y);
     scheduleRender();
   });
@@ -1120,6 +1148,7 @@ function connectEvents() {
     const { cells } = JSON.parse(event.data);
     const toApply = withoutPendingOverrides(cells, pendingTypes);
     applyTypeCells(typeGrid, toApply);
+    if (toApply.length) dirtyType = true;
     for (const { x, y } of toApply) markDirty(x, y);
     scheduleRender();
   });
@@ -1127,6 +1156,7 @@ function connectEvents() {
     const { cells } = JSON.parse(event.data);
     const toApply = withoutPendingOverrides(cells, pendingTypes);
     clearTypeCells(typeGrid, toApply);
+    if (toApply.length) dirtyType = true;
     for (const { x, y } of toApply) markDirty(x, y);
     scheduleRender();
   });

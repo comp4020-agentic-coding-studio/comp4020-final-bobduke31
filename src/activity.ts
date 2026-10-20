@@ -28,9 +28,12 @@ export const ACTIONS = [
 ] as const;
 export type ActivityAction = (typeof ACTIONS)[number];
 
+// Deliberately no session id: entries go to every visitor (GET
+// /api/activity and the SSE feed), and the session cookie is the only
+// credential behind undo / mark-delete ownership. The raw id stays in the
+// DB and the server's stdout log for operators.
 export interface ActivityEntry {
   id: number;
-  sessionId: string;
   displayName: string;
   action: ActivityAction;
   detail: string;
@@ -57,7 +60,6 @@ interface ActivityRow {
 
 const rowToEntry = (row: ActivityRow): ActivityEntry => ({
   id: row.id,
-  sessionId: row.session_id,
   displayName: displayNameFor(row.session_id),
   action: row.action as ActivityAction,
   detail: row.detail,
