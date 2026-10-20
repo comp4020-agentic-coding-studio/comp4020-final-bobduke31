@@ -46,6 +46,21 @@ the browser with no build step, no attribution required by either licence.
 | [simplex-noise](https://github.com/jwagner/simplex-noise.js) by Jonas Wagner | 4.0.3 | MIT | deterministic ridged-noise mountain folds in the terrain shading (see `terrain-renderer.js`) |
 | [three.js](https://github.com/mrdoob/three.js) | r169 (`three.module.js`) | MIT | the WebGL2 heightfield mesh renderer behind the Oblique view (see `terrain-renderer-3d.js`); vendored unminified (current three.js releases ship no minified build) |
 
+### Ported code and published techniques (terrain & visual overhaul)
+
+Adopted on `final-redesign-prototype` for the shared terrain pipeline in
+`public/world/terrain-fields.js` / `terrain-renderer-3d.js`. Searched for
+first per `CLAUDE.md`; each is a proven, published technique rather than a
+hand-rolled approximation:
+
+| Source | Licence | Used for |
+| --- | --- | --- |
+| [webgl-noise](https://github.com/ashima/webgl-noise) 2D simplex noise, Ian McEwan & Stefan Gustavson (Ashima Arts) | MIT | ported line-for-line to JS *and* kept as GLSL, so the CPU (tree placement) and GPU (material boundaries) evaluate bit-compatible noise - a permutation-table library like simplex-noise.js can't be run in a shader |
+| Sigg & Hadwiger, "Fast Third-Order Texture Filtering", *GPU Gems 2* ch. 20 | technique | C2-smooth cubic B-spline reconstruction of the 256x256 grids from 4 bilinear taps - the fix for polygonal coastlines and cell-shaped material edges |
+| Mishkinis, ["Advanced Terrain Texture Splatting"](https://gamedev.net/tutorials/programming/graphics/advanced-terrain-texture-splatting-r3287) (2013) - same idea as Unreal's Layer Blend height mode / Terrain3D | technique | height-based material blending: clumpy forest edges and rock outcrops instead of a soft colour fade |
+| Felzenszwalb & Huttenlocher, "Distance Transforms of Sampled Functions" (2012) | technique | exact Euclidean coast distance field (seeded with sub-pixel crossings), driving shallow water, ripple lines and beaches |
+| Musgrave ridged multifractal, as used by Red Blob Games' [mapgen4](https://github.com/redblobgames/mapgen4) "mountain folds" (Apache-2.0; technique only, no code copied) | technique | render-time ridgelines synthesised from painted elevation, so a brush stroke becomes a range rather than a dome |
+
 ### Considered and not used, for the 3D renderer
 
 - **[THREE.Terrain](https://github.com/IceCreamYou/THREE.Terrain)** (npm

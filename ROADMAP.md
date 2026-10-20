@@ -4,7 +4,7 @@ A persistent, ordered list of the remaining work toward the Final project's
 visual and functional bar (Inkarnate/Wonderdraft-style cartography, per
 `CLAUDE.md`), tracked here so status, chosen approaches, and open problems
 survive across sessions instead of living only in chat history. Work happens
-on a local development branch (currently `c10-3d-terrain`); nothing here
+on a local development branch (currently `final-redesign-prototype`); nothing here
 touches the deployed C9 release or production data unless a task explicitly
 says so and is approved first.
 
@@ -1277,9 +1277,197 @@ incorrectly between terrain types or across coastlines.
   neither adds temporal/motion anti-aliasing or supersampling beyond the
   2x device-pixel cap, which remains the practical ceiling on a 3x+ display.
 
+## Terrain & visual overhaul (2026-10-20) - supersedes the approach planned in tasks 5-8
+
+**Status:** 🔨 Prototyped on `final-redesign-prototype` (not merged, not
+deployed). Integrated, editable, verified in a real browser - awaiting the
+user's own hands-on judgement before tasks 5-8 are closed against it.
+
+The user's hands-on review named four problems: polygonal/stepped
+coastlines with unnatural beaches; mountains as separate circular stamps in
+Top-down and needle peaks in Oblique; rectangular, repetitive forests with
+poor transitions; and no shared art style between the two views - with an
+explicit instruction not to treat them as unrelated small fixes or hide
+them under more noise.
+
+### Root causes (verified in code and screenshots, separated by layer)
+
+Baseline screenshots: `research/roadmap/screenshots/terrain-overhaul/before-*.png`.
+
+| Symptom | Test-map data | Generation / brush | Rendering |
+| --- | --- | --- | --- |
+| Polygonal, stepped coast; green fringe past the beach | beach was a hard elevation clamp + a per-row `y > cy-10` sand rule, with land continuing past it | - | elevation read *bilinearly* (C0): every contour is straight segments kinking at cell edges; grass texture swapped on `floor(gx)` = cell-shaped blocks |
+| Circular mountain stamps / needle peaks | range was `max()` of six radial bumps - literal circles | Mountain/Peak converged a disc to one fixed target (plateau + rim) and stamped `rock` on the whole disc | 3D ridge noise only on high ground, at `HEIGHT_SCALE` 46, so summits became isolated spikes |
+| Rectangular, repetitive forest | hardcoded `x>150&&x<220&&y>90&&y<160` box | - | trees at a flat 22% per forest cell, 2 models, one tint, clipped to painted cells |
+| Two art styles | - | - | **two separate renderers**: CPU canvas hillshade (own palette, own noise, NW light, no cast shadows) vs. GPU shader (different palette, different noise, a light from a different direction, ground received no shadows) - they could never match by tuning |
+
+The last row is the structural one: as long as Top-down and Oblique were
+two implementations, "consistent style" meant keeping two codebases in
+visual agreement forever.
+
+### Approaches compared
+
+| | A. Patch both renderers (texture/noise per complaint) | B. Unify on the GPU renderer + shared derived-field model | C. Pre-render painted tiles (Inkarnate-style raster stamps) |
+| --- | --- | --- | --- |
+| Summary | Keep both renderers; add smoothing, textures and noise to each, per symptom | One Three.js pipeline draws both views (Top-down = the same scene from an overhead orthographic camera); a shared module derives smooth surface, ridges, material boundaries and coast distance from the grids, in JS *and* an identical GLSL twin | Composite authored raster stamps (mountain/tree sprites) on a 2D canvas, Wonderdraft-style |
+| Fixes the structural style split | 2 (two codebases still drift) | 10 | 6 (2D only; Oblique would need its own) |
+| Fixes data-shape causes (circles, boxes) | 3 (hides them) | 9 (fixed at source: seed + brush) | 5 |
+| Stays fully editable / real-time synced | 9 | 9 | 6 (stamp placement per edit) |
+| Reuses proven techniques | 5 | 9 (see CREDITS.md "Ported code and published techniques") | 7 |
+| Implementation cost (10 = cheap) | 7 | 5 | 3 (needs an art pipeline that doesn't exist yet) |
+
+**Chosen: B.** It is the only option that removes the style split instead
+of managing it, and it fixes the data/brush causes at their source rather
+than disguising them - which is exactly what the user ruled out.
+
+### Implementation
+
+- **`public/world/terrain-fields.js` (new) - one definition of every
+  derived field**, mirrored line-for-line in GLSL:
+  - C2 cubic B-spline reconstruction of the 256x256 grids (GPU: 4 bilinear
+    taps, Sigg & Hadwiger) - smooth coastlines and material edges at any zoom
+    with no extra stored data.
+  - Display height = painted elevation + mapgen4-style render-time relief:
+    gentle hill noise on lowland, a domain-warped, weighted ridged
+    multifractal on high ground. A brush stroke becomes a branching range.
+    **Baked** into a 512^2 float surface texture on the CPU (full ~70ms on
+    load, ~1ms per brush-sized region on edit, measured), which the vertex
+    shader, picking and tree placement all read - so geometry, picking and
+    tree heights are identical by construction.
+  - Material boundaries: per-type weight channels, B-spline sampled at a
+    domain-warped position, then height-based blending (Mishkinis 2013)
+    with per-material procedural heights - clumpy forest edges and rock
+    outcrops instead of cell blocks or a soft fade.
+  - Coast signed distance field (exact EDT, Felzenszwalb & Huttenlocher,
+    seeded with sub-pixel crossings so it has no staircase), 512^2, ~35-50ms,
+    throttled during strokes.
+- **`terrain-renderer-3d.js` - draws both views.** Ground is Three's own
+  `MeshLambertMaterial` patched via `onBeforeCompile` (so it receives real
+  shadows - the old `ShaderMaterial` never did), one warm painted palette
+  picked against `reference-painted-mountains-clouds.png`, automatic rock on
+  steep/high ground and beaches by coast distance (so materials follow the
+  land's shape, not the brush's), snow line, ink coastline, foam, and broken
+  Wonderdraft-style ripple strokes. Water is drawn by the ground shader
+  (seabed flattened to sea level), removing the separate transparent plane
+  and its coastal cliff/z-fighting. Trees: KayKit meshes placed
+  deterministically (hash-seeded) by the *rendered* forest weight, with
+  clump/glade noise, treeline, beach exclusion, conifers uphill, per-tree
+  tint and scale, lone copses on grassland; re-placed per 16x16 chunk.
+  Two independent camera states (Top-down / Oblique) so switching never
+  loses either view's zoom/pan/rotation; wheel zoom and right/middle-drag
+  pan now work in Top-down too.
+- **Brush (`world-client.js`)**: Mountain/Peak are now an additive uplift
+  toward a ceiling with a world-anchored, noise-perturbed footprint (never
+  beyond the brush circle), and no longer stamp rock. Create Land targets
+  low coastal ground (0.06, was 0.35 - which, under the new renderer, turned
+  every new strip of land into a rocky dome; found by painting it for real).
+- **Seed scene (`scripts/seed-test-scene.ts`)**: rewritten as a believable
+  region - fractal coast with a bay, headland, cape and an irregular island;
+  one connected spine range with a spur; foothill and coastal forests from
+  noise, not boxes; rock/snow/beach left to the renderer.
+- **Fallback**: `terrain-renderer.js` (canvas) now runs only without
+  WebGL2, with its palette aligned to the GPU one.
+
+### Performance - measured, and fixed where it was real
+
+A first painting test in headless Chromium hung. Profiling (CDP CPU
+profile, then bisecting shader features by request interception) showed:
+JS ~0.5s total; the rest was SwiftShader (software GL) compiling/running
+the shaders - fragment colour ~19s, trees under shadow ~15s, shadows ~5s.
+Much of that is the test environment (no GPU in WSL headless), but the
+underlying shader was genuinely over-heavy, so it was reduced at the source:
+each material's colour computed at most once and only where its weight is
+non-zero; colour-variation noise from a generated tileable noise texture (1
+tap) instead of procedural simplex (~30 ALU ops/call) - positional noise
+that the CPU must match stays procedural; the per-vertex fBm replaced by the
+baked surface; the shadow map re-rendered only on terrain/tree changes, not
+camera moves; tree re-placement taken out of paint frames onto a 120ms
+trailing throttle with cheap rejection before the costly material sample.
+Result in the same software-GL harness: fragment cost ~19s -> ~3s over a
+flat colour; camera/paint frames ~14/19ms once loaded. Not yet measured on
+real GPU hardware - the user's own run is the real check.
+
+### Verification (real browser, Playwright + SwiftShader WebGL2, 1600x1000)
+
+Iterated v1 -> v7 against the reference images, each round looked at, not
+just run - `research/roadmap/screenshots/terrain-overhaul/v*-*.png`:
+
+- v1: unified views confirmed, but too much land, a thin "T" wall of a
+  range, foothill forest on the wrong (north) side - an offset sign error -
+  rigid three-ring ripples ("target" look), rock strata keyed to height that
+  drew topographic contour rings round every summit. All fixed.
+- v2-v4: massif widened with foothills both sides; forests darker and
+  varied (floor colour, tints, conifers uphill); ripples broken into
+  hand-drawn strokes; organic island. `v4-oblique-lowangle`: the range reads
+  as one skyline with saddles, no isolated spikes.
+- v5: a real painting session's strokes (Mountain across open plain, Peak,
+  Forest, Create Land) - the Mountain stroke produced a ragged ridge with
+  rock following its slopes, **not** a circle. It also exposed the Create
+  Land pillar-island bug above.
+- v6: after the Create Land fix, a new strip of land is a low sandbar that
+  sits at sea level in both views; at high zoom the coastline is a smooth
+  curve with ink line, foam and ripples - no steps, no polygon facets.
+  Picking in Oblique after wheel-zoom landed on the right spot.
+- **Picking bug found in diff review, fixed and verified numerically**:
+  `canvasToGrid` only used the 3D ray-march in Oblique; with Top-down now
+  being the same zoomable scene, Top-down strokes were computed as
+  `px / PIXEL_SCALE` - correct only at zoom 1 with no pan. Fixed to pick
+  through the scene in both views. Verified by intercepting the POSTed cell
+  batch for a 1-cell Raise click (`.localdata/pickcheck.mjs`): zoom 1 ->
+  (76.0, 76.0) vs expected (76.5, 76.5); after cursor-centred wheel zoom x2
+  -> (140.0, 44.0) vs (140.3, 44.6); after a right-drag pan -> (153.0, 44.0)
+  vs (153.0, 44.6). All within one cell.
+- Behaviour change to note: right/middle-drag on the map now pans (both
+  views) instead of painting; left-drag still paints.
+- v8 (final code, real strokes): two passes of the Mountain brush across
+  open plain gave an irregular ridge with rock on its slopes and a cast
+  shadow, plus an organic Forest stand - `v8-plain-before/after.png`,
+  `v8-oblique-after.png`.
+- **Server-side functional checks** (`.localdata/func.mjs`, two clients with
+  separate session cookies, scratch DB): painting elevation and type
+  persists (204); client B receives `terrain:update`,
+  `terrain-type:update` and `activity:new` over SSE; B's undo of A's
+  stroke is refused (409); A's undo restores elevation 0.500 -> 0.507 and
+  type forest -> grassland; the activity log records paint and undo.
+- `pnpm check` (typecheck + 23 tests) passes. (One run showed 9 failures -
+  traced to a stale scratch server from an earlier run still bound to the
+  test port with its DB file deleted; rerun on a clean server: 23/23.)
+- **Not completed under software rendering, by decision**: long multi-step
+  Playwright painting sessions. In headless WSL Chromium (SwiftShader, no
+  GPU) each stroke took 1-2 minutes, so the full scripted session (wheel-
+  zoom + 1-cell brush + Oblique stroke + undo in-browser) was stopped rather
+  than retried. Covered instead by the numeric picking check, the v5/v6/v8
+  real-stroke screenshots, the HTTP checks above, and the user's own manual
+  testing at `localhost:8802`.
+
+### Remaining limitations (not hidden)
+
+- Freshly painted *narrow* mountains (a ~9-cell brush) get needle-like
+  summits in a close Oblique view (`v8-oblique-after.png`): the ridge noise
+  amplitude is tuned for broad massifs. Needs the amplitude to scale with
+  local ridge width, not just height.
+
+- Not yet measured on real GPU hardware; SwiftShader numbers are a
+  pessimistic proxy. First load still compiles a substantial shader.
+- The 512^2 surface texture is re-uploaded in full per paint frame (~1MB;
+  Three r169 has no sub-rect DataTexture upload) - fine on a GPU, a known
+  cost.
+- Material warp/height noise is evaluated in both JS (float64) and GLSL
+  (float32); they agree to well under a cell, but a tree can occasionally
+  sit a hair outside the drawn forest edge.
+- Forest uses only two KayKit models; variety comes from tint, scale and
+  stands. More models from the same CC0 pack would help.
+- Rivers/lakes, roads and settlements are still task 9/12 - the reference
+  maps have them and this map doesn't yet.
+- The CPU fallback renderer only shares the palette, not the new material
+  model.
+
 ## 5. Top-down fantasy-map art quality
 
-**Status:** 🔍 Assessed - comparison written, awaiting approval to implement.
+**Status:** 🔍 Assessed - superseded by "Terrain & visual overhaul"
+above, which fixes findings 1-4 at the data/brush/renderer level instead of
+the texture-only approach compared below. Kept for the history of the
+investigation.
 
 The user's own framing of this task named four complaints: isolated
 circular mountains, severe dark streaks toward the coast, rectangular

@@ -1,3 +1,9 @@
+// FALLBACK ONLY (ROADMAP.md, "Terrain & visual overhaul"): with WebGL2,
+// both Top-down and Oblique are drawn by terrain-renderer-3d.js, so the two
+// views are one art style. This canvas renderer now runs only on browsers
+// without WebGL2; its palette is kept in step with the GPU one below so a
+// fallback map still reads as the same product.
+//
 // Contract: grids in, pixels out - nothing else in this app knows how an
 // elevation and a terrain type become a colour. The coastline is a genuine
 // vector contour (d3-contour, vendored in vendor/, ISC licence) extracted
@@ -63,22 +69,22 @@ function sampleGrassTexture(gx, gy) {
 const COASTLINE_COLOR = "#3c2f20";
 const COASTLINE_HIGHLIGHT = "#e9dfc4";
 
-const SEA_DEEP = [18, 38, 66];
-const SEA_SHALLOW = [66, 120, 158];
+const SEA_DEEP = [28, 92, 134];
+const SEA_SHALLOW = [110, 195, 198];
 
 const TYPE_COLORS = {
-  grassland: [107, 142, 68],
-  sand: [222, 201, 148],
-  forest: [45, 86, 54],
+  grassland: [130, 166, 71],
+  sand: [226, 206, 156],
+  forest: [42, 74, 33],
 };
 
 // Rock isn't one flat colour: bare rock lightens with height, and the
 // highest ground is snow - the same altitude-tinting real relief maps use,
 // so a peak reads as a peak (bright cap, darker base) even before
 // hillshading is added on top.
-const ROCK_BARE = [118, 109, 98];
-const ROCK_HIGH = [168, 160, 150];
-const SNOW = [240, 242, 246];
+const ROCK_BARE = [133, 116, 98];
+const ROCK_HIGH = [184, 164, 138];
+const SNOW = [243, 241, 234];
 
 function lerp(a, b, t) {
   return a + (b - a) * t;
