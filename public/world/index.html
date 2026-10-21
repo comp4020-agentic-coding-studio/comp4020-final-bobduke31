@@ -123,9 +123,10 @@
         <section class="options-section" data-panel="land">
           <h3>Shape the land</h3>
           <div class="btn-grid">
-            <button type="button" data-tool="raise" class="active" title="Raises existing land. Has no effect on the sea.">Raise</button>
-            <button type="button" data-tool="lower" title="Lowers existing land, but stops short of the sea.">Lower</button>
-            <button type="button" data-tool="smooth" title="Softens bumpy land by averaging it with its neighbours.">Smooth</button>
+            <button type="button" data-tool="raise" class="active" title="Raises existing land. Has no effect on the sea. Hold Shift to lower.">Raise</button>
+            <button type="button" data-tool="lower" title="Lowers existing land, but stops short of the sea. Hold Shift to raise.">Lower</button>
+            <button type="button" data-tool="smooth" title="Softens bumpy land by averaging it with its neighbours. Or hold Alt with any land tool.">Smooth</button>
+            <button type="button" data-tool="level" title="Flattens toward the height where the stroke starts: terraces, plateaus, valley floors.">Level</button>
           </div>
           <h3>Relief</h3>
           <div class="btn-grid">
@@ -159,7 +160,10 @@
 
         <div class="options-footer">
           <label class="slider-label"><span>Brush size <output id="brush-size-out">10</output></span><input id="brush-size" type="range" min="1" max="28" step="1" value="10" /></label>
-          <label class="slider-label"><span>Strength <output id="brush-strength-out">15%</output></span><input id="brush-strength" type="range" min="0.01" max="0.3" step="0.01" value="0.15" /></label>
+          <label class="slider-label"><span>Strength <output id="brush-strength-out">4.0%</output></span><input id="brush-strength" type="range" min="0" max="100" step="1" value="45" aria-describedby="strength-help" /></label>
+          <label class="slider-label" id="hardness-row"><span>Edge <output id="brush-hardness-out">Soft</output></span><input id="brush-hardness" type="range" min="0" max="0.9" step="0.05" value="0" /></label>
+          <label class="slider-label hidden" id="coverage-row"><span>Coverage <output id="brush-coverage-out">Solid</output></span><input id="brush-coverage" type="range" min="0.1" max="1" step="0.05" value="1" /></label>
+          <p class="sr-only" id="strength-help">How far one stroke moves the land, as a share of full mountain height.</p>
         </div>
       </aside>
     </div>
@@ -201,6 +205,30 @@
           <input id="new-map-name" name="name" type="text" maxlength="60" placeholder="The Northern Reaches" required autocomplete="off" />
           <button type="submit" class="primary-button">Create</button>
         </div>
+        <fieldset class="forge">
+          <legend>Begin from</legend>
+          <div class="forge-templates" role="radiogroup" aria-label="Starting terrain">
+            <label><input type="radio" name="forge-template" value="continent" checked /><span>Continent</span></label>
+            <label><input type="radio" name="forge-template" value="coast" /><span>Coast</span></label>
+            <label><input type="radio" name="forge-template" value="archipelago" /><span>Islands</span></label>
+            <label><input type="radio" name="forge-template" value="blank" /><span>Empty sea</span></label>
+          </div>
+          <div class="forge-body" id="forge-body">
+            <canvas id="forge-preview" class="forge-preview" width="192" height="192" role="img" aria-label="Preview of the generated terrain"></canvas>
+            <div class="forge-controls">
+              <label class="slider-label"><span>Land <output id="forge-land-out">Some</output></span><input id="forge-land" type="range" min="0" max="1" step="0.05" value="0.5" /></label>
+              <label class="slider-label"><span>Mountains <output id="forge-mountains-out">Ranges</output></span><input id="forge-mountains" type="range" min="0" max="1" step="0.05" value="0.5" /></label>
+              <label class="slider-label"><span>Forest <output id="forge-forest-out">Woods</output></span><input id="forge-forest" type="range" min="0" max="1" step="0.05" value="0.5" /></label>
+              <div class="forge-seed">
+                <label for="forge-seed">Seed</label>
+                <div class="field-row">
+                  <input id="forge-seed" type="text" maxlength="40" autocomplete="off" spellcheck="false" />
+                  <button type="button" id="forge-reroll" class="ghost-button" title="Try another seed">Reroll</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </fieldset>
         <p id="new-map-error" class="form-error hidden" role="alert"></p>
       </form>
       <ul id="my-maps" class="map-list"></ul>

@@ -20,6 +20,7 @@ import { subscribe, broadcast } from "./realtime.ts";
 import { log as logActivity, recentActivity, roomsWithActivityBy } from "./activity.ts";
 import type { ActivityAction } from "./activity.ts";
 import { captureStroke, undoLastStroke } from "./undo.ts";
+import { parseForge, forgeIntoRoom } from "./forge.ts";
 import {
   PUBLIC_ACCESS,
   PUBLIC_ROOM_ID,
@@ -185,6 +186,13 @@ async function handleCreateRoom(req: IncomingMessage, res: ServerResponse, sessi
     sendJson(res, 400, { error: `a map name is 1-${ROOM_NAME_MAX} characters` });
     return;
   }
+  // Optional: start from the Forge instead of an empty sea. Only the seed,
+  // template and sliders are accepted; the server generates the cells.
+  const forge = payload.forge === undefined ? null : parseForge(payload.forge);
+  if (payload.forge !== undefined && !forge) {
+    sendJson(res, 400, { error: "forge needs a seed and one of the templates" });
+    return;
+  }
   if (rateLimited(sessionId)) {
     sendJson(res, 429, { error: "too many maps created just now - try again in a minute" });
     return;
@@ -199,6 +207,10 @@ async function handleCreateRoom(req: IncomingMessage, res: ServerResponse, sessi
     return;
   }
   logActivity(result.access.roomId, sessionId, "room:create", `"${name}"`);
+  if (forge && forge.template !== "blank") {
+    forgeIntoRoom(result.access.roomId, forge);
+    logActivity(result.access.roomId, sessionId, "room:forge", `${forge.template} from seed "${forge.seed}"`);
+  }
   sendJson(res, 201, { name, editToken: result.editToken, viewToken: result.viewToken });
 }
 

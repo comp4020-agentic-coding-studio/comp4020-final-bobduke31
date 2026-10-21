@@ -2176,6 +2176,104 @@ and send-a-copy. Live cursors are cut last.
   the old code starts on a database with `people`, serves identical
   elevation and type data, and still creates maps.
 
+### Step II results (2026-10-22, branch `atlas-forge`, not merged or deployed)
+
+The plan's Forge, plus the user's request from the step I review: "terrain
+height changes can be too abrupt ... finer and more flexible controls for
+elevation, brush strength, terrain smoothing and forest density ... without
+losing the ability to create dramatic mountains."
+
+**The Forge.** "Start a new world" now offers Continent, Coast, Islands
+or Empty sea, sliders for Land, Mountains and Forest, a seed with Reroll,
+and a live preview.
+- `public/world/forge.js` is one pure module, used by the browser for the
+  preview and imported by the server (`src/forge.ts`) on Create. The
+  client sends only the seed, template and sliders. The server regenerates
+  the world, clamps the sliders, and ignores any cells sent with the
+  request (tested).
+- Deterministic: same seed and settings, same world (sfc32 PRNG, tested in
+  Node; the browser preview matched the created map in a real run).
+- Shape problems were fixed at the data layer, judged against
+  `research/roadmap/references/` in the real renderer at each pass
+  (`.localdata/forge/v1`-`v7`):
+  - v1-v2: Azgaar-style front growth banded diagonally on a square grid,
+    and ranges walked out to sea. Replaced with radial, noise-warped hills
+    and ranges placed by distance from the coast.
+  - v4: one central massif and a square halo of shallow water from the edge
+    mask.
+  - v5-v6: farthest-point placement spreads ranges across the land; sea
+    depth now follows distance offshore (a shelf, then deep water).
+  - Two-scale moisture breaks forests into stands; island summits.
+  - Ranges are max-combined and summits soft-capped (tanh above 0.62,
+    asymptote 0.92), so high settings give spines and saddles, not flat
+    white tables, and Mountains 1 still reaches the snow line (v7).
+- Measured at default settings (seed "Saltmere"): continent 30.2% land,
+  5.4% mountain band, 0.2% snow, highest 0.88, steepest land step 0.065,
+  120-210 ms to generate.
+  The steepest step stays under the brush's slope limit for all templates
+  at Mountains 0, 0.5 and 1 (tested).
+- Storage: land plus a 10-cell seabed shelf. Open ocean isn't stored (it
+  already reads as deep sea). Tests' forged maps stored 29,489-43,972 rows
+  (dense would be 65,536). Server-side create took 398 ms for a full-land
+  continent.
+
+**The brushes** (`public/world/brush.js`, wired in `world-client.js`).
+Root causes found by simulating the old brush first:
+- Strength was added on every stamp of a drag, so 15% gave about 0.36 in
+  one pass and depended on drag length and brush size.
+- The slider was linear 1-30%, so the fine end was a couple of notches.
+- The slope relax only acted above 0.15 per cell, steeper than anything
+  the renderer draws well.
+
+What changed:
+- **One stroke, one amount.** A per-stroke, per-cell high-water mark: a
+  stroke moves a cell by at most Strength times falloff, however long you
+  drag. Stroke again to build. Measured in the real editor (Playwright
+  pointer drags, heights read back from the API): one pass at 4% gives
+  +0.035; scrubbing back and forth 8 times in one stroke gives the same
+  +0.035; four strokes give +0.140.
+- **Strength** is perceptual: 0.5% to 50% in 100 equal-ratio steps (`- =`,
+  or Shift for x5). Default 4%.
+- **Edge** (hardness) slider: soft dome to firm-edged terrace.
+- **Level** tool: flattens toward the height under the first dab.
+- **Smooth** uses a 5x5 binomial (near-Gaussian) kernel that doesn't
+  average across the coast. Alt+drag smooths with any land tool.
+- **Shift** inverts the tool for that stroke (Raise/Lower, Deepen/Shallow,
+  Create land/Paint sea).
+- **Mountain and Peak**: each cell's ceiling follows the brush falloff
+  (square-root profile, so the shoulders are broad), and repeated strokes
+  keep a graded cross-section instead of converging on a flat-topped wall
+  (simulated: 3, 6 and 12 strokes give the same profile). Peak's floor is
+  the lowest land under its first dab, so it raises a summit on an existing
+  range. Measured in the real editor (`.localdata/brush/mtn2`): Mountain
+  20%, two strokes, +0.43 (steepest step 0.110); 50%, five strokes, +0.62
+  (0.110, down from 0.160 with the old brush); Peak 50%, two dabs on that
+  range, +0.23 more (was +0.03 before the floor fix).
+- **Coverage** for material brushes: Forest at 40% paints clumps and
+  glades, anchored to world noise so overlapping dabs agree.
+- Slope relax limit 0.15 to 0.10.
+
+**Checks.**
+- `pnpm typecheck` clean. The full spec suite passes against a fresh local
+  server: 67/67, including 13 new in `spec/forge.test.ts` (determinism,
+  bounds, slider response, brush curve and falloff, server ignores client
+  cells, slider clamping, bad requests, empty-sea start).
+- Parity gate: main and this branch on the same seeded scene, five views,
+  **0 differing pixels** in each. The renderer files have no diff from
+  `main`.
+- Forge UI driven in a real browser on desktop and a 390 px phone: no page
+  errors, no horizontal scroll, and the created map matches its preview.
+
+**Known limits.**
+- Each forged map stores about 2.5-4 MB, against about 6 MB dense. At the
+  150-map cap that is up to about 0.6 GB of the 1 GB volume. Fine for this
+  project; a real deployment would want a compact grid blob per room.
+- Relief below the renderer's mountain band (0.42) is drawn compressed
+  into the lowest 0.12, so a moderate brushed range (+0.43) shows only as
+  a faint crease, and a strong one still reads somewhat wall-like at low
+  tilt. Seen in the real renderer; changing it is a renderer question, left
+  alone because renderer files are frozen in this step.
+
 ### Writing track (runs alongside the phases, not only at the end)
 
 Figures from `topics/assessment` and `assessments/final-project`, checked

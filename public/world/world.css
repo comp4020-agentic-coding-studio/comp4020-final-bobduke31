@@ -985,6 +985,104 @@ body.read-only #stage-3d {
   margin-bottom: 0.45rem;
 }
 
+/* The Forge: starting terrain for a new map. */
+.forge {
+  border: 0;
+  margin: 0.9rem 0 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.forge-templates {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.35rem;
+}
+
+.forge-templates label {
+  margin: 0;
+  position: relative;
+}
+
+.forge-templates input {
+  position: absolute;
+  opacity: 0;
+  inset: 0;
+  margin: 0;
+  cursor: pointer;
+}
+
+.forge-templates span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 0.4rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  font-size: 0.86rem;
+  font-weight: 600;
+  text-align: center;
+  color: var(--ink);
+  background: var(--sea);
+}
+
+.forge-templates input:checked + span {
+  background: var(--brass);
+  color: var(--brass-ink);
+  border-color: var(--brass-hi);
+}
+
+.forge-templates input:focus-visible + span {
+  outline: 2px solid var(--brass-hi);
+  outline-offset: 2px;
+}
+
+.forge-body {
+  display: grid;
+  grid-template-columns: 9.5rem minmax(0, 1fr);
+  gap: 1rem;
+  margin-top: 0.8rem;
+  align-items: start;
+}
+
+.forge-preview {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: var(--radius);
+  border: 1px solid var(--rule-strong);
+  image-rendering: auto;
+  background: var(--sea);
+}
+
+.forge-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+.forge-controls .slider-label {
+  margin: 0;
+  font-weight: 400;
+}
+
+.forge-seed label {
+  font-size: 0.86rem;
+  margin-bottom: 0.3rem;
+}
+
+/* Phones: preview beside the sliders, seed full width underneath, so the
+   whole panel fits without scrolling past the preview. */
+@media (max-width: 30rem) {
+  .forge-templates { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .forge-body { grid-template-columns: 6.5rem minmax(0, 1fr); gap: 0.75rem; }
+  .forge-controls { display: contents; }
+  .forge-preview { grid-row: 1 / span 3; }
+  .forge-seed { grid-column: 1 / -1; }
+  .forge-controls .slider-label input[type="range"] { height: 28px; }
+}
+
 .map-list {
   list-style: none;
   margin: 1rem 0 0;
@@ -1255,4 +1353,14 @@ body.read-only #stage-3d {
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
+}
+
+/* Text for screen readers only. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }

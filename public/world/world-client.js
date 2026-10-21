@@ -23,6 +23,7 @@ import {
 } from "./terrain-renderer.js";
 import { createTerrainScene3D, isWebGL2Available, MAX_DEVICE_PIXEL_RATIO } from "./terrain-renderer-3d.js";
 import { snoise } from "./terrain-fields.js";
+import { strengthFromSlider, sliderFromStrength, formatStrength, brushFalloff, softRaise, mountainRaise, coverageAccepts } from "./brush.js";
 import { apiPath, room, loadRoom, loadMe, wireRoomUi, wireRoomEvents, openShareIfRequested, toast } from "./room-ui.js";
 
 const canvasArea = document.getElementById("canvas-area");
@@ -90,6 +91,9 @@ const LAND_FLOOR = SEA_LEVEL + 0.02;
 // instead of the brush's.
 const MOUNTAIN_CEILING = 0.72;
 const PEAK_CEILING = 0.98;
+// Where a Mountain/Peak stroke's flank ceiling bottoms out: lowland height,
+// so a range's outer slopes meet the plains (see brush.js mountainRaise).
+const MOUNTAIN_FLOOR = 0.12;
 
 // Mirrors LAND_FLOOR on the other side of the coastline (Task 1, ROADMAP.md):
 // Deepen/Shallow sculpt existing sea and must never cross into land, the
@@ -139,18 +143,21 @@ let currentTool = "raise";
 // Doubled from the 128-grid default (5) so the brush covers the same
 // physical/screen area now that cells are half the size.
 let brushRadius = 10;
-let brushStrength = 0.15;
+// Strength is how far one stroke can move a cell (see brush.js); 4% is a
+// gentle, controllable default that a few strokes build into hills.
+let brushStrength = 0.04;
+let brushHardness = 0;
+// Share of cells a material brush paints (1 = solid, as before).
+let brushCoverage = 1;
+// A modifier held at stroke start swaps the tool for that stroke only:
+// Shift inverts (raise <-> lower, deepen <-> shallow), Alt smooths.
+let strokeTool = null;
 
 const pendingElevation = new Map();
 const pendingTypes = new Map();
 let flushHandle = null;
 let painting = false;
 let lastStampPos = null;
-
-function smoothstep(t) {
-  const clamped = Math.min(1, Math.max(0, t));
-  return clamped * clamped * (3 - 2 * clamped);
-}
 
 // --- Rendering: batched to one redraw per animation frame, of only the
 // cells that actually changed, instead of the previous "redraw the full
@@ -302,7 +309,7 @@ async function flush() {
 
 // Visits every cell within brushRadius of (cx, cy), with a smooth
 // (smoothstep, not linear) falloff from the centre - a brush stroke reads
-// as a soft bump rather than a sharp cone.
+// as a soft bump rather than a sharp cone. Hardness widens a solid core.
 function forEachBrushCell(cx, cy, apply) {
   const r = brushRadius;
   for (let dy = -r; dy <= r; dy++) {
@@ -312,8 +319,8 @@ function forEachBrushCell(cx, cy, apply) {
       if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) continue;
       const dist = Math.sqrt(dx * dx + dy * dy);
       if (dist > r) continue;
-      const falloff = smoothstep(1 - dist / r);
-      apply(x, y, falloff);
+      const falloff = brushFalloff(dist, r, brushHardness);
+      if (falloff > 0) apply(x, y, falloff);
     }
   }
 }
@@ -335,19 +342,28 @@ function lerpTowards(current, target, t) {
   return current + (target - current) * t;
 }
 
+// Weighted 5x5 average (binomial 1-4-6-4-1, a close Gaussian): wide
+// enough that Smooth evens out a lumpy slope in a few dabs, where the old
+// 3x3 box only shaved single-cell spikes.
+const SMOOTH_KERNEL = [1, 4, 6, 4, 1];
 function neighborAverage(x, y) {
   let sum = 0;
-  let count = 0;
-  for (let dy = -1; dy <= 1; dy++) {
-    for (let dx = -1; dx <= 1; dx++) {
+  let weight = 0;
+  for (let dy = -2; dy <= 2; dy++) {
+    for (let dx = -2; dx <= 2; dx++) {
       const nx = x + dx;
       const ny = y + dy;
       if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) continue;
-      sum += elevationGrid[ny * GRID_SIZE + nx];
-      count++;
+      const h = elevationGrid[ny * GRID_SIZE + nx];
+      // Land smooths against land only, sea against sea: averaging across
+      // the coast would drag beaches underwater and seabed up into it.
+      if ((h > SEA_LEVEL) !== (elevationGrid[y * GRID_SIZE + x] > SEA_LEVEL)) continue;
+      const w = SMOOTH_KERNEL[dx + 2] * SMOOTH_KERNEL[dy + 2];
+      sum += h * w;
+      weight += w;
     }
   }
-  return sum / count;
+  return weight ? sum / weight : elevationGrid[y * GRID_SIZE + x];
 }
 
 // Every elevation tool goes through here, so "becomes sea -> loses its
@@ -415,7 +431,10 @@ function setSeabedElevation(x, y, elevation) {
 // not significantly expand the selected brush radius") rules that out, so
 // RELAX_PADDING stays a small fixed amount rather than scaling with brush
 // size, and the brush's own falloff shape (forEachBrushCell) is untouched.
-const MAX_NATURAL_SLOPE = 0.15; // max "natural" per-adjacent-cell elevation step before this pass acts
+// 0.15 was steeper than any slope the renderer draws well (a generated
+// range's steepest step is under 0.1), so small brushes left visible
+// cliff-steps; 0.1 keeps a sharp ridge sharp but rounds those off.
+const MAX_NATURAL_SLOPE = 0.1; // max "natural" per-adjacent-cell elevation step before this pass acts
 const RELAX_ITERATIONS = 2;
 const RELAX_FACTOR = 0.25; // fraction of the excess difference moved between a pair, per iteration
 const RELAX_PADDING = 1; // cells beyond the brush radius considered, so a stroke's edge can
@@ -476,40 +495,125 @@ function relaxRegion(cx, cy, radius) {
 // painting - terrain-type-only tools (grassland/sand/forest/rock) don't
 // touch elevationGrid at all, so they're excluded rather than running a
 // pass that would always find nothing to do.
-const ELEVATION_TOOLS = new Set(["raise", "lower", "smooth", "mountain", "peak", "land", "sea", "deepen", "shallow"]);
+const ELEVATION_TOOLS = new Set(["raise", "lower", "smooth", "level", "mountain", "peak", "land", "sea", "deepen", "shallow"]);
+
+// --- Strokes ------------------------------------------------------------
+// One stroke (pointer down to up) remembers, per cell, the elevation it
+// started from and the most influence any of its stamps has had there.
+// Raise/Lower/Mountain/Peak/Deepen/Shallow then set the cell from that
+// start value, rather than adding on every stamp - so a stroke moves a cell
+// by at most Strength (x falloff) however long or slowly you drag, and the
+// same gesture gives the same result whatever the brush size or mouse
+// rate. That compounding was the cause of mountains rising too sharply.
+let strokeStart = null; // Map cell index -> elevation before this stroke
+let strokeReach = null; // Map cell index -> max falloff reached this stroke
+let levelTarget = null; // Level: the height under the first dab
+let peakFloor = null; // Peak: the lowest land under the first dab
+
+function beginStroke() {
+  strokeStart = new Map();
+  strokeReach = new Map();
+  levelTarget = null;
+  peakFloor = null;
+}
+
+function endStroke() {
+  strokeStart = strokeReach = levelTarget = peakFloor = null;
+}
+
+// The falloff this stamp adds over what the stroke already applied at this
+// cell, and the cell's elevation from before the stroke; null if this
+// stamp adds nothing new there.
+function strokeAt(index, falloff) {
+  if (!strokeStart) beginStroke();
+  if (!strokeStart.has(index)) strokeStart.set(index, elevationGrid[index]);
+  const prev = strokeReach.get(index) ?? 0;
+  if (falloff <= prev) return null;
+  strokeReach.set(index, falloff);
+  return strokeStart.get(index);
+}
+
+// Strength is a share of the mountain band, so 100% would lift lowland to
+// a summit; the renderer's band is 0.42-0.85 of ELEVATION_MAX.
+const STRENGTH_SCALE = 0.9;
 
 function paintAt(cx, cy) {
-  switch (currentTool) {
+  const tool = strokeTool ?? currentTool;
+  const amount = brushStrength * STRENGTH_SCALE;
+  switch (tool) {
     case "raise":
+    case "lower": {
+      const sign = tool === "raise" ? 1 : -1;
       forEachBrushCell(cx, cy, (x, y, falloff) => {
-        setLandElevation(x, y, elevationGrid[y * GRID_SIZE + x] + brushStrength * falloff);
+        const i = y * GRID_SIZE + x;
+        const start = strokeAt(i, falloff);
+        if (start === null) return;
+        // Raising eases in under the summit cap; lowering eases toward the
+        // coast floor, so neither ever slams into a hard limit.
+        const next = sign > 0 ? softRaise(start, amount * falloff, ELEVATION_MAX) : LAND_FLOOR + (start - LAND_FLOOR) * Math.exp((-amount * falloff) / Math.max(0.05, start - LAND_FLOOR));
+        setLandElevation(x, y, next);
       });
       break;
-    case "lower":
-      forEachBrushCell(cx, cy, (x, y, falloff) => {
-        setLandElevation(x, y, elevationGrid[y * GRID_SIZE + x] - brushStrength * falloff);
-      });
-      break;
+    }
     case "smooth":
+      // Repeated dabs keep working (smoothing toward a moving average can't
+      // overshoot), so this one stays per-stamp; Strength sets how much of
+      // the way each dab goes.
       forEachBrushCell(cx, cy, (x, y, falloff) => {
-        const current = elevationGrid[y * GRID_SIZE + x];
-        setLandElevation(x, y, lerpTowards(current, neighborAverage(x, y), brushStrength * 2 * falloff));
+        const i = y * GRID_SIZE + x;
+        const current = elevationGrid[i];
+        const t = Math.min(1, 1.5 * Math.sqrt(brushStrength) * falloff);
+        const avg = neighborAverage(x, y);
+        if (current > SEA_LEVEL) setLandElevation(x, y, lerpTowards(current, avg, t));
+        else setSeabedElevation(x, y, lerpTowards(current, avg, t));
       });
       break;
+    case "level": {
+      // Flatten toward the height under the first dab (Unreal's Flatten,
+      // Wonderdraft's Level): terraces, plateaus, a flat valley floor.
+      if (levelTarget === null) levelTarget = elevationGrid[cy * GRID_SIZE + cx];
+      const target = levelTarget;
+      forEachBrushCell(cx, cy, (x, y, falloff) => {
+        const i = y * GRID_SIZE + x;
+        const current = elevationGrid[i];
+        const t = Math.min(1, 2 * Math.sqrt(brushStrength) * falloff);
+        if (current > SEA_LEVEL && target > SEA_LEVEL) setLandElevation(x, y, lerpTowards(current, target, t));
+        else if (current <= SEA_LEVEL && target <= SEA_LEVEL) setSeabedElevation(x, y, lerpTowards(current, target, t));
+      });
+      break;
+    }
     case "mountain":
     case "peak": {
-      // Additive uplift that eases off as it nears the ceiling, so repeated
-      // strokes build broad, connected massifs instead of saturating to a
-      // plateau. Peak is the same gesture with a higher ceiling and a
-      // tighter profile (falloff squared), for a dominant summit.
-      const ceiling = currentTool === "peak" ? PEAK_CEILING : MOUNTAIN_CEILING;
+      // A ragged-edged uplift (mountainFalloff) under a ceiling that falls
+      // away from the spine (brush.js mountainRaise), so ranges keep sloping
+      // flanks. Peak is the same gesture, higher and tighter (falloff
+      // squared), for a dominant summit. Like Raise, one stroke lifts a
+      // cell at most once; stroke again to go higher.
+      const ceiling = tool === "peak" ? PEAK_CEILING : MOUNTAIN_CEILING;
+      const lift = amount * (tool === "peak" ? 2.2 : 1.6);
+      // Mountain's flanks bottom out at lowland height. Peak is meant to go
+      // on top of a range, so its flanks bottom out at the lowest ground
+      // under the brush when the stroke began: its cap is then above the
+      // spine at the centre, and still meets the slope at the rim. (With
+      // the lowland floor, a Peak dab on a 0.72 spine had a centre cap
+      // below 0.72 and did nothing.)
+      if (tool === "peak" && peakFloor === null) {
+        peakFloor = ceiling;
+        forEachBrushCell(cx, cy, (x, y) => {
+          const h = elevationGrid[y * GRID_SIZE + x];
+          if (h > SEA_LEVEL) peakFloor = Math.min(peakFloor, h);
+        });
+        peakFloor = Math.max(MOUNTAIN_FLOOR, peakFloor);
+      }
+      const floor = tool === "peak" ? peakFloor : MOUNTAIN_FLOOR;
       forEachBrushCell(cx, cy, (x, y, falloff) => {
-        const current = elevationGrid[y * GRID_SIZE + x];
-        if (current <= SEA_LEVEL) return;
+        const i = y * GRID_SIZE + x;
+        if (elevationGrid[i] <= SEA_LEVEL) return;
         let f = mountainFalloff(x, y, falloff);
-        if (currentTool === "peak") f *= f;
-        const room = Math.max(0, ceiling - current);
-        setLandElevation(x, y, current + room * f * brushStrength * 1.6);
+        if (tool === "peak") f *= f;
+        const start = strokeAt(i, f);
+        if (start === null) return;
+        setLandElevation(x, y, mountainRaise(start, f, lift, ceiling, floor));
       });
       break;
     }
@@ -529,28 +633,34 @@ function paintAt(cx, cy) {
       });
       break;
     case "deepen":
+    case "shallow": {
+      const sign = tool === "deepen" ? -1 : 1;
       forEachBrushCell(cx, cy, (x, y, falloff) => {
-        setSeabedElevation(x, y, elevationGrid[y * GRID_SIZE + x] - brushStrength * falloff);
+        const i = y * GRID_SIZE + x;
+        if (elevationGrid[i] > SEA_LEVEL) return;
+        const start = strokeAt(i, falloff);
+        if (start === null) return;
+        setSeabedElevation(x, y, start + sign * amount * falloff);
       });
       break;
-    case "shallow":
-      forEachBrushCell(cx, cy, (x, y, falloff) => {
-        setSeabedElevation(x, y, elevationGrid[y * GRID_SIZE + x] + brushStrength * falloff);
-      });
-      break;
+    }
     default:
       // One of TERRAIN_TYPES: painting a type only ever touches land - a
       // brush straddling a coastline simply has no effect on its sea half,
       // the same rule the server enforces independently.
-      forEachBrushCell(cx, cy, (x, y) => {
+      // Coverage below 100% paints clumps rather than every cell, so a
+      // Forest stroke can lay down open woodland or scattered stands.
+      forEachBrushCell(cx, cy, (x, y, falloff) => {
         if (!isLand(elevationGrid, x, y)) return;
-        typeGrid[y * GRID_SIZE + x] = TERRAIN_TYPES.indexOf(currentTool);
-        queueType(x, y, currentTool);
+        const n = 0.65 * snoise(x * 0.16 + 41.3, y * 0.16 + 7.9) + 0.35 * snoise(x * 0.45 + 3.1, y * 0.45 + 19.7);
+        if (!coverageAccepts(n, brushCoverage, falloff)) return;
+        typeGrid[y * GRID_SIZE + x] = TERRAIN_TYPES.indexOf(tool);
+        queueType(x, y, tool);
         markDirty(x, y);
       });
       break;
   }
-  if (ELEVATION_TOOLS.has(currentTool)) relaxRegion(cx, cy, brushRadius);
+  if (ELEVATION_TOOLS.has(tool)) relaxRegion(cx, cy, brushRadius);
   scheduleRender();
   scheduleFlush();
 }
@@ -565,7 +675,10 @@ function paintAt(cx, cy) {
 // polling rate. Scales with brush radius (a tiny brush needs tight spacing
 // to paint a continuous line at all) but never below a hard floor.
 function stampSpacing() {
-  return Math.max(0.4, brushRadius * 0.5);
+  // With per-stroke accumulation (see strokeAt) spacing no longer changes
+  // how high a stroke builds, only how evenly it covers, so it can be
+  // tighter than the old 0.5 x radius without making strokes stronger.
+  return Math.max(0.4, brushRadius * 0.3);
 }
 
 // Walks the segment from (x0, y0) - the last cell a stamp actually landed
@@ -653,11 +766,24 @@ function isOffTerrain(pos) {
   return pos.x < 0 || pos.y < 0;
 }
 
+const INVERSE_TOOL = { raise: "lower", lower: "raise", deepen: "shallow", shallow: "deepen", land: "sea", sea: "land" };
+
+// Shift inverts the current tool for this stroke, Alt smooths (the Unreal
+// / World Machine / Gaea convention), so shaping a slope doesn't mean
+// trips back to the tool panel.
+function strokeToolFor(event) {
+  if (event.altKey && ELEVATION_TOOLS.has(currentTool)) return "smooth";
+  if (event.shiftKey && INVERSE_TOOL[currentTool]) return INVERSE_TOOL[currentTool];
+  return null;
+}
+
 function handlePointerDown(event) {
   // View-only: left-drag does nothing (the server would refuse it anyway);
   // pan and zoom are wired separately and still work.
   if (!room.canEdit || event.button !== 0) return;
   painting = true;
+  beginStroke();
+  strokeTool = strokeToolFor(event);
   scene3d?.setStrokeActive(true);
   event.currentTarget.setPointerCapture(event.pointerId);
   const pos = canvasToGrid(event);
@@ -684,6 +810,8 @@ function handlePointerMove(event) {
 function stopPainting() {
   if (!painting) return;
   painting = false;
+  endStroke();
+  strokeTool = null;
   scene3d?.setStrokeActive(false);
   lastStampPos = null;
   flush();
@@ -720,16 +848,54 @@ function wireToolbar() {
 
   const sizeInput = document.getElementById("brush-size");
   const sizeOut = document.getElementById("brush-size-out");
-  sizeInput.addEventListener("input", () => {
-    brushRadius = Number(sizeInput.value);
-    sizeOut.textContent = sizeInput.value;
-  });
+  const setSize = (v) => {
+    brushRadius = clamp(Math.round(v), Number(sizeInput.min), Number(sizeInput.max));
+    sizeInput.value = String(brushRadius);
+    sizeOut.textContent = String(brushRadius);
+  };
+  sizeInput.addEventListener("input", () => setSize(Number(sizeInput.value)));
 
+  // The slider is a position on brush.js's perceptual curve, not a raw
+  // amount: each step is the same ratio, from 0.5% to 50%.
   const strengthInput = document.getElementById("brush-strength");
   const strengthOut = document.getElementById("brush-strength-out");
-  strengthInput.addEventListener("input", () => {
-    brushStrength = Number(strengthInput.value);
-    strengthOut.textContent = `${Math.round(brushStrength * 100)}%`;
+  const setStrengthStep = (v) => {
+    const step = clamp(Math.round(v), 0, 100);
+    strengthInput.value = String(step);
+    brushStrength = strengthFromSlider(step);
+    strengthOut.textContent = formatStrength(brushStrength);
+  };
+  strengthInput.addEventListener("input", () => setStrengthStep(Number(strengthInput.value)));
+  setStrengthStep(sliderFromStrength(brushStrength));
+
+  const hardnessInput = document.getElementById("brush-hardness");
+  const hardnessOut = document.getElementById("brush-hardness-out");
+  hardnessInput.addEventListener("input", () => {
+    brushHardness = Number(hardnessInput.value);
+    hardnessOut.textContent = brushHardness === 0 ? "Soft" : `${Math.round(brushHardness * 100)}%`;
+  });
+
+  const coverageInput = document.getElementById("brush-coverage");
+  const coverageOut = document.getElementById("brush-coverage-out");
+  coverageInput.addEventListener("input", () => {
+    brushCoverage = Number(coverageInput.value);
+    coverageOut.textContent = brushCoverage >= 1 ? "Solid" : `${Math.round(brushCoverage * 100)}%`;
+  });
+
+  // [ ] size, - = strength: the shortcuts Photoshop, Krita and most map
+  // tools share. Ignored while typing in a field or with a dialog open.
+  document.addEventListener("keydown", (event) => {
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    const target = event.target;
+    if (target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) && target.type !== "range") return;
+    if (document.querySelector("dialog[open]")) return;
+    const big = event.shiftKey ? 5 : 1;
+    if (event.key === "[" || event.key === "{") setSize(brushRadius - big);
+    else if (event.key === "]" || event.key === "}") setSize(brushRadius + big);
+    else if (event.key === "-" || event.key === "_") setStrengthStep(Number(strengthInput.value) - 5 * big);
+    else if (event.key === "=" || event.key === "+") setStrengthStep(Number(strengthInput.value) + 5 * big);
+    else return;
+    event.preventDefault();
   });
 
   document.getElementById("undo-button").addEventListener("click", undoLastStroke);
@@ -760,8 +926,8 @@ const CATEGORY_FIRST_TOOL = {
 // unchanged while Terrain was selected, describing tools that weren't
 // even visible.
 const CATEGORY_HINT = {
-  land: "Raise, Lower and Smooth shape land without touching the sea. Mountain and Peak raise rocky ground.",
-  terrain: "Paint grassland, sand, forest or rock onto land, at whatever height it already is.",
+  land: "One stroke moves the land by at most Strength - stroke again to build higher. Shift lowers, Alt smooths. [ ] size, - = strength.",
+  terrain: "Paint grassland, sand, forest or rock onto land. Lower Coverage for open woods and scattered stands.",
   water: "Create land and Paint sea move the coastline. Deepen and Shallow shape the seabed.",
 };
 
@@ -781,6 +947,10 @@ function wireCategoryRail() {
         toolButton.classList.toggle("active", toolButton.dataset.tool === currentTool);
       }
       categoryHint.textContent = CATEGORY_HINT[category];
+      // Coverage only means something for material brushes; Hardness only
+      // for height brushes.
+      document.getElementById("coverage-row").classList.toggle("hidden", category !== "terrain");
+      document.getElementById("hardness-row").classList.toggle("hidden", category === "terrain");
     });
   }
 }

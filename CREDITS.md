@@ -78,6 +78,30 @@ hand-rolled approximation:
 | Felzenszwalb & Huttenlocher, "Distance Transforms of Sampled Functions" (2012) | technique | exact Euclidean coast distance field (seeded with sub-pixel crossings), driving shallow water, ripple lines and beaches |
 | Musgrave ridged multifractal, as used by Red Blob Games' [mapgen4](https://github.com/redblobgames/mapgen4) "mountain folds" (Apache-2.0; technique only, no code copied) | technique | render-time ridgelines synthesised from painted elevation, so a brush stroke becomes a range rather than a dome |
 
+### The Forge generator and the brushes (Atlas Table step II)
+
+`public/world/forge.js` (seeded world generator, run by both the browser
+preview and the server) and `public/world/brush.js` (brush maths). Searched
+first, per `CLAUDE.md`; nothing was vendored, because every generator found
+either targets a different mesh (Voronoi cells) or produces a whole planet
+rather than a heightfield in this app's units. These are the techniques
+adapted, with no code copied unless stated:
+
+| Source | Licence | Used for |
+| --- | --- | --- |
+| [Azgaar's Fantasy Map Generator](https://github.com/Azgaar/Fantasy-Map-Generator) heightmap templates ("Hill", "Range") | MIT | composing land from hill masses and ridges walked between two points. His front-by-front growth was replaced by true distances: on a square grid it showed as diagonal banding and slivers of land |
+| Red Blob Games, ["Making maps with noise"](https://www.redblobgames.com/maps/terrain-from-noise/) | technique | fBm octaves, the square-bump edge mask, domain-warped coastlines |
+| Olsen, "Realtime Procedural Terrain Generation" (2004) | technique | thermal (talus) erosion passes, so slopes settle to plausible angles |
+| [sfc32](https://github.com/bryc/code/blob/master/jshash/PRNGs.md) PRNG and cyrb128-style seed hash, collected by bryc | public domain | deterministic, integer-only random numbers, identical in Node and every browser |
+| Krita / Photoshop brush "flow" and max-accumulation modes; Unreal Landscape Flatten; World Machine / Gaea modifier keys | technique | one stroke moves a cell by at most Strength; perceptual strength curve; Level tool; Shift inverts, Alt smooths, `[ ]` size and `- =` strength |
+
+Passed over: Azgaar's generator as a dependency (Voronoi mesh, a
+whole-planet model, a large app rather than a library); mapgen4 (Apache-2.0,
+also a Voronoi mesh, and its renderer would compete with this one);
+Sebastian Lague's hydraulic erosion (MIT) as too slow to run per preview at
+256x256 in the browser without a worker, kept as an option for a later
+"weathering" pass.
+
 ### Considered and not used, for the 3D renderer
 
 - **[THREE.Terrain](https://github.com/IceCreamYou/THREE.Terrain)** (npm
