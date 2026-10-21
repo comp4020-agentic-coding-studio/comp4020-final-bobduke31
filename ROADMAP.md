@@ -2274,6 +2274,43 @@ What changed:
   tilt. Seen in the real renderer; changing it is a renderer question, left
   alone because renderer files are frozen in this step.
 
+### Step II deploy (2026-10-22, user-approved, Fly release v13)
+
+- **Backup first.** Volume snapshot `vs_mVopXz9z5xAsL0l8ljl`, confirmed in
+  `flyctl volumes snapshots list` as `created, 26 MiB` before anything was
+  pushed. Live data recorded beforehand in `.localdata/deploy3/pre-*.json`
+  (identical to the state after the step I deploy).
+- **First CI run failed, nothing deployed.** Run 39611229342: an
+  unhandled rejection in `spec/rooms.test.ts`. Its two 800 ms "no event"
+  waits were awaited one after the other, so on a slow runner the second
+  timed out unobserved. The file is unchanged since step I; the CPU-heavy
+  forge spec alongside likely made the timing likelier. Fixed by settling
+  both together (`1db6707`), then 67/67 three times locally.
+- **Deployed through GitHub only.** Push `1464de6..1db6707`, CI run
+  39611510448: the spec passed inside the Docker image and the deploy
+  job succeeded. Machine `8747705c6d13d8` is on version 13, with no
+  migration (step II adds no tables).
+- **Verified live.**
+  - The shared world's elevation, type and mark data are byte-identical
+    to before the deploy (58,370 / 22,259 / 9), and again after all live
+    testing.
+  - `/`, `/world/`, `/world/forge.js`, `/world/brush.js`, `/readme/`,
+    `/credits/`, `/logs/` and `/isle/` return 200; 0 errors in the logs.
+  - `rooms.test.ts` and `invariants.test.ts` pass against production
+    (20/20).
+  - A forged map created through the live API in 619 ms stored 32,685 rows
+    with exactly the 19,690 land cells the generator makes locally for the
+    same seed.
+  - The Forge panel driven in a real browser on desktop and a 390 px phone:
+    no page errors, and the created map rendered as previewed
+    (`.localdata/deploy3/shots`).
+- **Rollback.** Redeploy `3a580a8` (or `18b9e90`) with no database restore.
+  Step II adds no tables. Its only new stored value is the `room:forge`
+  activity action, which step I's code reads as a plain string, and forged
+  maps are ordinary terrain rows. The snapshot above is there if needed.
+- Two test maps were added on production ("Forge check" and "The Northern
+  Reaches").
+
 ### Writing track (runs alongside the phases, not only at the end)
 
 Figures from `topics/assessment` and `assessments/final-project`, checked
