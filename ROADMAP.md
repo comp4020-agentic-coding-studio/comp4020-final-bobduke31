@@ -1980,7 +1980,7 @@ browser test. Deploys still need the user's approval each time.
 | Phase | Dates | Delivers | Exit gate |
 |---|---|---|---|
 | 0. Baseline | 21-22 Oct | ✅ Done 2026-10-21, see "Phase 0 results". Parity screenshots of the public room. ADR 3 draft (rooms, links, roles). Migration script dry-run on a production copy. | Row counts preserved in the dry run. |
-| 1. Rooms + links | 22-27 Oct | 🔨 Built and verified 2026-10-21, **awaiting deploy approval**. See "Phase 1 results". Migration run at boot inside the new code. Token routing and roles. Phone layout overflow fix. Per-room SSE/undo/activity. Unprefixed routes alias the public room. Share panel and view-only UI. Rate limits on new routes. | Existing 23 tests green. New tests: room isolation, view-only 403 on every write, data survives restart. Parity gate. **Proposed deploy.** |
+| 1. Rooms + links | 22-27 Oct | ✅ Deployed 2026-10-21 (release v10), verified live. See "Phase 1 deploy". Migration run at boot inside the new code. Token routing and roles. Phone layout overflow fix. Per-room SSE/undo/activity. Unprefixed routes alias the public room. Share panel and view-only UI. Rate limits on new routes. | Existing 23 tests green. New tests: room isolation, view-only 403 on every write, data survives restart. Parity gate. **Proposed deploy.** |
 | 2. Create | 28 Oct - 1 Nov | Shared generator with preview. New-map dialog. My maps. Presence. | Generated maps reviewed against references. Generator is deterministic for a given seed (test). Parity gate. |
 | 3. Save, reload, share | 1-4 Nov | Snapshots, autosnapshots, restore (private only), fork, file export/import, PNG export. ADR 4 (history model: B over C). | Restore round-trip test. Public-room restore refused. Import of a corrupt file rejected. Parity gate. |
 | 4. Harden | 5-7 Nov | Caps, headers, both marking viewports, next-day return test after a restart. **Feature freeze 7 Nov.** | Full manual walkthrough of the loop on desktop and phone. |
@@ -2115,6 +2115,56 @@ used one log label regardless of action.
   copies `src/` and `public/` whole, so the new files ship.
 - Mark owners and the full activity log in the production copy are
   stand-ins (see phase 0).
+
+### Phase 1 deploy (2026-10-21, user-approved, Fly release v10)
+
+**Backups taken before the deploy.**
+1. Fly volume snapshot `vs_k4NM7w0wvzGheyqkP2Pa`, created 09:01:01 UTC, 35 s
+   before the release was recorded and 50 s before the new machine started.
+   It's a genuine pre-migration image.
+2. The startup backup `/data/app.db.pre-rooms-1792573314153.bak` on the
+   volume, written by the new code just before migrating.
+3. A checksummed local export of the public API (`.localdata/deploy1/pre-*.json`).
+
+The SSH-based on-machine copy stayed blocked by the permission check and
+wasn't retried.
+
+**Migration (production logs).** 315 ms, content hashes verified inside the
+transaction. 58,370 elevation cells, 22,259 type cells and 1,871 real
+activity rows. No errors.
+
+**Verified live.**
+- The public API's elevation, type and mark data match their pre-deploy
+  content hashes exactly, both straight after deploy and again after all
+  testing. The marks JSON is byte-identical.
+- `/`, `/world/`, `/readme/`, `/credits/`, `/logs/` and `/isle/` all return
+  200, with the new security headers.
+- `spec/rooms.test.ts` and `spec/invariants.test.ts` pass against
+  production: 20/20.
+- The real multi-user browser run against production passes 30/30. Live
+  edits arrived in 211 ms over the internet. View-only was refused, the
+  phone layout fit at 390 px, and a phone tap painted.
+- The production logs show 0 errors.
+
+The other spec files write test cells into the shared world, so they were
+deliberately **not** run against production.
+
+**Process slip, recorded honestly.** I moved on to the deploy before the
+snapshot had appeared in the snapshot list, having misread my own pending
+wait as a result. The timestamps above show the snapshot completed before
+the migration ran, so nothing was exposed. From now on the rule is to deploy
+only after the snapshot is listed.
+
+**Test maps created on production:** about 17 private maps from the room
+tests and the browser run (names like "Test map", "Map A", "The Reaches,
+revised"). They count toward the 150-map cap and could be cleared later.
+
+**Rollback, if ever needed.**
+1. Redeploy `da9bc2e`.
+2. Restore `/data/app.db` from the `.pre-rooms-*.bak` file, or from volume
+   snapshot `vs_k4NM7w0wvzGheyqkP2Pa`. The old code can't run on the
+   migrated file.
+3. Any edits made since the deploy would be lost.
 
 Phase 1 comes first because everything else needs rooms, and because it
 carries the only irreversible step. Doing it earliest leaves the most time
@@ -2503,3 +2553,10 @@ the "Product phases" section above.
   parity: 0 changed pixels inside the map. The startup migration on a
   production copy serves cell-for-cell identical data. Awaiting the user's
   approval to deploy. See "Phase 1 results".
+- **2026-10-21** - Platform phase 1 deployed with user approval (Fly
+  release v10). Backups were taken first (volume snapshot
+  `vs_k4NM7w0wvzGheyqkP2Pa`, the startup `.bak` file, and a local API
+  export). The production migration verified 58,370 / 22,259 cells by
+  content hash, and the public data is identical to pre-deploy. 20/20 room
+  tests and 30/30 browser checks pass against production. See "Phase 1
+  deploy".
