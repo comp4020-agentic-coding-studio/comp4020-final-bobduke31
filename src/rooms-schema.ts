@@ -60,6 +60,18 @@ const MEMBERS_DDL = `
   ) WITHOUT ROWID
 `;
 
+// Additive and idempotent: a new table only, so it needs no version bump and
+// rewrites no existing row (Atlas Table step I).
+const PEOPLE_DDL = `
+  CREATE TABLE IF NOT EXISTS people (
+    session_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    tincture TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  ) WITHOUT ROWID
+`;
+
 const ACTIVITY_DDL = `
   CREATE TABLE IF NOT EXISTS activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,6 +120,7 @@ export function ensureRoomsSchema(db: DatabaseSync, opts: { failBeforeCommit?: b
 
   if (version === ROOMS_VERSION) {
     db.exec(MEMBERS_DDL);
+    db.exec(PEOPLE_DDL);
     return { status: "current" };
   }
   if (version !== undefined) throw new Error(`unexpected schema_meta.rooms_version=${version} - refusing to guess`);
@@ -124,6 +137,7 @@ export function ensureRoomsSchema(db: DatabaseSync, opts: { failBeforeCommit?: b
       db.exec(TERRAIN_DDL("terrain_cells"));
       db.exec(TYPE_DDL("terrain_type_cells"));
       db.exec(MEMBERS_DDL);
+      db.exec(PEOPLE_DDL);
       db.exec(ACTIVITY_DDL);
       if (!columns(db, "activity_log").includes("room_id")) db.exec(ADD_ACTIVITY_ROOM);
       db.prepare("INSERT INTO rooms (id, name) VALUES (?, ?)").run(PUBLIC_ROOM_ID, PUBLIC_ROOM_NAME);
@@ -167,6 +181,7 @@ export function ensureRoomsSchema(db: DatabaseSync, opts: { failBeforeCommit?: b
     db.exec("ALTER TABLE terrain_type_cells_new RENAME TO terrain_type_cells");
     if (!columns(db, "activity_log").includes("room_id")) db.exec(ADD_ACTIVITY_ROOM);
     db.exec(MEMBERS_DDL);
+    db.exec(PEOPLE_DDL);
 
     const pub = `WHERE room_id = '${PUBLIC_ROOM_ID}'`;
     const after = {

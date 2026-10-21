@@ -1,4 +1,10 @@
 const rows = document.getElementById("log-rows");
+
+// A private map's log is opened as /logs/#map=<token>, from inside that map.
+// The token stays in the fragment, so it isn't sent in the page request,
+// and the same token gives the same access it does in the editor.
+const token = new URLSearchParams(location.hash.slice(1)).get("map");
+const api = (path) => (token ? `/api/r/${encodeURIComponent(token)}${path.slice(4)}` : path);
 const emptyState = document.getElementById("empty-state");
 
 function formatTime(isoLike) {
@@ -39,7 +45,13 @@ function updateEmptyState() {
 }
 
 async function loadRecent() {
-  const res = await fetch("/api/activity");
+  const res = await fetch(api("/api/activity"));
+  if (!res.ok) {
+    rows.textContent = "";
+    emptyState.textContent = "No map at this link. Open the activity log from inside the map instead.";
+    updateEmptyState();
+    return;
+  }
   const entries = await res.json();
   rows.textContent = "";
   // The API returns newest-first; keep that order here too, so the most
@@ -49,7 +61,7 @@ async function loadRecent() {
 }
 
 function connectLive() {
-  const source = new EventSource("/api/events");
+  const source = new EventSource(api("/api/events?watch=log"));
   source.addEventListener("activity:new", (event) => {
     const entry = JSON.parse(event.data);
     rows.insertBefore(renderRow(entry, { fresh: true }), rows.firstChild);
@@ -61,5 +73,20 @@ function connectLive() {
   source.addEventListener("open", loadRecent);
 }
 
+async function showMapName() {
+  if (!token) return;
+  const res = await fetch(api("/api/room"));
+  if (!res.ok) return;
+  const { name } = await res.json();
+  document.getElementById("log-title").textContent = `Activity: ${name}`;
+  document.getElementById("log-intro").textContent =
+    "Every edit and undo on this map, with who did it. New entries appear live. Only people with this map's link can see it.";
+  const back = document.getElementById("back-link");
+  back.href = `/m/${encodeURIComponent(token)}`;
+  back.textContent = `Back to ${name}`;
+  document.title = `Activity: ${name}`;
+}
+
+showMapName();
 loadRecent();
 connectLive();

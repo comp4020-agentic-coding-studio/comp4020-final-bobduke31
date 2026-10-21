@@ -17,7 +17,7 @@ import {
 } from "./terrain.ts";
 import type { TerrainCell, TerrainTypeCell } from "./terrain.ts";
 import { subscribe, broadcast } from "./realtime.ts";
-import { log as logActivity, recentActivity } from "./activity.ts";
+import { log as logActivity, recentActivity, roomsWithActivityBy } from "./activity.ts";
 import type { ActivityAction } from "./activity.ts";
 import { captureStroke, undoLastStroke } from "./undo.ts";
 import {
@@ -34,7 +34,8 @@ import {
   shareTokensFor,
 } from "./rooms.ts";
 import type { RoomAccess } from "./rooms.ts";
-import { join as joinPresence, presenceFor } from "./presence.ts";
+import { join as joinPresence, presenceFor, refreshPresenceFor, roomsOpenBy } from "./presence.ts";
+import { ensurePerson, cleanName, isTincture, updatePerson, suggestion, TINCTURES, NAME_MAX } from "./people.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const PUBLIC_DIR = new URL("../public/", import.meta.url).pathname;
@@ -52,6 +53,7 @@ const MIME: Record<string, string> = {
   ".gltf": "model/gltf+json",
   ".bin": "application/octet-stream",
   ".webp": "image/webp",
+  ".woff2": "font/woff2",
 };
 
 interface StaticFile {
@@ -166,6 +168,13 @@ function rateLimited(sessionId: string): boolean {
     return false;
   }
   return ++hit.n > RATE_MAX;
+}
+
+// Where a rename gets logged: rooms the person has open now or has
+// activity in. Someone who has never touched the shared world doesn't
+// appear in its public log just for renaming themselves.
+function roomsForRename(sessionId: string): string[] {
+  return [...new Set([...roomsOpenBy(sessionId), ...roomsWithActivityBy(sessionId)])];
 }
 
 async function handleCreateRoom(req: IncomingMessage, res: ServerResponse, sessionId: string): Promise<void> {
@@ -334,7 +343,13 @@ async function handleRoomApi(
       sendJson(res, 503, { error: "too many open connections - try again shortly" });
       return true;
     }
-    leave = joinPresence(roomId, sessionId, access.role);
+    // The activity log page listens without "being here": a log reader
+    // isn't someone at the map.
+    if (new URL(req.url ?? "/", "http://localhost").searchParams.get("watch") === "log") return true;
+    const joined = joinPresence(roomId, sessionId, access.role);
+    leave = joined.leave;
+    // To this stream only: which presence entry is the viewer's own.
+    res.write(`event: presence:you\ndata: ${JSON.stringify({ key: joined.key })}\n\n`);
     return true;
   }
 
@@ -482,6 +497,44 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     await handleCreateRoom(req, res, sessionId);
     return;
   }
+  // Who you are, as others see you (src/people.ts). GET creates your
+  // generated name on first visit; POST changes name and/or tincture.
+  if (url.pathname === "/api/me" && req.method === "GET") {
+    sendJson(res, 200, { ...ensurePerson(sessionId), tinctures: TINCTURES });
+    return;
+  }
+  if (url.pathname === "/api/me/suggestion" && req.method === "GET") {
+    sendJson(res, 200, suggestion());
+    return;
+  }
+  if (url.pathname === "/api/me" && req.method === "POST") {
+    const payload = await readJsonOr400(req, res);
+    if (!payload) return;
+    const current = ensurePerson(sessionId);
+    const name = payload.name === undefined ? current.name : cleanName(payload.name);
+    const tincture = payload.tincture === undefined ? current.tincture : payload.tincture;
+    if (!name || !isTincture(tincture)) {
+      sendJson(res, 400, { error: `a name is 1-${NAME_MAX} characters, and the colour must be one of ${TINCTURES.join(", ")}` });
+      return;
+    }
+    if (rateLimited(sessionId)) {
+      sendJson(res, 429, { error: "too many changes just now - try again in a minute" });
+      return;
+    }
+    const updated = updatePerson(sessionId, { name, tincture });
+    // Logged where it's relevant - the rooms this person has open or has
+    // worked in - never by default in the shared world, which would show a
+    // private-map-only visitor in the public log.
+    if (name !== current.name) {
+      for (const roomId of roomsForRename(sessionId)) {
+        logActivity(roomId, sessionId, "person:rename", `"${current.name}" is now "${name}"`);
+      }
+    }
+    refreshPresenceFor(sessionId);
+    sendJson(res, 200, updated);
+    return;
+  }
+
   if (url.pathname === "/api/rooms/mine" && req.method === "GET") {
     sendJson(res, 200, roomsForSession(sessionId));
     return;

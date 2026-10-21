@@ -30,3 +30,11 @@ can judge; those are left to the crit and the marker.
 At a crit, a green `check` job is half the shipped mark, but it's never the
 judgement of the work: your tutor checks what you deployed against the published
 spec.
+
+## Which checks are safe against production
+
+`terrain.test.ts`, `activity.test.ts`, `marks.test.ts` and `people.test.ts`
+write to the shared world (or rely on it being quiet), so run them only
+against a throwaway database, as CI does. `rooms.test.ts` and
+`invariants.test.ts` only create private maps or read, and are safe to run
+against the live app.

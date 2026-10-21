@@ -46,6 +46,23 @@ the browser with no build step, no attribution required by either licence.
 | [simplex-noise](https://github.com/jwagner/simplex-noise.js) by Jonas Wagner | 4.0.3 | MIT | deterministic ridged-noise mountain folds in the terrain shading (see `terrain-renderer.js`) |
 | [three.js](https://github.com/mrdoob/three.js) | r169 (`three.module.js`) | MIT | the WebGL2 heightfield mesh renderer behind the Oblique view (see `terrain-renderer-3d.js`); vendored unminified (current three.js releases ship no minified build) |
 
+### Fonts and identity (Atlas Table)
+
+| Asset | Licence | Used for |
+| --- | --- | --- |
+| [Figtree](https://fonts.google.com/specimen/Figtree) by Erik Kennedy, latin variable subset (`vendor/fonts/figtree-latin-var.woff2`) | SIL OFL 1.1 | all controls and running text |
+| [IM Fell English SC](https://fonts.google.com/specimen/IM+Fell+English+SC) by Igino Marini, latin subset (`vendor/fonts/im-fell-english-sc-latin.woff2`) | SIL OFL 1.1 | map names and people's names only |
+
+Both are the woff2 files Google Fonts serves, self-hosted so the editor
+makes no third-party request and the fonts work offline. Cartographer
+names (`src/people.ts`) follow the approach of
+[fantasy-name-generator](https://github.com/fentech/fantasy-name-generator)
+(ISC, v2.0.0 inspected): names picked from curated tables rather than
+free-form syllable soup. No code was copied; the tables are our own, shaped
+as "given name + cartographic epithet". The package itself was passed over
+because its output (orcs, elves, "Drizzt"-style names) is a different
+register from people drawing a map together.
+
 ### Ported code and published techniques (terrain & visual overhaul)
 
 Adopted on `final-redesign-prototype` for the shared terrain pipeline in

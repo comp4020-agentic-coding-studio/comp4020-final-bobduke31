@@ -23,7 +23,7 @@ import {
 } from "./terrain-renderer.js";
 import { createTerrainScene3D, isWebGL2Available, MAX_DEVICE_PIXEL_RATIO } from "./terrain-renderer-3d.js";
 import { snoise } from "./terrain-fields.js";
-import { apiPath, room, loadRoom, wireRoomUi, wireRoomEvents, openShareIfRequested, toast } from "./room-ui.js";
+import { apiPath, room, loadRoom, loadMe, wireRoomUi, wireRoomEvents, openShareIfRequested, toast } from "./room-ui.js";
 
 const canvasArea = document.getElementById("canvas-area");
 
@@ -719,16 +719,21 @@ function wireToolbar() {
   }
 
   const sizeInput = document.getElementById("brush-size");
+  const sizeOut = document.getElementById("brush-size-out");
   sizeInput.addEventListener("input", () => {
     brushRadius = Number(sizeInput.value);
+    sizeOut.textContent = sizeInput.value;
   });
 
   const strengthInput = document.getElementById("brush-strength");
+  const strengthOut = document.getElementById("brush-strength-out");
   strengthInput.addEventListener("input", () => {
     brushStrength = Number(strengthInput.value);
+    strengthOut.textContent = `${Math.round(brushStrength * 100)}%`;
   });
 
   document.getElementById("undo-button").addEventListener("click", undoLastStroke);
+  document.getElementById("rail-undo").addEventListener("click", undoLastStroke);
 }
 
 // PROTOTYPE (final-redesign-prototype branch, UI/UX redesign): the left
@@ -755,11 +760,9 @@ const CATEGORY_FIRST_TOOL = {
 // unchanged while Terrain was selected, describing tools that weren't
 // even visible.
 const CATEGORY_HINT = {
-  land: "Raise / Lower / Smooth / Mountain / Peak only ever reshape existing land - they never touch the sea. Open this page in a second window or browser profile to watch changes arrive live, with no reload.",
-  terrain:
-    "Grassland / Sand / Forest / Rock only ever repaint material at whatever height the land already is - they never raise, lower, or touch the coastline.",
-  water:
-    "Create Land and Paint Sea are the only tools that move the coastline itself. Deepen / Shallow only ever reshape existing sea - neither side can turn into the other.",
+  land: "Raise, Lower and Smooth shape land without touching the sea. Mountain and Peak raise rocky ground.",
+  terrain: "Paint grassland, sand, forest or rock onto land, at whatever height it already is.",
+  water: "Create land and Paint sea move the coastline. Deepen and Shallow shape the seabed.",
 };
 
 function wireCategoryRail() {
@@ -1181,6 +1184,7 @@ wireCategoryRail();
 wireViewToggle();
 wireCameraControls();
 wireRoomUi();
+loadMe();
 if (await loadRoom()) {
   openShareIfRequested();
   loadTerrain();

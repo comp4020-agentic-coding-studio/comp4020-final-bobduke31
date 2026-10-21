@@ -1,5 +1,56 @@
+/* Atlas Table - "a chart table at night".
+   Deep-sea navy sampled from the renderer's own deep water, one brass
+   accent, period lettering (IM Fell English SC) only for map and person
+   names, Figtree for everything you operate. The map stays the brightest
+   thing on screen; the chrome never competes with it.
+   Self-hosted fonts (SIL OFL), see CREDITS.md. */
+
+@font-face {
+  font-family: "Figtree";
+  src: url("/world/vendor/fonts/figtree-latin-var.woff2") format("woff2");
+  font-weight: 300 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IM Fell English SC";
+  src: url("/world/vendor/fonts/im-fell-english-sc-latin.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
 :root {
   color-scheme: dark;
+  --sea: #0e1a24;
+  --sea-deep: #0a131b;
+  --shelf: #132331;
+  --shelf-2: #1b2f40;
+  --shelf-3: #23394d;
+  --rule: #2a4153;
+  --rule-strong: #3a5568;
+  --ink: #ece6d8;
+  --ink-dim: #b3c0c8;
+  --ink-faint: #8fa0ab;
+  --brass: #e0b55a;
+  --brass-hi: #ecc674;
+  --brass-ink: #1a1408;
+  --shoal: #7fd3d8;
+  --warn: #f0c674;
+  --warn-bg: #3a2f1b;
+  --danger: #f19a8e;
+  /* heraldic tinctures, one per person */
+  --t-gules: #d9634c;
+  --t-azure: #5b8fd9;
+  --t-vert: #5fae6e;
+  --t-or: #d9b54a;
+  --t-purpure: #a874c9;
+  --t-argent: #c9c2b0;
+  --t-tenne: #d08a3e;
+  --t-celeste: #7cc4e0;
+  --display: "IM Fell English SC", "IM Fell English", Georgia, "Times New Roman", serif;
+  --body: "Figtree", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --radius: 8px;
+  --topbar-h: 56px;
+  --tap: 44px;
 }
 
 * {
@@ -14,79 +65,213 @@ body {
 }
 
 body {
-  background: #11161b;
-  color: #d8e2e8;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--sea);
+  color: var(--ink);
+  font-family: var(--body);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Full-viewport app shell: a 48px topbar, a fixed-width category rail, a
-   flexible canvas column, and a fixed-width options panel - the canvas
-   column is the only `1fr` track, so it's the one area that actually grows
-   or shrinks with the window (replacing the old fixed 768px canvas box,
-   which wasted most of a wide viewport as empty background - see
-   ROADMAP.md's UI/UX redesign entry). */
+.defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brass);
+  outline-offset: 2px;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.place-name {
+  font-family: var(--display);
+  font-weight: 400;
+  letter-spacing: 0.01em;
+}
+
+/* ---------- app shell ---------- */
 .app {
   display: grid;
-  grid-template-columns: 76px minmax(0, 1fr) 230px;
-  grid-template-rows: 48px 1fr;
+  grid-template-columns: 76px minmax(0, 1fr) 248px;
+  grid-template-rows: var(--topbar-h) minmax(0, 1fr);
   height: 100vh;
+  height: 100dvh;
   width: 100vw;
 }
 
+/* ---------- top bar ---------- */
 .topbar {
   grid-column: 1 / -1;
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 1rem;
-  padding: 0 0.9rem;
-  background: #171e25;
-  border-bottom: 1px solid #2a333b;
+  padding: 0 max(14px, env(safe-area-inset-right)) 0 max(14px, env(safe-area-inset-left));
+  background: var(--shelf);
+  border-bottom: 1px solid var(--rule);
 }
 
-/* Room identity on the left of the top bar: the Maps menu, the map's own
-   name (the thing people share and come back to), and Share - the same
-   name-plus-Share grouping Figma and Excalidraw use. */
 .topbar-room {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
+  gap: 0.55rem;
   min-width: 0;
 }
 
-.maps-button {
+.brand-button {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.55rem;
+  min-height: 40px;
+  padding: 0 0.6rem 0 0.35rem;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--ink);
   flex: none;
+}
+
+.brand-button:hover {
+  background: var(--shelf-2);
+  border-color: var(--rule);
+}
+
+.rose {
+  color: var(--brass);
+  flex: none;
+}
+
+.wordmark {
+  font-family: var(--display);
+  font-size: 1.2rem;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.crumb-sep {
+  color: var(--ink-faint);
+  font-size: 1.1rem;
 }
 
 .room-title {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.4rem;
   min-width: 0;
 }
 
 .room-name {
-  font-size: 0.88rem;
-  font-weight: 600;
+  font-family: var(--display);
+  font-size: 1.28rem;
+  letter-spacing: 0.01em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 22rem;
+  min-width: 0;
+}
+
+.role-badge,
+.public-badge {
+  flex: none;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 .role-badge {
-  flex: none;
-  font-size: 0.68rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 0.15rem 0.45rem;
-  border-radius: 999px;
-  background: #3a2f1b;
-  color: #f0c674;
+  background: var(--warn-bg);
+  color: var(--warn);
   border: 1px solid #6b5527;
+}
+
+.public-badge {
+  background: rgba(127, 211, 216, 0.1);
+  color: var(--shoal);
+  border: 1px solid rgba(127, 211, 216, 0.35);
+}
+
+.topbar-view {
+  display: flex;
+  justify-content: center;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+/* ---------- buttons ---------- */
+.primary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 1rem;
+  background: var(--brass);
+  color: var(--brass-ink);
+  border: 1px solid var(--brass-hi);
+  border-radius: var(--radius);
+  font-weight: 650;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  text-decoration: none;
+  flex: none;
+}
+
+.primary-button:hover {
+  background: var(--brass-hi);
+}
+
+.primary-button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.ghost-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 36px;
+  padding: 0 0.85rem;
+  background: transparent;
+  color: var(--ink);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  font-size: 0.9rem;
+  font-weight: 500;
+  white-space: nowrap;
+  flex: none;
+}
+
+.ghost-button:hover {
+  background: var(--shelf-2);
+}
+
+.ghost-button.full-width {
+  width: 100%;
 }
 
 .icon-button {
@@ -95,78 +280,520 @@ body {
   justify-content: center;
   background: none;
   border: 1px solid transparent;
-  color: #93a3ad;
-  border-radius: 0.35rem;
-  min-width: 1.9rem;
-  min-height: 1.9rem;
-  font-size: 1.1rem;
-  cursor: pointer;
-}
-
-.icon-button:hover {
-  background: #242e38;
-  color: #d8e2e8;
-}
-
-.primary-button {
-  background: #4a86ad;
-  color: #06121a;
-  border: 1px solid #6fa6cc;
-  border-radius: 0.35rem;
-  padding: 0.35rem 0.85rem;
-  font-size: 0.78rem;
-  font-weight: 600;
-  cursor: pointer;
-  text-decoration: none;
-  white-space: nowrap;
+  color: var(--ink-dim);
+  border-radius: var(--radius);
+  min-width: 36px;
+  min-height: 36px;
+  font-size: 1.3rem;
+  line-height: 1;
   flex: none;
 }
 
-.primary-button:hover {
-  background: #5a96bd;
+.icon-button:hover {
+  background: var(--shelf-2);
+  color: var(--ink);
 }
 
-.primary-button:disabled {
-  opacity: 0.6;
-  cursor: progress;
+.view-switch {
+  display: flex;
+  background: var(--sea);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 3px;
+  gap: 2px;
 }
 
-/* Who has this map open: up to five initials chips, then "+N". */
+.view-switch button {
+  min-height: 32px;
+  padding: 0 1rem;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: var(--ink-dim);
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.view-switch button:hover {
+  color: var(--ink);
+}
+
+.view-switch button.active {
+  background: var(--shelf-3);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--rule-strong);
+}
+
+/* ---------- people: sigils ---------- */
+.sigil {
+  --tint: var(--t-argent);
+  width: 26px;
+  height: 30px;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  position: relative;
+}
+
+.sigil svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  fill: var(--tint);
+  filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.45));
+}
+
+.sigil em {
+  position: relative;
+  font-style: normal;
+  font-family: var(--display);
+  font-size: 14px;
+  line-height: 1;
+  color: var(--sea);
+  padding-bottom: 4px;
+}
+
+.sigil.lg {
+  width: 48px;
+  height: 55px;
+}
+
+.sigil.lg em {
+  font-size: 24px;
+  padding-bottom: 6px;
+}
+
+.sigil.viewer {
+  opacity: 0.55;
+}
+
+.sigil[data-tincture="gules"] { --tint: var(--t-gules); }
+.sigil[data-tincture="azure"] { --tint: var(--t-azure); }
+.sigil[data-tincture="vert"] { --tint: var(--t-vert); }
+.sigil[data-tincture="or"] { --tint: var(--t-or); }
+.sigil[data-tincture="purpure"] { --tint: var(--t-purpure); }
+.sigil[data-tincture="argent"] { --tint: var(--t-argent); }
+.sigil[data-tincture="tenne"] { --tint: var(--t-tenne); }
+.sigil[data-tincture="celeste"] { --tint: var(--t-celeste); }
+
 .presence {
   display: flex;
   align-items: center;
+  gap: 2px;
 }
 
-.presence-chip {
-  width: 1.75rem;
-  height: 1.75rem;
-  border-radius: 50%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.66rem;
-  font-weight: 700;
-  color: #06121a;
-  margin-left: 0.25rem;
+.presence .sigil {
   cursor: default;
 }
 
-.presence-chip:first-child {
-  margin-left: 0;
+.presence-more {
+  min-width: 28px;
+  height: 28px;
+  border-radius: 14px;
+  padding: 0 6px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 0.75rem;
+  font-weight: 700;
+  background: var(--shelf-3);
+  color: var(--ink);
+  margin-left: 2px;
 }
 
-.presence-chip.viewer {
-  opacity: 0.6;
+.me-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 40px;
+  padding: 0 0.6rem 0 0.4rem;
+  background: none;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  color: var(--ink);
+  min-width: 0;
+  max-width: 13rem;
 }
 
-.presence-chip.more {
-  background: #2d3946;
-  color: #d8e2e8;
+.me-button:hover {
+  background: var(--shelf-2);
 }
 
-/* View-only visitors can look around (camera, view switch) but every
-   editing control is gone, not just disabled - nothing suggests an action
-   the server would refuse. */
+.me-name {
+  font-size: 0.86rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* ---------- left rail ---------- */
+.category-rail {
+  grid-row: 2;
+  background: var(--shelf);
+  border-right: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: 0.7rem 0.5rem;
+  gap: 0.35rem;
+  overflow-y: auto;
+}
+
+.category-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  min-height: 60px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--ink-dim);
+  padding: 0.5rem 0.2rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.category-btn:hover {
+  background: var(--shelf-2);
+  color: var(--ink);
+}
+
+.category-btn.active {
+  background: rgba(224, 181, 90, 0.14);
+  border-color: rgba(224, 181, 90, 0.55);
+  color: var(--brass);
+}
+
+.rail-undo {
+  margin-top: auto;
+}
+
+/* ---------- canvas ---------- */
+.canvas-wrap {
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--sea-deep);
+}
+
+.canvas-area {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--sea-deep);
+  padding: 0.9rem;
+}
+
+#stage,
+#stage-3d {
+  max-width: 100%;
+  max-height: 100%;
+  aspect-ratio: 1 / 1;
+  width: auto;
+  height: 100%;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.tool-hint {
+  margin: 0;
+  padding: 0.5rem 1rem;
+  font-size: 0.82rem;
+  color: var(--ink-dim);
+  text-align: center;
+  border-top: 1px solid var(--rule);
+  background: var(--shelf);
+}
+
+#camera-hint {
+  border-top: 0;
+  padding-top: 0;
+}
+
+/* ---------- right options panel ---------- */
+.options-panel {
+  grid-row: 2;
+  background: var(--shelf);
+  border-left: 1px solid var(--rule);
+  padding: 1rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.options-section h3 {
+  margin: 0 0 0.55rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-dim);
+}
+
+.options-section h3:not(:first-child) {
+  margin-top: 1.2rem;
+}
+
+.btn-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.btn-grid button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  min-height: 40px;
+  background: var(--shelf-2);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  padding: 0 0.4rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.btn-grid button:hover {
+  border-color: var(--rule-strong);
+  background: var(--shelf-3);
+}
+
+.btn-grid button.active {
+  background: rgba(224, 181, 90, 0.16);
+  border-color: var(--brass);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--brass);
+  font-weight: 650;
+}
+
+.swatch-grid button {
+  justify-content: flex-start;
+  padding-left: 0.7rem;
+}
+
+.swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  flex: none;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+
+.sw-grass { background: #7da35a; }
+.sw-sand { background: #d9c48c; }
+.sw-forest { background: #3f6e3a; }
+.sw-rock { background: #8a7f72; }
+
+.options-footer {
+  margin-top: auto;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.slider-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.86rem;
+  color: var(--ink-dim);
+}
+
+.slider-label > span {
+  display: flex;
+  justify-content: space-between;
+}
+
+.slider-label output {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* Range inputs: a 4px track inside a 28px hit area, brass thumb. */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 28px;
+  background: transparent;
+  margin: 0;
+}
+
+input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--shelf-3);
+}
+
+input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--shelf-3);
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  margin-top: -7px;
+  border-radius: 50%;
+  background: var(--ink);
+  border: 3px solid var(--brass);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--ink);
+  border: 3px solid var(--brass);
+}
+
+/* ---------- camera panel (floats over the map) ---------- */
+.camera-float {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  width: 172px;
+  background: rgba(19, 35, 49, 0.94);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.55rem;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+
+.camera-float.hidden {
+  display: none;
+}
+
+.camera-float .oblique-only {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+}
+
+.camera-float.top-mode .oblique-only {
+  display: none;
+}
+
+.camera-float h4 {
+  margin: 0;
+  align-self: flex-start;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-dim);
+}
+
+.camera-float label {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  font-size: 0.82rem;
+  color: var(--ink-dim);
+  gap: 0.1rem;
+}
+
+.compass {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.compass:active {
+  cursor: grabbing;
+}
+
+.compass-ring {
+  fill: var(--sea);
+  stroke: var(--rule-strong);
+  stroke-width: 2;
+}
+
+.compass-label {
+  fill: var(--ink-dim);
+  font-family: var(--display);
+  font-size: 12px;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+
+.compass-needle {
+  stroke: var(--brass);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.compass-handle {
+  fill: var(--brass);
+  stroke: var(--brass-hi);
+  stroke-width: 1.5;
+}
+
+.compass-presets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.25rem;
+  width: 100%;
+}
+
+.compass-presets button {
+  min-height: 30px;
+  background: var(--shelf-2);
+  color: var(--ink);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  font-size: 0.8rem;
+}
+
+.compass-presets button.active {
+  background: rgba(224, 181, 90, 0.16);
+  border-color: var(--brass);
+}
+
+.pan-trackpad {
+  width: 100%;
+  height: 3.4rem;
+  background-color: var(--sea);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  background-image: linear-gradient(var(--rule) 1px, transparent 1px), linear-gradient(90deg, var(--rule) 1px, transparent 1px);
+  background-size: 33.3% 50%;
+}
+
+.pan-trackpad:active {
+  cursor: grabbing;
+}
+
+/* ---------- view-only ---------- */
 body.read-only .category-rail,
 body.read-only .options-panel,
 body.read-only #undo-button {
@@ -186,672 +813,446 @@ body.read-only #stage-3d {
   cursor: grab;
 }
 
+/* ---------- "no map" page ---------- */
 .room-error {
   position: fixed;
-  inset: 48px 0 0;
+  inset: var(--topbar-h) 0 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0.6rem;
+  gap: 0.7rem;
   padding: 1.5rem;
   text-align: center;
-  background: #11161b;
+  background: var(--sea);
   z-index: 5;
 }
 
 .room-error h2 {
-  margin: 0;
-  font-size: 1.15rem;
+  margin: 0.4rem 0 0;
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: 2rem;
 }
 
 .room-error p {
   margin: 0 0 0.6rem;
-  opacity: 0.75;
+  max-width: 28rem;
+  color: var(--ink-dim);
 }
 
-/* Native <dialog>: modal, focus-trapped and Esc-dismissable by the
-   browser itself, so none of that is reimplemented here. */
+/* ---------- dialogs ---------- */
 .sheet {
-  width: min(30rem, calc(100vw - 2rem));
-  max-height: calc(100vh - 3rem);
+  width: min(32rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - 3rem);
   overflow-y: auto;
-  background: #171e25;
-  color: #d8e2e8;
-  border: 1px solid #333f4a;
-  border-radius: 0.6rem;
-  padding: 1rem 1.1rem 1.1rem;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+  background: var(--shelf);
+  color: var(--ink);
+  border: 1px solid var(--rule-strong);
+  border-radius: 12px;
+  padding: 1.1rem 1.25rem 1.25rem;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
 }
 
 .sheet::backdrop {
-  background: rgba(6, 10, 14, 0.6);
+  background: rgba(6, 10, 14, 0.66);
+  backdrop-filter: blur(2px);
 }
 
 .sheet-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin: 0 0 0.6rem;
+  gap: 1rem;
+  margin: 0 0 0.35rem;
 }
 
 .sheet h2 {
   margin: 0;
-  font-size: 1rem;
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: 1.55rem;
+  line-height: 1.15;
+  min-width: 0;
 }
 
 .sheet h3 {
-  margin: 1.1rem 0 0.4rem;
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  opacity: 0.6;
-}
-
-.sheet label {
-  display: block;
-  font-size: 0.82rem;
-  font-weight: 600;
-}
-
-.share-row + .share-row {
-  margin-top: 1rem;
-}
-
-.share-help,
-.share-note {
-  margin: 0.2rem 0 0.45rem;
+  margin: 1.3rem 0 0.5rem;
   font-size: 0.75rem;
-  opacity: 0.7;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-dim);
 }
 
-.share-note {
-  margin-top: 1.1rem;
-  padding-top: 0.8rem;
-  border-top: 1px solid #2a333b;
-}
-
-.copy-field {
-  display: flex;
-  gap: 0.4rem;
-}
-
-.copy-field input {
-  flex: 1;
-  min-width: 0;
-  background: #0f1418;
-  color: #d8e2e8;
-  border: 1px solid #333f4a;
-  border-radius: 0.35rem;
-  padding: 0.45rem 0.55rem;
-  font: inherit;
-  font-size: 0.8rem;
-}
-
-.copy-field input:focus {
-  outline: 2px solid #4a86ad;
-  outline-offset: 0;
-}
-
-.new-map label {
+.sheet label,
+.sheet legend {
+  display: block;
+  font-size: 0.86rem;
+  font-weight: 600;
   margin-bottom: 0.4rem;
 }
 
+.sheet-sub,
+.sheet-note {
+  margin: 0 0 0.9rem;
+  font-size: 0.86rem;
+  color: var(--ink-dim);
+}
+
+.sheet-note {
+  margin: 1rem 0 0;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--rule);
+}
+
+.sheet-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.4rem;
+}
+
+.field-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.field-row input {
+  flex: 1;
+  min-width: 0;
+  min-height: 42px;
+  background: var(--sea);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  padding: 0 0.75rem;
+  font-size: 1rem;
+}
+
+.field-row input:focus {
+  outline: 2px solid var(--brass);
+  outline-offset: 0;
+}
+
+.field-row .primary-button,
+.field-row .ghost-button {
+  min-height: 42px;
+}
+
+.link-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.85rem 0;
+  border-top: 1px solid var(--rule);
+}
+
+.link-row .primary-button,
+.link-row .ghost-button {
+  min-height: 40px;
+}
+
+.link-text b {
+  display: block;
+  font-weight: 650;
+}
+
+.link-text span {
+  font-size: 0.86rem;
+  color: var(--ink-dim);
+}
+
+.link-field {
+  grid-column: 1 / -1;
+  min-height: 36px;
+  background: var(--sea);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0 0.6rem;
+  font-size: 0.8rem;
+  color: var(--ink-dim);
+  min-width: 0;
+}
+
 .form-error {
-  margin: 0.4rem 0 0;
-  font-size: 0.75rem;
-  color: #f19a8e;
+  margin: 0.5rem 0 0;
+  font-size: 0.86rem;
+  color: var(--danger);
+}
+
+.new-map label {
+  margin-bottom: 0.45rem;
 }
 
 .map-list {
   list-style: none;
-  margin: 0;
+  margin: 1rem 0 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.3rem;
+  gap: 0.4rem;
 }
 
 .map-link {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 0.8rem;
-  padding: 0.55rem 0.65rem;
-  border-radius: 0.4rem;
-  background: #1d252d;
-  border: 1px solid #2a333b;
-  color: #d8e2e8;
+  min-height: 52px;
+  padding: 0.5rem 0.8rem;
+  border-radius: var(--radius);
+  background: var(--shelf-2);
+  border: 1px solid var(--rule);
+  color: var(--ink);
   text-decoration: none;
-  font-size: 0.85rem;
 }
 
 .map-link:hover {
-  border-color: #4a86ad;
+  border-color: var(--brass);
 }
 
 .map-link.current {
-  border-color: #4a86ad;
-  background: #1f2e3b;
+  border-color: var(--brass);
+  background: rgba(224, 181, 90, 0.1);
 }
 
-.map-link > span:first-child {
+.map-link .place-name {
+  font-size: 1.15rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 
 .map-meta {
   flex: none;
-  font-size: 0.72rem;
-  opacity: 0.65;
+  font-size: 0.8rem;
+  color: var(--ink-dim);
 }
 
 .sheet-footer {
-  margin: 1.1rem 0 0;
-  font-size: 0.75rem;
-  opacity: 0.75;
+  margin: 1.2rem 0 0;
+  font-size: 0.86rem;
 }
 
 .sheet-footer a {
-  color: #8fc3e8;
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  color: var(--brass);
+}
+
+/* "How others see you" */
+.me-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.me-preview {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 0.8rem;
+  margin-bottom: 0.7rem;
+  background: var(--sea);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+}
+
+.me-preview-text small {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-dim);
+}
+
+.me-preview-text .place-name {
+  font-size: 1.45rem;
+  line-height: 1.15;
+}
+
+.tinctures {
+  border: 0;
+  padding: 0;
+  margin: 0.7rem 0 0.2rem;
+}
+
+.tincture-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.tincture-options label {
+  position: relative;
+  margin: 0;
+}
+
+.tincture-options input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+
+.tincture-options .swatch-dot {
+  display: block;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 3px solid transparent;
+  box-shadow: inset 0 0 0 2px rgba(0, 0, 0, 0.25);
+  cursor: pointer;
+}
+
+.tincture-options input:checked + .swatch-dot {
+  border-color: var(--ink);
+}
+
+.tincture-options input:focus-visible + .swatch-dot {
+  outline: 2px solid var(--brass);
+  outline-offset: 2px;
 }
 
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 1.2rem;
+  bottom: calc(1.2rem + env(safe-area-inset-bottom));
   transform: translateX(-50%);
-  background: #243546;
-  border: 1px solid #4a86ad;
-  color: #d8e2e8;
-  padding: 0.5rem 0.9rem;
-  border-radius: 0.4rem;
-  font-size: 0.8rem;
+  background: var(--shelf-2);
+  border: 1px solid var(--brass);
+  color: var(--ink);
+  padding: 0.6rem 1rem;
+  border-radius: var(--radius);
+  font-size: 0.9rem;
   z-index: 10;
   max-width: calc(100vw - 2rem);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
 }
 
-.toast.hidden {
-  display: none;
-}
-
-.topbar-right {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.ghost-link {
-  color: #8fc3e8;
-  font-size: 0.78rem;
-  text-decoration: none;
-}
-
-.ghost-link:hover {
-  text-decoration: underline;
-}
-
-.ghost-button {
-  background: #242e38;
-  color: #d8e2e8;
-  border: 1px solid #333f4a;
-  border-radius: 0.35rem;
-  padding: 0.35rem 0.7rem;
-  font-size: 0.78rem;
-  cursor: pointer;
-}
-
-.ghost-button:hover {
-  background: #2d3946;
-}
-
-.ghost-button.full-width {
-  width: 100%;
-}
-
-.view-switch {
-  display: flex;
-  background: #1a2129;
-  border: 1px solid #2a333b;
-  border-radius: 0.4rem;
-  overflow: hidden;
-}
-
-.view-switch button {
-  background: none;
-  border: none;
-  color: #d8e2e8;
-  padding: 0.32rem 0.85rem;
-  font-size: 0.78rem;
-  cursor: pointer;
-}
-
-.view-switch button.active {
-  background: #4a86ad;
-  color: #06121a;
-  font-weight: 600;
-}
-
-/* Left icon rail: one button per tool CATEGORY (Land / Terrain / Water),
-   not per tool - each button swaps which <section> is visible in the right
-   options panel, the same category-tabs + tool-options-panel split
-   Wonderdraft and Inkarnate both use (see CREDITS.md / CLAUDE.md's named
-   visual bar), rather than a flat 20-button toolbar. */
-.category-rail {
-  grid-row: 2;
-  background: #171e25;
-  border-right: 1px solid #2a333b;
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  padding: 0.6rem 0.4rem;
-  gap: 0.3rem;
-  overflow-y: auto;
-}
-
-.category-btn {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.3rem;
-  background: none;
-  border: 1px solid transparent;
-  border-radius: 0.5rem;
-  color: #93a3ad;
-  padding: 0.55rem 0.2rem;
-  cursor: pointer;
-  font-size: 0.66rem;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-
-.category-btn:hover {
-  background: #1f2831;
-}
-
-.category-btn.active {
-  background: #243546;
-  border-color: #4a86ad;
-  color: #8fc3e8;
-}
-
-.canvas-wrap {
-  grid-row: 2;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  overflow: hidden;
-}
-
-/* The canvas itself now fills whatever space is actually available
-   (flex: 1 1 auto, min-height: 0) instead of a fixed 768px box - on a wide
-   monitor the map used to sit in a small square surrounded by empty dark
-   background; it now uses the real available area. A single aspect-ratio
-   box keeps the grid itself square (it IS a square 256x256 grid) while
-   letting that square's absolute size respond to the viewport. */
-.canvas-area {
-  position: relative;
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #0c1014;
-  padding: 0.8rem;
-}
-
-#stage,
-#stage-3d {
-  max-width: 100%;
-  max-height: 100%;
-  aspect-ratio: 1 / 1;
-  width: auto;
-  height: 100%;
-  border: 1px solid #2a333b;
-  cursor: crosshair;
-  touch-action: none;
-}
-
-.hidden {
-  display: none;
-}
-
-.tool-hint {
-  margin: 0;
-  padding: 0.45rem 1rem;
-  font-size: 0.72rem;
-  opacity: 0.65;
-  text-align: center;
-  border-top: 1px solid #2a333b;
-  background: #13181d;
-}
-
-/* Right options panel: the controls for whichever category is active in
-   the left rail - one shared brush-size/strength footer, since every tool
-   in every category uses the same two sliders (terrain-only tools simply
-   ignore Strength, exactly as they did when it was one shared toolbar
-   control before this redesign). */
-.options-panel {
-  grid-row: 2;
-  background: #171e25;
-  border-left: 1px solid #2a333b;
-  padding: 0.9rem 0.8rem;
-  display: flex;
-  flex-direction: column;
-  overflow-y: auto;
-}
-
-.options-section h3 {
-  margin: 0 0 0.5rem;
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  opacity: 0.6;
-}
-
-.options-section h3:not(:first-child) {
-  margin-top: 1rem;
-}
-
-.btn-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 0.4rem;
-  margin-bottom: 0.3rem;
-}
-
-.btn-grid button {
-  background: #242e38;
-  color: #d8e2e8;
-  border: 1px solid #333f4a;
-  border-radius: 0.35rem;
-  padding: 0.45rem 0.3rem;
-  font-size: 0.78rem;
-  cursor: pointer;
-}
-
-.btn-grid button:hover {
-  background: #2d3946;
-}
-
-.btn-grid button.active {
-  background: #4a86ad;
-  border-color: #6fa6cc;
-  color: #06121a;
-  font-weight: 600;
-}
-
-.options-footer {
-  margin-top: auto;
-  padding-top: 0.9rem;
-  border-top: 1px solid #2a333b;
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-}
-
-.options-panel label {
-  display: flex;
-  flex-direction: column;
-  font-size: 0.72rem;
-  opacity: 0.8;
-  gap: 0.25rem;
-}
-
-.options-panel input[type="range"] {
-  width: 100%;
-}
-
-/* Camera controls float directly over the canvas, only in Oblique view -
-   they're view-navigation (where you're looking from), not a terrain-
-   editing tool category, so they don't belong in the left rail/right panel
-   split with Raise/Lower/etc. Kept off the canvas's own paint surface by
-   living in this separate floating box, same no-gesture-conflict rule the
-   old fixed toolbar already relied on. */
-.camera-float {
-  position: absolute;
-  top: 0.9rem;
-  right: 0.9rem;
-  width: 158px;
-  background: #171e25ee;
-  backdrop-filter: blur(8px);
-  border: 1px solid #2a333b;
-  border-radius: 0.5rem;
-  padding: 0.65rem 0.7rem;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.5rem;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
-}
-
-/* `.camera-float.hidden` (two classes, higher specificity than the plain
-   `.hidden` utility above) so this panel reliably disappears in Top-down
-   view regardless of each rule's position in this file. */
-.camera-float.hidden {
-  display: none;
-}
-
-/* Top-down is zoomable and pannable too, so the panel stays visible there;
-   only the compass and tilt (meaningless looking straight down) hide. */
-.camera-float .oblique-only {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.5rem;
-  width: 100%;
-}
-.camera-float.top-mode .oblique-only {
-  display: none;
-}
-
-.camera-float h4 {
-  margin: 0;
-  align-self: flex-start;
-  font-size: 0.66rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  opacity: 0.6;
-}
-
-.camera-float label {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  font-size: 0.68rem;
-  opacity: 0.8;
-  gap: 0.2rem;
-}
-
-.camera-float input[type="range"] {
-  width: 100%;
-}
-
-.compass {
-  cursor: grab;
-  touch-action: none;
-  user-select: none;
-}
-
-.compass:active {
-  cursor: grabbing;
-}
-
-.compass-ring {
-  fill: #1a2129;
-  stroke: #333f4a;
-  stroke-width: 2;
-}
-
-.compass-label {
-  fill: #93a3ad;
-  font-size: 11px;
-  text-anchor: middle;
-  dominant-baseline: middle;
-}
-
-.compass-needle {
-  stroke: #6fa6cc;
-  stroke-width: 3;
-  stroke-linecap: round;
-}
-
-.compass-handle {
-  fill: #4a86ad;
-  stroke: #6fa6cc;
-  stroke-width: 1.5;
-}
-
-.compass-presets {
-  display: grid;
-  grid-template-columns: repeat(2, auto);
-  gap: 0.2rem;
-  width: 100%;
-}
-
-.compass-presets button {
-  background: #242e38;
-  color: #d8e2e8;
-  border: 1px solid #333f4a;
-  border-radius: 0.3rem;
-  padding: 0.22rem 0.4rem;
-  font-size: 0.68rem;
-  cursor: pointer;
-}
-
-.compass-presets button.active {
-  background: #4a86ad;
-  border-color: #6fa6cc;
-  color: #06121a;
-  font-weight: 600;
-}
-
-.pan-trackpad {
-  width: 100%;
-  height: 3.2rem;
-  background: #1a2129;
-  border: 1px solid #333f4a;
-  border-radius: 0.3rem;
-  cursor: grab;
-  touch-action: none;
-  user-select: none;
-  background-image:
-    linear-gradient(#333f4a 1px, transparent 1px), linear-gradient(90deg, #333f4a 1px, transparent 1px);
-  background-size: 33% 50%;
-}
-
-.pan-trackpad:active {
-  cursor: grabbing;
-  background-color: #20282f;
-}
-
-/* Below ~900px wide, the three-column layout no longer has room: the
-   options panel moves under the canvas and the category rail becomes a
-   horizontal strip, so the editor stays usable on a narrow window/tablet
-   instead of clipping the canvas to near-nothing. */
+/* ---------- narrow windows and phones ----------
+   The map gets the screen. The top bar keeps identity and presence, tools
+   move to a bottom dock within thumb reach, and their options sit in a
+   compact sheet just above it. Every control is at least 44px. */
 @media (max-width: 900px) {
-  /* minmax(0, 1fr), not 1fr: a bare 1fr column's minimum is its widest
-     child's content, which forced the page to 474px on any phone and
-     clipped the right edge with no way to scroll to it. */
   .app {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto 1fr auto;
-    overflow-y: auto;
-    height: auto;
-    min-height: 100vh;
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
   }
 
-  /* Two rows on a phone: the map (Maps, name, Share) on top, viewing
-     (view switch, Undo, who's here) below. */
   .topbar {
-    flex-wrap: wrap;
-    row-gap: 0.45rem;
-    padding: 0.5rem 0.75rem;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "room right" "view view";
+    row-gap: 0.5rem;
+    padding-top: max(8px, env(safe-area-inset-top));
+    padding-bottom: 8px;
   }
 
-  .topbar-room {
-    flex: 1 1 100%;
-  }
+  .topbar-room { grid-area: room; }
+  .topbar-right { grid-area: right; gap: 0.4rem; }
+  .topbar-view { grid-area: view; justify-content: stretch; }
 
-  .room-title {
-    flex: 1;
-  }
+  .view-switch { flex: 1; }
+  .view-switch button { flex: 1; min-height: var(--tap); font-size: 0.95rem; }
 
-  .room-name {
-    max-width: none;
-  }
-
-  .topbar-right {
-    gap: 0.6rem;
-  }
-
-  .maps-button span {
+  .wordmark,
+  .crumb-sep,
+  .me-name,
+  .undo-button,
+  .public-badge {
     display: none;
   }
 
-  body.read-only .canvas-wrap {
-    grid-row: 2 / 4;
-  }
+  .brand-button { min-width: var(--tap); min-height: var(--tap); justify-content: center; padding: 0; }
+  .room-name { font-size: 1.25rem; }
+  .me-button { min-height: var(--tap); min-width: var(--tap); padding: 0 0.45rem; justify-content: center; }
+  #share-button { min-height: var(--tap); }
+  .icon-button { min-width: var(--tap); min-height: var(--tap); }
 
-  html,
-  body {
-    overflow: auto;
-  }
+  .canvas-wrap { grid-row: 2; }
+  /* Map takes whatever height is left; the camera strip below never gets
+     squeezed out (a grid row, unlike a flex column, gives the canvas a
+     definite box for max-height to resolve against). */
+  .canvas-area { padding: 0.5rem; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 0.5rem; justify-items: center; align-items: center; }
+  #stage, #stage-3d { grid-row: 1; grid-column: 1; width: auto; height: auto; max-width: 100%; max-height: 100%; }
 
-  .category-rail {
-    grid-row: 2;
-    flex-direction: row;
-    justify-content: center;
-    border-right: none;
-    border-bottom: 1px solid #2a333b;
-  }
+  .tool-hint { display: none; }
 
-  .category-btn {
-    flex-direction: row;
-    padding: 0.5rem 0.8rem;
-  }
-
-  .canvas-wrap {
-    grid-row: 3;
-    min-height: 60vh;
-  }
-
-  .options-panel {
-    grid-row: 4;
-    border-left: none;
-    border-top: 1px solid #2a333b;
-  }
-
-  .canvas-area {
-    flex-direction: column;
-  }
-
-  /* On a phone the floating panel would cover much of the map: make it a
-     compact strip under the canvas instead of an overlay. */
+  /* Camera controls: a compact strip under the map, not an overlay. */
   .camera-float {
     position: static;
-    width: auto;
-    max-width: 100%;
+    grid-row: 2;
+    width: 100%;
     flex-direction: row;
     flex-wrap: wrap;
+    align-items: center;
     justify-content: center;
-    margin: 0.5rem;
+    padding: 0.4rem 0.6rem;
+    gap: 0.5rem;
+    background: var(--shelf);
+    backdrop-filter: none;
+    box-shadow: none;
   }
+  .camera-float h4 { display: none; }
+  .camera-float .oblique-only { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.5rem; width: 100%; }
+  .camera-float label { flex: 1 1 8rem; width: auto; flex-direction: row; align-items: center; gap: 0.6rem; font-size: 0.86rem; }
+  .camera-float label input { flex: 1; min-width: 0; }
+  .camera-float .oblique-only label { flex: 1 1 100%; }
+  .compass svg { width: 48px; height: 48px; display: block; }
+  .compass-presets { flex: 1; width: auto; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .compass-presets button { min-height: var(--tap); }
+  .pan-trackpad { width: 72px; height: var(--tap); flex: none; }
+  #camera-fit { width: auto; flex: none; min-height: var(--tap); padding: 0 1rem; }
 
-  .camera-float label {
-    width: auto;
-    flex: 1 1 8rem;
+  /* Tool options become a sheet above the dock. */
+  .options-panel {
+    grid-row: 3;
+    border-left: 0;
+    border-top: 1px solid var(--rule);
+    padding: 0.6rem max(12px, env(safe-area-inset-right)) 0.6rem max(12px, env(safe-area-inset-left));
+    overflow: visible;
   }
-  .camera-float .oblique-only {
+  .options-section h3 { display: none; }
+  /* One row of chips that scrolls sideways if a category has many tools. */
+  .options-section:not(.hidden) { display: flex; flex-wrap: nowrap; gap: 0.4rem; overflow-x: auto; scrollbar-width: none; margin: 0 -2px; padding: 2px; }
+  .options-section .btn-grid { display: contents; }
+  .btn-grid button { min-height: var(--tap); flex: 1 0 auto; padding: 0 0.95rem; border-radius: 22px; white-space: nowrap; }
+  .options-footer { margin-top: 0.6rem; padding-top: 0.5rem; flex-direction: row; gap: 1rem; }
+  .slider-label { flex: 1; }
+  input[type="range"] { height: var(--tap); }
+
+  /* Categories become the bottom dock. */
+  .category-rail {
+    grid-row: 4;
     flex-direction: row;
-    flex-wrap: wrap;
-    justify-content: center;
-    width: auto;
+    justify-content: space-around;
+    padding: 0.4rem max(8px, env(safe-area-inset-right)) max(0.5rem, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+    border-right: 0;
+    border-top: 1px solid var(--rule);
+    overflow: visible;
   }
-  .camera-float .pan-trackpad {
-    width: 96px;
-  }
+  .category-btn { flex: 1; min-height: 52px; font-size: 0.8rem; max-width: 6rem; }
+  .category-btn.active { background: var(--brass); color: var(--brass-ink); border-color: var(--brass-hi); }
+  .rail-undo { margin-top: 0; }
+
+  body.read-only .app { grid-template-rows: auto minmax(0, 1fr); }
+  body.read-only .canvas-wrap { grid-row: 2; }
+
+  .sheet { padding: 1rem; }
+  .link-row .primary-button,
+  .link-row .ghost-button,
+  .field-row input,
+  .field-row .primary-button,
+  .field-row .ghost-button,
+  .map-link,
+  .sheet-actions .primary-button,
+  .sheet-footer a { min-height: var(--tap); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
 }

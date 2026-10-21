@@ -2050,6 +2050,106 @@ and send-a-copy. Live cursors are cut last.
   confirmed in `flyctl volumes snapshots list`. No deploys from this
   machine.
 
+### Step I results (2026-10-21, branch `atlas-identity`, not merged or deployed)
+
+**Built.**
+- `people` table: a new table, created with `CREATE TABLE IF NOT EXISTS`
+  on every schema path. No existing rows are touched. Each anonymous
+  session gets a generated cartographer's name ("Quill of Highmoor") and a
+  heraldic tincture. Both are editable through `GET/POST /api/me`, with
+  validation and a rate limit.
+- Presence and the activity log now show a person's current name and
+  colour. Session ids never leave the server. Older log rows from sessions
+  with no `people` row fall back to the previous hashed label.
+- The editor restyled as Atlas Table:
+  - night-chart tokens and one brass accent;
+  - self-hosted Figtree and IM Fell English SC (see CREDITS.md);
+  - shield sigils for people, with your own shield on a "me" button that
+    opens "How others see you";
+  - views renamed Chart / Relief;
+  - the phone layout is a two-row top bar, a camera strip under the map, a
+    sideways-scrolling tool row and a labelled bottom dock.
+- No renderer file changed. `world-client.js` changed only in wiring
+  (slider readouts, the dock's Undo, loading your identity).
+
+**Checked.**
+- `pnpm check`: typecheck plus 48/48 tests, on a fresh database. This
+  includes 7 new tests in `spec/people.test.ts`. `pnpm check:evidence`
+  passes.
+- UI audit (`.localdata/phase0/ui-audit.mjs`, WCAG contrast, text size,
+  tap targets):
+
+  | Build | Viewport | Text under 12 px | Small targets | Contrast failures |
+  |---|---|---|---|---|
+  | `main` | desktop | 12 | 3 (under 24 px) | 0 |
+  | `main` | phone | 12 | 16 (under 44 px) | 0 |
+  | step I | desktop | 0 | 0 | 0 |
+  | step I | phone | 0 | 0 | 0 |
+
+  The step I numbers hold with each dialog open (share, maps, rename,
+  me). The audit was taught that a sigil's initial sits on its SVG shield
+  fill; computed by hand, the lowest letter contrast is 4.90:1 (gules).
+- Real multi-user browser run (`multiuser-s1.mjs`): 33/33, no page
+  errors. Includes a live rename and recolour reaching another person, and
+  the session id never appearing in anyone else's page.
+- Parity: `main` and this branch, each on a fresh copy of the pristine
+  production database, with the canvas container pinned to the same size
+  so both build the same 860x860 backing store:
+  - the four Relief views were pixel-identical on every run;
+  - Chart view was identical except that it sometimes showed 3 pixels off
+    by up to 3/255 at one spot;
+  - `main` against itself showed the same 3 pixels in 1 of 4 runs, so this
+    is existing timing noise, not this change.
+
+  The page chrome changes the canvas's natural size by a few pixels, so
+  an unpinned comparison differs for that reason alone.
+- An early version of the parity harness clicked through the pinned
+  canvas and painted one stroke into its throwaway `/tmp` copy of `main`'s
+  database. It was caught by comparing the terrain hashes. Both copies were
+  reset from the pristine file before the runs reported above. Production
+  was never involved.
+
+**Fixes after review (same day, before merge).**
+- *Same name and colour in who's here.* Your own entry was hidden by
+  matching name and colour, so a twin hid one sigil. Each presence entry
+  now has an opaque key, random per session per room, and your stream
+  alone gets a `presence:you` event naming yours. A first-time visitor's
+  name is created on joining, so others never see a placeholder that
+  changes a moment later. A rename made in one tab now updates your own
+  shield in your other tabs.
+- *Private-room activity.* Renames were always logged to the shared
+  world: someone working only in a private map appeared in the public log,
+  and the private map never showed the rename. Renames are now logged in
+  the rooms the person has open or has activity in. Private maps get their
+  own log at `/logs/#map=<token>` (the token stays in the URL fragment),
+  linked from the Maps menu. Reading a log no longer counts as being at the
+  map (`/api/events?watch=log` skips presence).
+- Longer toasts for longer messages. `spec/README.md` lists which test
+  files are safe to run against production.
+
+**Checked after the fixes.**
+- `pnpm check`: 54/54 on a fresh database (6 new tests).
+- `s1-fixes.mjs`: 12/12 in a real browser, including two people with the
+  same name and colour and a private-map log updating live.
+- `multiuser-s1.mjs`: 33/33. UI audit: still 0/0/0 at both widths, with the
+  dialogs open.
+- Data, two paths:
+  - a pristine production copy migrates with verified content hashes;
+  - more importantly, a copy of `main`'s already-migrated database (the
+    state production is in) started on this code ran no migration;
+    elevation, type and mark data hash identically, every row count is
+    unchanged, and `people` was added empty.
+- Rendering: across two runs of all five views against `main`, the only
+  difference was the same occasional 3-pixel Chart noise noted above.
+
+**Remaining limits.**
+- `/logs/` still uses the old grey styling, not Atlas Table. It's
+  functional; the redesign is in a later step.
+- A rename is recorded in the shared world if you have it open at the time,
+  even if you've never edited there.
+- Old activity rows from sessions that never got a name keep showing the
+  hashed label ("Wry Crane #000"), as before.
+
 ### Writing track (runs alongside the phases, not only at the end)
 
 Figures from `topics/assessment` and `assessments/final-project`, checked
