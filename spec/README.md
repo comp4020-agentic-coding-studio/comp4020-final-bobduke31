@@ -37,4 +37,6 @@ spec.
 write to the shared world (or rely on it being quiet), so run them only
 against a throwaway database, as CI does. `rooms.test.ts` and
 `invariants.test.ts` only create private maps or read, and are safe to run
-against the live app.
+against the live app. `forge.test.ts` also only creates private maps, but
+each stores tens of thousands of cells, so don't run it against production:
+it would spend the live volume and the 150-map cap on test worlds.

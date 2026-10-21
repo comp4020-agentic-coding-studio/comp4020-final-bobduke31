@@ -226,6 +226,71 @@ function wireForm(formId, inputId, errorId, submit) {
   });
 }
 
+// The Forge panel in "Start a new world": template, sliders and seed, with
+// a live preview drawn by the same forge.js the server runs on Create - so
+// the preview is the map you get. Loaded on first open, not with the page.
+const SEED_WORDS = ["Saltmere", "Oakhollow", "Vey", "Thornwick", "Greymarch", "Ashfold", "Brindle", "Coldharbour", "Wrenfield", "Highcairn", "Morrow", "Selkie", "Duskwater", "Harrowgate", "Kestrel", "Lindqvist"];
+const SLIDER_WORDS = {
+  land: ["Little", "Some", "Much"],
+  mountains: ["Hills", "Ranges", "Alpine"],
+  forest: ["Sparse", "Woods", "Dense"],
+};
+
+function wireForge() {
+  const templates = document.querySelectorAll('input[name="forge-template"]');
+  const seedInput = $("forge-seed");
+  const preview = $("forge-preview");
+  const body = $("forge-body");
+  const sliders = Object.fromEntries(Object.keys(SLIDER_WORDS).map((k) => [k, $(`forge-${k}`)]));
+  let forgeModule = null;
+  let pending = 0;
+
+  const template = () => [...templates].find((r) => r.checked)?.value ?? "continent";
+  const settings = () => Object.fromEntries(Object.entries(sliders).map(([k, el]) => [k, Number(el.value)]));
+  const reroll = () => {
+    const word = SEED_WORDS[Math.floor(Math.random() * SEED_WORDS.length)];
+    seedInput.value = `${word} ${Math.floor(Math.random() * 900 + 100)}`;
+  };
+
+  async function draw() {
+    const ticket = ++pending;
+    body.classList.toggle("hidden", template() === "blank");
+    if (template() === "blank") return;
+    forgeModule ??= await import("./forge.js");
+    // Slider drags fire faster than a world generates (~100 ms); only the
+    // latest request draws.
+    await new Promise((r) => requestAnimationFrame(r));
+    if (ticket !== pending) return;
+    const world = forgeModule.forgeWorld(seedInput.value.trim() || "Atlas", template(), settings());
+    const size = preview.width;
+    const img = new ImageData(forgeModule.previewPixels(world, size), size, size);
+    preview.getContext("2d").putImageData(img, 0, 0);
+  }
+
+  for (const [k, el] of Object.entries(sliders)) {
+    const out = $(`forge-${k}-out`);
+    el.addEventListener("input", () => {
+      const v = Number(el.value);
+      out.textContent = SLIDER_WORDS[k][v < 0.34 ? 0 : v < 0.67 ? 1 : 2];
+      draw();
+    });
+  }
+  for (const r of templates) r.addEventListener("change", draw);
+  seedInput.addEventListener("input", draw);
+  $("forge-reroll").addEventListener("click", () => {
+    reroll();
+    draw();
+  });
+  reroll();
+  els.mapsDialog.addEventListener("toggle", () => {
+    if (els.mapsDialog.open) draw();
+  });
+
+  return {
+    request: () => (template() === "blank" ? undefined : { seed: seedInput.value.trim() || "Atlas", template: template(), settings: settings() }),
+  };
+}
+
 export const me = { name: "", tincture: "argent" };
 let tinctureList = [];
 
@@ -339,11 +404,12 @@ export function wireRoomUi() {
     refreshMyMaps();
   });
 
+  const forge = wireForge();
   wireForm("new-map-form", "new-map-name", "new-map-error", async (name) => {
     const res = await fetch("/api/rooms", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, forge: forge.request() }),
     });
     const body = await res.json();
     if (!res.ok) return body.error ?? "Couldn't create the map.";
