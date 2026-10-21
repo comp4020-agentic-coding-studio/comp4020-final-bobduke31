@@ -2150,6 +2150,32 @@ and send-a-copy. Live cursors are cut last.
 - Old activity rows from sessions that never got a name keep showing the
   hashed label ("Wry Crane #000"), as before.
 
+### Step I deploy (2026-10-21, user-approved, Fly release v12)
+
+- **Backup first.** Volume snapshot `vs_L4ZVXk8kaP9hDPl294b`, confirmed in
+  `flyctl volumes snapshots list` as `created, 18 MiB` before anything was
+  pushed. Live data hashes recorded beforehand in
+  `.localdata/deploy2/pre-*.json`.
+- **Deployed through GitHub only.** `git push origin main` (`928e90f..18b9e90`)
+  triggered CI run 39597961489: check passed in 39 s, deploy in 43 s.
+  Machine `8747705c6d13d8` is on version 12 and started cleanly at
+  12:15:18 UTC with no migration (step I only adds the `people` table).
+- **Verified live.**
+  - Elevation, type and mark data are byte-identical to before the deploy
+    (58,370 / 22,259 / 9), and again after all live testing.
+  - `/`, `/world/`, `/readme/`, `/credits/`, `/logs/`, `/isle/` and the
+    font files return 200.
+  - `rooms.test.ts` and `invariants.test.ts` pass against production
+    (20/20).
+  - The multi-user browser run passes 33/33 against production, with live
+    edits arriving in 217 ms. Its edits go only to new private maps.
+  - Screenshot checked: the Atlas Table interface, with the original map
+    unchanged.
+- **Rollback.** Redeploy `928e90f`. The database needs no restore. Tested
+  locally on a pristine copy taken through the same old, new, old sequence:
+  the old code starts on a database with `people`, serves identical
+  elevation and type data, and still creates maps.
+
 ### Writing track (runs alongside the phases, not only at the end)
 
 Figures from `topics/assessment` and `assessments/final-project`, checked
