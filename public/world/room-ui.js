@@ -45,7 +45,9 @@ function setName(name) {
   room.name = name;
   els.name.textContent = name;
   els.name.title = name;
-  document.title = `${name} — Shared terrain`;
+  document.title = `${name} · Atlas Table`;
+  const shareName = document.getElementById("share-map-name");
+  if (shareName) shareName.textContent = name;
 }
 
 const linkFor = (t) => `${location.origin}/m/${t}`;
@@ -66,9 +68,10 @@ export async function loadRoom() {
   room.canEdit = data.role === "edit";
   setName(data.name);
   document.body.classList.toggle("read-only", !room.canEdit);
+  $("public-badge").classList.toggle("hidden", !room.isPublic);
   if (!room.canEdit) {
-    $("category-hint").textContent = "You're viewing this map: every change anyone makes appears here live. Ask for the edit link to make changes yourself.";
-    $("camera-hint").textContent = "Mouse wheel or the Zoom slider zooms; drag the map (or the pad) to pan.";
+    $("category-hint").textContent = "You're watching this map. Every change anyone makes appears here live. Ask for the edit link to make changes yourself.";
+    $("camera-hint").textContent = "Scroll or use Zoom to zoom. Drag the map to pan.";
   }
   els.badge.classList.toggle("hidden", room.canEdit);
   els.rename.classList.toggle("hidden", !room.canEdit || room.isPublic);
@@ -82,34 +85,50 @@ export async function loadRoom() {
   return true;
 }
 
-// Stable colour per display name, from a small palette that reads on the
-// dark chrome.
-const CHIP_COLOURS = ["#e5a86b", "#8fc98a", "#8fc3e8", "#d9a0d6", "#e6d278", "#f19a8e", "#7fd1c2", "#b8a6f0"];
-function colourFor(name) {
-  let h = 0;
-  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return CHIP_COLOURS[h % CHIP_COLOURS.length];
+// A person's sigil: their tincture on a shield, with their initial.
+export function sigil(person, { size = "", viewer = false } = {}) {
+  const span = document.createElement("span");
+  span.className = ["sigil", size, viewer ? "viewer" : ""].filter(Boolean).join(" ");
+  span.dataset.tincture = person.tincture;
+  span.innerHTML = '<svg viewBox="0 0 26 30" aria-hidden="true"><use href="#shield"/></svg>';
+  const em = document.createElement("em");
+  em.textContent = initialOf(person.name);
+  span.append(em);
+  return span;
 }
 
-export function renderPresence(people) {
+function initialOf(name) {
+  const letter = [...name.trim()].find((ch) => /\p{L}/u.test(ch));
+  return (letter ?? "?").toUpperCase();
+}
+
+let lastPresence = [];
+
+export function renderPresence(everyone) {
+  lastPresence = everyone;
+  // Your own shield is already on the me-button: leave one matching entry
+  // out here so you don't appear twice. (Presence carries no session ids,
+  // so name + colour is the match; a namesake in the same colour still shows.)
+  const self = everyone.findIndex((p) => p.name === me.name && p.tincture === me.tincture);
+  const people = self === -1 ? everyone : everyone.filter((_, i) => i !== self);
   els.presence.textContent = "";
   const shown = people.slice(0, 5);
   for (const person of shown) {
-    const chip = document.createElement("span");
-    chip.className = person.editing ? "presence-chip" : "presence-chip viewer";
-    chip.style.background = colourFor(person.name);
-    chip.textContent = person.name.split(" ").slice(0, 2).map((w) => w[0]).join("");
-    chip.title = `${person.name}${person.editing ? "" : " (viewing)"}`;
-    els.presence.append(chip);
+    const s = sigil(person, { viewer: !person.editing });
+    s.title = `${person.name}${person.editing ? "" : " (watching)"}`;
+    els.presence.append(s);
   }
   if (people.length > shown.length) {
     const more = document.createElement("span");
-    more.className = "presence-chip more";
+    more.className = "presence-more";
     more.textContent = `+${people.length - shown.length}`;
     more.title = people.slice(5).map((p) => p.name).join(", ");
     els.presence.append(more);
   }
-  els.presence.setAttribute("aria-label", `${people.length} ${people.length === 1 ? "person" : "people"} here`);
+  els.presence.setAttribute(
+    "aria-label",
+    people.length ? `Also here: ${people.map((p) => p.name).join(", ")}` : "Nobody else is here right now",
+  );
 }
 
 export function wireRoomEvents(source) {
@@ -125,11 +144,11 @@ async function copyField(id, button) {
     // Clipboard API unavailable (http, old browser): select it so the
     // person can copy it themselves.
     input.select();
-    toast("Press Ctrl+C (or long-press) to copy");
+    toast("Select the link and copy it (Ctrl+C, or long-press on a phone).");
     return;
   }
   const label = button.textContent;
-  button.textContent = "Copied";
+  button.textContent = "Copied ✓";
   setTimeout(() => (button.textContent = label), 1500);
 }
 
@@ -154,10 +173,11 @@ async function refreshMyMaps() {
     a.className = map.token === token ? "map-link current" : "map-link";
     a.href = `/m/${map.token}`;
     const name = document.createElement("span");
+    name.className = "place-name";
     name.textContent = map.name;
     const meta = document.createElement("span");
     meta.className = "map-meta";
-    meta.textContent = `${map.role === "edit" ? "Can edit" : "View only"} · ${relativeTime(map.lastSeenAt)}`;
+    meta.textContent = `${map.role === "edit" ? "Can edit" : "Watching"} · ${relativeTime(map.lastSeenAt)}`;
     a.append(name, meta);
     li.append(a);
     list.append(li);
@@ -189,7 +209,110 @@ function wireForm(formId, inputId, errorId, submit) {
   });
 }
 
+export const me = { name: "", tincture: "argent" };
+let tinctureList = [];
+
+function renderMe() {
+  $("me-name").textContent = me.name;
+  $("me-initial").textContent = initialOf(me.name);
+  document.querySelector("#me-button .sigil").dataset.tincture = me.tincture;
+  $("me-button").title = `You appear as ${me.name}. Change your name or colour.`;
+}
+
+function renderMePreview(name, tincture) {
+  $("me-preview-name").textContent = name || "…";
+  $("me-preview-initial").textContent = initialOf(name || "?");
+  $("me-preview-sigil").dataset.tincture = tincture;
+}
+
+export async function loadMe() {
+  const res = await fetch("/api/me");
+  if (!res.ok) return;
+  const data = await res.json();
+  me.name = data.name;
+  me.tincture = data.tincture;
+  tinctureList = data.tinctures;
+  renderMe();
+  renderPresence(lastPresence);
+  buildTinctureOptions();
+  if (data.isNew) toast(`Welcome. You'll appear to others as ${me.name}. Tap your shield to change it.`);
+}
+
+const TINCTURE_LABEL = {
+  gules: "Red", azure: "Blue", vert: "Green", or: "Gold",
+  purpure: "Purple", argent: "Silver", tenne: "Orange", celeste: "Sky",
+};
+
+function buildTinctureOptions() {
+  const box = $("tincture-options");
+  box.textContent = "";
+  for (const t of tinctureList) {
+    const label = document.createElement("label");
+    label.title = TINCTURE_LABEL[t] ?? t;
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = "tincture";
+    input.value = t;
+    input.setAttribute("aria-label", TINCTURE_LABEL[t] ?? t);
+    const dot = document.createElement("span");
+    dot.className = "swatch-dot";
+    dot.style.background = `var(--t-${t})`;
+    label.append(input, dot);
+    box.append(label);
+  }
+}
+
+function openMeDialog() {
+  $("me-name-input").value = me.name;
+  const checked = document.querySelector(`#tincture-options input[value="${me.tincture}"]`);
+  if (checked) checked.checked = true;
+  renderMePreview(me.name, me.tincture);
+  $("me-error").classList.add("hidden");
+  $("me-dialog").showModal();
+}
+
+function selectedTincture() {
+  return document.querySelector("#tincture-options input:checked")?.value ?? me.tincture;
+}
+
 export function wireRoomUi() {
+  $("me-button").addEventListener("click", openMeDialog);
+  $("me-name-input").addEventListener("input", () => renderMePreview($("me-name-input").value.trim(), selectedTincture()));
+  $("tincture-options").addEventListener("change", () => renderMePreview($("me-name-input").value.trim(), selectedTincture()));
+  $("me-suggest").addEventListener("click", async () => {
+    const res = await fetch("/api/me/suggestion");
+    if (!res.ok) return;
+    const { name } = await res.json();
+    $("me-name-input").value = name;
+    renderMePreview(name, selectedTincture());
+  });
+  $("me-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const error = $("me-error");
+    error.classList.add("hidden");
+    try {
+      const res = await fetch("/api/me", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: $("me-name-input").value.trim(), tincture: selectedTincture() }),
+      });
+      const body = await res.json();
+      if (!res.ok) {
+        error.textContent = body.error ?? "Couldn't save your name.";
+        error.classList.remove("hidden");
+        return;
+      }
+      me.name = body.name;
+      me.tincture = body.tincture;
+      renderMe();
+      $("me-dialog").close();
+      toast(`Others now see you as ${me.name}.`);
+    } catch {
+      error.textContent = "Couldn't reach the server. Check your connection and try again.";
+      error.classList.remove("hidden");
+    }
+  });
+
   els.share.addEventListener("click", () => els.shareDialog.showModal());
   for (const button of document.querySelectorAll("[data-copy]")) {
     button.addEventListener("click", () => copyField(button.dataset.copy, button));
@@ -232,7 +355,7 @@ export function wireRoomUi() {
   });
 
   // Clicking the dimmed backdrop closes a sheet, as people expect.
-  for (const dialog of [els.shareDialog, els.mapsDialog, els.renameDialog]) {
+  for (const dialog of [els.shareDialog, els.mapsDialog, els.renameDialog, $("me-dialog")]) {
     dialog.addEventListener("click", (event) => {
       if (event.target === dialog) dialog.close();
     });

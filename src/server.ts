@@ -34,7 +34,8 @@ import {
   shareTokensFor,
 } from "./rooms.ts";
 import type { RoomAccess } from "./rooms.ts";
-import { join as joinPresence, presenceFor } from "./presence.ts";
+import { join as joinPresence, presenceFor, refreshPresenceFor } from "./presence.ts";
+import { ensurePerson, cleanName, isTincture, updatePerson, suggestion, TINCTURES, NAME_MAX } from "./people.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const PUBLIC_DIR = new URL("../public/", import.meta.url).pathname;
@@ -52,6 +53,7 @@ const MIME: Record<string, string> = {
   ".gltf": "model/gltf+json",
   ".bin": "application/octet-stream",
   ".webp": "image/webp",
+  ".woff2": "font/woff2",
 };
 
 interface StaticFile {
@@ -482,6 +484,37 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     await handleCreateRoom(req, res, sessionId);
     return;
   }
+  // Who you are, as others see you (src/people.ts). GET creates your
+  // generated name on first visit; POST changes name and/or tincture.
+  if (url.pathname === "/api/me" && req.method === "GET") {
+    sendJson(res, 200, { ...ensurePerson(sessionId), tinctures: TINCTURES });
+    return;
+  }
+  if (url.pathname === "/api/me/suggestion" && req.method === "GET") {
+    sendJson(res, 200, suggestion());
+    return;
+  }
+  if (url.pathname === "/api/me" && req.method === "POST") {
+    const payload = await readJsonOr400(req, res);
+    if (!payload) return;
+    const current = ensurePerson(sessionId);
+    const name = payload.name === undefined ? current.name : cleanName(payload.name);
+    const tincture = payload.tincture === undefined ? current.tincture : payload.tincture;
+    if (!name || !isTincture(tincture)) {
+      sendJson(res, 400, { error: `a name is 1-${NAME_MAX} characters, and the colour must be one of ${TINCTURES.join(", ")}` });
+      return;
+    }
+    if (rateLimited(sessionId)) {
+      sendJson(res, 429, { error: "too many changes just now - try again in a minute" });
+      return;
+    }
+    const updated = updatePerson(sessionId, { name, tincture });
+    if (name !== current.name) logActivity(PUBLIC_ROOM_ID, sessionId, "person:rename", `"${current.name}" is now "${name}"`);
+    refreshPresenceFor(sessionId);
+    sendJson(res, 200, updated);
+    return;
+  }
+
   if (url.pathname === "/api/rooms/mine" && req.method === "GET") {
     sendJson(res, 200, roomsForSession(sessionId));
     return;

@@ -1,4 +1,4 @@
-import { displayNameFor } from "./identity.ts";
+import { personFor } from "./people.ts";
 import { broadcast } from "./realtime.ts";
 
 // Who has a room open right now, derived from its open event streams - no
@@ -11,12 +11,19 @@ interface Tabs {
 }
 const present = new Map<string, Map<string, Tabs>>();
 
-function snapshot(roomId: string): { name: string; editing: boolean }[] {
+function snapshot(roomId: string): { name: string; tincture: string; editing: boolean }[] {
   const sessions = present.get(roomId);
   if (!sessions) return [];
   return [...sessions.entries()]
-    .map(([sessionId, tabs]) => ({ name: displayNameFor(sessionId), editing: tabs.edit > 0 }))
+    .map(([sessionId, tabs]) => ({ ...personFor(sessionId), editing: tabs.edit > 0 }))
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// A rename or recolour shows up in every room this session has open.
+export function refreshPresenceFor(sessionId: string): void {
+  for (const [roomId, sessions] of present) {
+    if (sessions.has(sessionId)) broadcast(roomId, "presence", snapshot(roomId));
+  }
 }
 
 export function join(roomId: string, sessionId: string, role: "edit" | "view"): () => void {

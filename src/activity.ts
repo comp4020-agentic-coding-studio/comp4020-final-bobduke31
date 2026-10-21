@@ -1,5 +1,5 @@
 import { db } from "./db.ts";
-import { displayNameFor } from "./identity.ts";
+import { personFor } from "./people.ts";
 import { broadcast } from "./realtime.ts";
 import { PUBLIC_ROOM_ID } from "./rooms-schema.ts";
 
@@ -28,6 +28,7 @@ export const ACTIONS = [
   "mark:delete",
   "room:create",
   "room:rename",
+  "person:rename",
 ] as const;
 export type ActivityAction = (typeof ACTIONS)[number];
 
@@ -38,6 +39,7 @@ export type ActivityAction = (typeof ACTIONS)[number];
 export interface ActivityEntry {
   id: number;
   displayName: string;
+  tincture: string;
   action: ActivityAction;
   detail: string;
   createdAt: string;
@@ -54,13 +56,19 @@ interface ActivityRow {
   created_at: string;
 }
 
-const rowToEntry = (row: ActivityRow): ActivityEntry => ({
-  id: row.id,
-  displayName: displayNameFor(row.session_id),
-  action: row.action as ActivityAction,
-  detail: row.detail,
-  createdAt: row.created_at,
-});
+// The name shown is the person's *current* name, so a rename reads through
+// their whole history - what you'd expect of a name, not a frozen label.
+const rowToEntry = (row: ActivityRow): ActivityEntry => {
+  const person = personFor(row.session_id);
+  return {
+    id: row.id,
+    displayName: person.name,
+    tincture: person.tincture,
+    action: row.action as ActivityAction,
+    detail: row.detail,
+    createdAt: row.created_at,
+  };
+};
 
 const insertStmt = db.prepare(
   "INSERT INTO activity_log (room_id, session_id, action, detail) VALUES (?, ?, ?, ?) RETURNING *",

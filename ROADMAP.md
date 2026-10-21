@@ -2050,6 +2050,71 @@ and send-a-copy. Live cursors are cut last.
   confirmed in `flyctl volumes snapshots list`. No deploys from this
   machine.
 
+### Step I results (2026-10-21, branch `atlas-identity`, not merged or deployed)
+
+**Built.**
+- `people` table: a new table, created with `CREATE TABLE IF NOT EXISTS`
+  on every schema path. No existing rows are touched. Each anonymous
+  session gets a generated cartographer's name ("Quill of Highmoor") and a
+  heraldic tincture. Both are editable through `GET/POST /api/me`, with
+  validation and a rate limit.
+- Presence and the activity log now show a person's current name and
+  colour. Session ids never leave the server. Older log rows from sessions
+  with no `people` row fall back to the previous hashed label.
+- The editor restyled as Atlas Table:
+  - night-chart tokens and one brass accent;
+  - self-hosted Figtree and IM Fell English SC (see CREDITS.md);
+  - shield sigils for people, with your own shield on a "me" button that
+    opens "How others see you";
+  - views renamed Chart / Relief;
+  - the phone layout is a two-row top bar, a camera strip under the map, a
+    sideways-scrolling tool row and a labelled bottom dock.
+- No renderer file changed. `world-client.js` changed only in wiring
+  (slider readouts, the dock's Undo, loading your identity).
+
+**Checked.**
+- `pnpm check`: typecheck plus 48/48 tests, on a fresh database. This
+  includes 7 new tests in `spec/people.test.ts`. `pnpm check:evidence`
+  passes.
+- UI audit (`.localdata/phase0/ui-audit.mjs`, WCAG contrast, text size,
+  tap targets):
+
+  | Build | Viewport | Text under 12 px | Small targets | Contrast failures |
+  |---|---|---|---|---|
+  | `main` | desktop | 12 | 3 (under 24 px) | 0 |
+  | `main` | phone | 12 | 16 (under 44 px) | 0 |
+  | step I | desktop | 0 | 0 | 0 |
+  | step I | phone | 0 | 0 | 0 |
+
+  The step I numbers hold with each dialog open (share, maps, rename,
+  me). The audit was taught that a sigil's initial sits on its SVG shield
+  fill; computed by hand, the lowest letter contrast is 4.90:1 (gules).
+- Real multi-user browser run (`multiuser-s1.mjs`): 33/33, no page
+  errors. Includes a live rename and recolour reaching another person, and
+  the session id never appearing in anyone else's page.
+- Parity: `main` and this branch, each on a fresh copy of the pristine
+  production database, with the canvas container pinned to the same size
+  so both build the same 860x860 backing store:
+  - the four Relief views were pixel-identical on every run;
+  - Chart view was identical except that it sometimes showed 3 pixels off
+    by up to 3/255 at one spot;
+  - `main` against itself showed the same 3 pixels in 1 of 4 runs, so this
+    is existing timing noise, not this change.
+
+  The page chrome changes the canvas's natural size by a few pixels, so
+  an unpinned comparison differs for that reason alone.
+- An early version of the parity harness clicked through the pinned
+  canvas and painted one stroke into its throwaway `/tmp` copy of `main`'s
+  database. It was caught by comparing the terrain hashes. Both copies were
+  reset from the pristine file before the runs reported above. Production
+  was never involved.
+
+**Known limits.**
+- Your own entry is left out of the presence list by matching name and
+  colour, because presence carries no ids. A namesake in the same colour
+  would hide one sigil.
+- Renames are logged to the shared world's activity log only.
+
 ### Writing track (runs alongside the phases, not only at the end)
 
 Figures from `topics/assessment` and `assessments/final-project`, checked
