@@ -1981,10 +1981,74 @@ browser test. Deploys still need the user's approval each time.
 |---|---|---|---|
 | 0. Baseline | 21-22 Oct | ✅ Done 2026-10-21, see "Phase 0 results". Parity screenshots of the public room. ADR 3 draft (rooms, links, roles). Migration script dry-run on a production copy. | Row counts preserved in the dry run. |
 | 1. Rooms + links | 22-27 Oct | ✅ Deployed 2026-10-21 (release v10), verified live. See "Phase 1 deploy". Migration run at boot inside the new code. Token routing and roles. Phone layout overflow fix. Per-room SSE/undo/activity. Unprefixed routes alias the public room. Share panel and view-only UI. Rate limits on new routes. | Existing 23 tests green. New tests: room isolation, view-only 403 on every write, data survives restart. Parity gate. **Proposed deploy.** |
-| 2. Create | 28 Oct - 1 Nov | Shared generator with preview. New-map dialog. My maps. Presence. | Generated maps reviewed against references. Generator is deterministic for a given seed (test). Parity gate. |
-| 3. Save, reload, share | 1-4 Nov | Snapshots, autosnapshots, restore (private only), fork, file export/import, PNG export. ADR 4 (history model: B over C). | Restore round-trip test. Public-room restore refused. Import of a corrupt file rejected. Parity gate. |
-| 4. Harden | 5-7 Nov | Caps, headers, both marking viewports, next-day return test after a restart. **Feature freeze 7 Nov.** | Full manual walkthrough of the loop on desktop and phone. |
-| 5. Write-up | 7-9 Nov | README argued around the loop, with a "not built" list. `CLAUDE.md` and `spec/` aligned with it. `PROCESS.md` rewritten with real commits. Final reflection. Research note finalised. | `pnpm check` and `pnpm check:evidence` green on the deployed build. All writing within its word guidance. |
+| 2-5 | - | **Superseded on 2026-10-21** by "Atlas Table redesign" below, after user review of deployed phase 1 ("feels like an editor with a few extra buttons"). The generator, saving and sharing from these phases are kept and folded into that plan's track one. | - |
+
+### Atlas Table redesign (2026-10-21, agreed with the user)
+
+**Why.** The user tested deployed phase 1. Everything worked, but it read as
+an editor with extra buttons rather than a collaborative map platform:
+there's no front door, maps are a text list in a pop-up, people are
+accidental hashed names, joining by link is cold, saving is silent, and
+there's no visual identity. The redesign answers that. The plan rests on
+research into nine map-making tools and six collaborative apps (sources
+are in the proposal page).
+
+**Decided by the user.**
+- Visual direction: "a chart table at night". Deep-sea navy taken from the
+  rendered water, one brass accent, IM Fell English for map and place names
+  only, Figtree for every control, and heraldic colours and shield sigils
+  for people.
+- Working name: **Atlas Table**.
+- The full create, edit, share and save loop must work **early**. It isn't
+  left until after the polish.
+- Phone readability and touch: mockups fixed to at least 12 px text, at
+  least 4.5:1 contrast and at least 44 px tap targets, with labelled dock
+  tools.
+- Existing live maps and rendering stay intact.
+
+**Four surfaces.**
+- The **Atlas** (home, `/`): map cards with thumbnails, shared-with-you,
+  live-now, and the shared world as a card.
+- The **Forge**: a new world from a seeded generator, with preview and
+  reroll.
+- The **Gate**: the first-visit arrival card for a map link (inviter, map,
+  role, who's here, your name and colour).
+- The **Table**: the editor, with live named cursors, a "here now" panel,
+  a save indicator, and a phone dock and sheet.
+
+Proposal with mockups: `research/ux-mockups/atlas-table-redesign.html`
+(gitignored, like the rest of `research/`).
+
+**Track one: the complete loop, working early.**
+
+| Step | Dates | Delivers | Exit gate |
+|---|---|---|---|
+| I. Foundation and identity | 22-23 Oct | Design tokens, type and the sigil, applied to the existing editor. A name and tincture per session, stored on the server, generated and editable, used in presence and the activity log. | Parity gate (map pixels unchanged). Name/colour persist across reload and show to other sessions. Tests. |
+| II. Create: the Forge | 24-26 Oct | Seeded generator (continent / archipelago / coastline / blank, plus land, mountain and forest controls), preview, reroll. The server regenerates from the seed and never trusts client cells. Calibrated to the renderer's 0.42-0.85 mountain band. | Generated maps screenshotted next to `research/roadmap/references/` and judged visually. Deterministic per seed (test). No circular mountains or rectangular forests. |
+| III. Find: the Atlas | 27 Oct | `/` becomes the home: map cards with browser-rendered, size-capped thumbnails, shared-with-you, the shared world as a card. The shared world's editor moves to its own address. | Old links (`/`, `/world/`, `/m/<token>`) still reach the right map. Phone and desktop layouts checked. |
+| IV. Save | 28-29 Oct | Named versions, restore (private maps only, with an automatic checkpoint first), copy a version to a new world, PNG export. ADR 4 (snapshots over a full edit log). | Restore round trip. Shared-world restore refused. Snapshot caps enforced. |
+| V. Share: the Gate | 30 Oct | First-visit arrival card. Plain-language share sheet with the map preview. **The full loop works end to end.** | Real multi-user browser run of the whole loop. **Proposed deploy**, via GitHub and CI after a confirmed snapshot. |
+
+**Track two: polish and depth, on a working product.**
+
+| Step | Dates | Delivers |
+|---|---|---|
+| VI. The Table | 31 Oct - 3 Nov | New editor shell (save indicator, icon rail, "here now" with activity), live named cursors with brush rings over a throttled cursor channel, phone dock and brush sheet. |
+| VII. Depth | 4-6 Nov | Automatic versions, send-a-copy links, the Atlas live-now strip, link-preview images, Follow, and a second generator pass. |
+| VIII. Harden and write up | 7-9 Nov | Feature freeze 7 Nov. Both viewports, real phone, next-day return. README, CLAUDE.md, PROCESS.md rewrite, research note, reflection. |
+
+**If time runs short.** Track one is protected. Track two shrinks from the
+end: Follow and the second generator pass go first, then automatic versions
+and send-a-copy. Live cursors are cut last.
+
+**Protections that apply to every step.**
+- New tables only. Versions, thumbnails and names are added alongside the
+  existing tables, and no existing row is rewritten.
+- Renderer files are not edited. The parity gate runs at the end of every
+  step.
+- Deploys go through GitHub and CI only, after a volume snapshot that is
+  confirmed in `flyctl volumes snapshots list`. No deploys from this
+  machine.
 
 ### Writing track (runs alongside the phases, not only at the end)
 
@@ -1994,7 +2058,7 @@ marks under the response criterion.
 
 | Deliverable | Guidance | Current state | Schedule |
 |---|---|---|---|
-| `research-note.md` (COMP8020, repo root) | 600-800 words. A cited *position* on good agentic development practice or where the field is heading. Sources weighed against each other, counter-case met. Worth 10% of the course. No crit covers it. | Doesn't exist. The brief said to start reading by week 10, so this is behind. | Reading list and one-sentence position by 24 Oct. Outline by 28 Oct. Full draft by 2 Nov. Revision 6-8 Nov. Use this project's own record as evidence (e.g. C8's tests passing on a bad result, ROADMAP's measure-first discipline), but argue from the literature rather than summarise it. |
+| `research-note.md` (COMP8020, repo root) | 600-800 words. A cited *position* on good agentic development practice or where the field is heading. Sources weighed against each other, counter-case met. Worth 10% of the course. No crit covers it. | Doesn't exist. The brief said to start reading by week 10, so this is behind. | Reading list and one-sentence position by 24 Oct. Outline by 28 Oct. Full draft by 2 Nov. Revision 6-8 Nov. These dates are unchanged by the redesign and run alongside it. Use this project's own record as evidence (e.g. C8's tests passing on a bad result, ROADMAP's measure-first discipline), but argue from the literature rather than summarise it. |
 | Final reflection, `reflections/final.md` | The two standing prompts, 150-300 words. **The brief doesn't define a Final reflection**: reflections are one per crit and the sweep reads only `crit-N.md`. Written as a user-requested addition, not a required file. | Doesn't exist. | Notes collected at each phase's end. Written 8 Nov. |
 | `PROCESS.md` | 900-1100 words, *rewritten* (not appended), covering brief → harness → workflow, stack and workflow trade-offs, and claims backed by commit links. | **6,778 words**, mostly per-crit history. | Plan the cut by 2 Nov (what moves to ROADMAP or reflections). Rewrite 7-8 Nov. |
 | `README.md` | 400-600 words. The argued definition of "good", influences, "not built" list. | 552 words, but it describes the single-map app. | Rewrite 7 Nov, once the loop is real. |
@@ -2569,3 +2633,10 @@ the "Product phases" section above.
   content hash, and the public data is identical to pre-deploy. 20/20 room
   tests and 30/30 browser checks pass against production. See "Phase 1
   deploy".
+- **2026-10-21** - After the user tested deployed phase 1, an "Atlas Table"
+  product redesign was researched, mocked up from real map renders and
+  agreed: the night chart-table identity, the working name, and phone
+  readability fixes measured to 12 px / 4.5:1 / 44 px. The development
+  order was revised at the user's request so that create, find, save and
+  share all work by 30 Oct (track one), with editor polish and depth after
+  (track two). See "Atlas Table redesign". Not implemented yet.
