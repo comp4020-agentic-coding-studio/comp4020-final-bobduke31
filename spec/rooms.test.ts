@@ -260,7 +260,8 @@ describe("presence", () => {
     const seen = nextEvent(watcher, "presence", (d) => d.some((p: any) => p.editing === false));
     const viewerStream = await fetch(url(`/api/r/${map.viewToken}/events`), { headers: { Cookie: viewer } });
     const present = await seen;
-    expect(present.find((p: any) => p.editing === false).name).toMatch(/^\w+ \w+ #[0-9a-f]{3}$/);
+    const me = (await (await fetch(url("/api/me"), { headers: { Cookie: viewer } })).json()) as { name: string };
+    expect(present.find((p: any) => p.editing === false).name).toBe(me.name);
     expect(JSON.stringify(present)).not.toContain(viewer.split("=")[1]);
     await viewerStream.body?.cancel();
   });

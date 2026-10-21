@@ -2109,11 +2109,46 @@ and send-a-copy. Live cursors are cut last.
   reset from the pristine file before the runs reported above. Production
   was never involved.
 
-**Known limits.**
-- Your own entry is left out of the presence list by matching name and
-  colour, because presence carries no ids. A namesake in the same colour
-  would hide one sigil.
-- Renames are logged to the shared world's activity log only.
+**Fixes after review (same day, before merge).**
+- *Same name and colour in who's here.* Your own entry was hidden by
+  matching name and colour, so a twin hid one sigil. Each presence entry
+  now has an opaque key, random per session per room, and your stream
+  alone gets a `presence:you` event naming yours. A first-time visitor's
+  name is created on joining, so others never see a placeholder that
+  changes a moment later. A rename made in one tab now updates your own
+  shield in your other tabs.
+- *Private-room activity.* Renames were always logged to the shared
+  world: someone working only in a private map appeared in the public log,
+  and the private map never showed the rename. Renames are now logged in
+  the rooms the person has open or has activity in. Private maps get their
+  own log at `/logs/#map=<token>` (the token stays in the URL fragment),
+  linked from the Maps menu. Reading a log no longer counts as being at the
+  map (`/api/events?watch=log` skips presence).
+- Longer toasts for longer messages. `spec/README.md` lists which test
+  files are safe to run against production.
+
+**Checked after the fixes.**
+- `pnpm check`: 54/54 on a fresh database (6 new tests).
+- `s1-fixes.mjs`: 12/12 in a real browser, including two people with the
+  same name and colour and a private-map log updating live.
+- `multiuser-s1.mjs`: 33/33. UI audit: still 0/0/0 at both widths, with the
+  dialogs open.
+- Data, two paths:
+  - a pristine production copy migrates with verified content hashes;
+  - more importantly, a copy of `main`'s already-migrated database (the
+    state production is in) started on this code ran no migration;
+    elevation, type and mark data hash identically, every row count is
+    unchanged, and `people` was added empty.
+- Rendering: across two runs of all five views against `main`, the only
+  difference was the same occasional 3-pixel Chart noise noted above.
+
+**Remaining limits.**
+- `/logs/` still uses the old grey styling, not Atlas Table. It's
+  functional; the redesign is in a later step.
+- A rename is recorded in the shared world if you have it open at the time,
+  even if you've never edited there.
+- Old activity rows from sessions that never got a name keep showing the
+  hashed label ("Wry Crane #000"), as before.
 
 ### Writing track (runs alongside the phases, not only at the end)
 

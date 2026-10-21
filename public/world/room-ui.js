@@ -38,7 +38,8 @@ export function toast(message) {
   els.toast.textContent = message;
   els.toast.classList.remove("hidden");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => els.toast.classList.add("hidden"), 2600);
+  // Long enough to read: about a second per 15 characters, at least 2.6 s.
+  toastTimer = setTimeout(() => els.toast.classList.add("hidden"), Math.max(2600, message.length * 65));
 }
 
 function setName(name) {
@@ -48,6 +49,7 @@ function setName(name) {
   document.title = `${name} · Atlas Table`;
   const shareName = document.getElementById("share-map-name");
   if (shareName) shareName.textContent = name;
+  if (token) $("activity-link").textContent = `Activity on ${name}`;
 }
 
 const linkFor = (t) => `${location.origin}/m/${t}`;
@@ -80,7 +82,9 @@ export async function loadRoom() {
     $("share-edit").value = linkFor(data.editToken);
     $("share-view").value = linkFor(data.viewToken);
   }
-  if (token) $("activity-link").classList.add("hidden");
+  if (token) {
+    $("activity-link").href = `/logs/#map=${encodeURIComponent(token)}`;
+  }
   renderPresence(data.present ?? []);
   return true;
 }
@@ -103,14 +107,23 @@ function initialOf(name) {
 }
 
 let lastPresence = [];
+// This viewer's own presence key, sent only on their own event stream.
+let myPresenceKey = null;
 
 export function renderPresence(everyone) {
   lastPresence = everyone;
-  // Your own shield is already on the me-button: leave one matching entry
-  // out here so you don't appear twice. (Presence carries no session ids,
-  // so name + colour is the match; a namesake in the same colour still shows.)
-  const self = everyone.findIndex((p) => p.name === me.name && p.tincture === me.tincture);
-  const people = self === -1 ? everyone : everyone.filter((_, i) => i !== self);
+  // Your own shield is already on the me-button, so leave your entry out.
+  // Matched by the server's opaque key, not by name: two people may well
+  // share a name and colour.
+  const people = everyone.filter((p) => p.key !== myPresenceKey);
+  // A rename made in another tab arrives here first: keep your own shield
+  // in step with what everyone else sees.
+  const mine = everyone.find((p) => p.key === myPresenceKey);
+  if (mine && (mine.name !== me.name || mine.tincture !== me.tincture)) {
+    me.name = mine.name;
+    me.tincture = mine.tincture;
+    renderMe();
+  }
   els.presence.textContent = "";
   const shown = people.slice(0, 5);
   for (const person of shown) {
@@ -132,6 +145,10 @@ export function renderPresence(everyone) {
 }
 
 export function wireRoomEvents(source) {
+  source.addEventListener("presence:you", (event) => {
+    myPresenceKey = JSON.parse(event.data).key;
+    renderPresence(lastPresence);
+  });
   source.addEventListener("presence", (event) => renderPresence(JSON.parse(event.data)));
   source.addEventListener("room:update", (event) => setName(JSON.parse(event.data).name));
 }
@@ -233,7 +250,6 @@ export async function loadMe() {
   me.tincture = data.tincture;
   tinctureList = data.tinctures;
   renderMe();
-  renderPresence(lastPresence);
   buildTinctureOptions();
   if (data.isNew) toast(`Welcome. You'll appear to others as ${me.name}. Tap your shield to change it.`);
 }

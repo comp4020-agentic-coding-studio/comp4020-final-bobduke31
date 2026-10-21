@@ -95,6 +95,14 @@ export function log(roomId: string, sessionId: string, action: ActivityAction, d
   return entry;
 }
 
+const roomsActiveStmt = db.prepare("SELECT DISTINCT room_id FROM activity_log WHERE session_id = ?");
+
+// Rooms where this session has left anything in the log - where a later
+// rename of theirs is worth recording.
+export function roomsWithActivityBy(sessionId: string): string[] {
+  return (roomsActiveStmt.all(sessionId) as { room_id: string }[]).map((r) => r.room_id);
+}
+
 const recentStmt = db.prepare("SELECT * FROM activity_log WHERE room_id = ? ORDER BY id DESC LIMIT ?");
 
 // Newest first, capped - a real-time log viewer wants "what just happened"
