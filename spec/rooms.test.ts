@@ -184,8 +184,10 @@ describe("isolation between maps", () => {
     const nothingOnB = nextEvent(streamB, "terrain:update", (d) => d.cells.some((c: any) => c.x === 77 && c.y === 88), 800);
     const nothingOnPublic = nextEvent(publicStream, "terrain:update", (d) => d.cells.some((c: any) => c.x === 77 && c.y === 88 && c.elevation === 0.55), 800);
     expect((await post(`/api/r/${a.editToken}/terrain/cells`, painter, { cells: [cell] })).status).toBe(204);
-    await expect(nothingOnB).rejects.toThrow();
-    await expect(nothingOnPublic).rejects.toThrow();
+    // Settled together: both time out at about the same moment, and awaiting
+    // one first left the other's rejection briefly unhandled on a slow runner.
+    const settled = await Promise.allSettled([nothingOnB, nothingOnPublic]);
+    expect(settled.map((s) => s.status)).toEqual(["rejected", "rejected"]);
 
     expect(await getJson(`/api/r/${a.editToken}/terrain`)).toContainEqual(cell);
     expect(await getJson(`/api/r/${b.editToken}/terrain`)).toEqual([]);
