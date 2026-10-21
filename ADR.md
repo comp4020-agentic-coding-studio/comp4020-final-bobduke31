@@ -142,10 +142,11 @@ feature: ROADMAP.md task 10 (map version history) is the actual, durable
 answer to "I want to go back further," tracked separately as final-project
 scope, not conflated with this narrower, demo-week permission feature.
 
-# ADR 3: rooms, share links and roles (draft, 2026-10-21)
+# ADR 3: rooms, share links and roles (2026-10-21)
 
-*Draft written in phase 0 of the platform plan (ROADMAP.md, "Platform:
-create, edit together, save, reload, share"). Not implemented yet.*
+*Drafted in phase 0 and implemented in phase 1 of the platform plan
+(ROADMAP.md, "Platform: create, edit together, save, reload, share"), on
+branch `final-platform`. Not yet deployed.*
 
 ## Context
 
@@ -191,6 +192,18 @@ to: who may see or change which map, without accounts?
 - Tokens in URLs can leak through history and screenshots.
   `Referrer-Policy: no-referrer` stops them leaking to other sites through
   the Referer header.
+
+## Activity and presence
+
+- **A private map's activity stays private.** Log entries carry a
+  `room_id` and are broadcast only on that room's stream. The public
+  `/logs/` viewer shows the shared world only. Otherwise anyone could watch
+  private maps being edited. stdout still logs everything, for the operator.
+- **Refused writes are logged, but rate-limited per session.** A scripted
+  view link can't grow the persisted log without bound.
+- **Presence** ("who's here") comes from each room's open event streams.
+  It adds no new transport and no writes. It shows display names only,
+  never session ids.
 
 ## Migration (dry run done, phase 0)
 

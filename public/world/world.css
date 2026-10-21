@@ -27,7 +27,7 @@ body {
    ROADMAP.md's UI/UX redesign entry). */
 .app {
   display: grid;
-  grid-template-columns: 76px 1fr 230px;
+  grid-template-columns: 76px minmax(0, 1fr) 230px;
   grid-template-rows: 48px 1fr;
   height: 100vh;
   width: 100vw;
@@ -43,11 +43,338 @@ body {
   border-bottom: 1px solid #2a333b;
 }
 
-.brand {
-  font-size: 0.85rem;
+/* Room identity on the left of the top bar: the Maps menu, the map's own
+   name (the thing people share and come back to), and Share - the same
+   name-plus-Share grouping Figma and Excalidraw use. */
+.topbar-room {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.maps-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: none;
+}
+
+.room-title {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.room-name {
+  font-size: 0.88rem;
   font-weight: 600;
-  opacity: 0.85;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 22rem;
+}
+
+.role-badge {
+  flex: none;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  background: #3a2f1b;
+  color: #f0c674;
+  border: 1px solid #6b5527;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid transparent;
+  color: #93a3ad;
+  border-radius: 0.35rem;
+  min-width: 1.9rem;
+  min-height: 1.9rem;
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  background: #242e38;
+  color: #d8e2e8;
+}
+
+.primary-button {
+  background: #4a86ad;
+  color: #06121a;
+  border: 1px solid #6fa6cc;
+  border-radius: 0.35rem;
+  padding: 0.35rem 0.85rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
+  flex: none;
+}
+
+.primary-button:hover {
+  background: #5a96bd;
+}
+
+.primary-button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* Who has this map open: up to five initials chips, then "+N". */
+.presence {
+  display: flex;
+  align-items: center;
+}
+
+.presence-chip {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.66rem;
+  font-weight: 700;
+  color: #06121a;
+  margin-left: 0.25rem;
+  cursor: default;
+}
+
+.presence-chip:first-child {
+  margin-left: 0;
+}
+
+.presence-chip.viewer {
+  opacity: 0.6;
+}
+
+.presence-chip.more {
+  background: #2d3946;
+  color: #d8e2e8;
+}
+
+/* View-only visitors can look around (camera, view switch) but every
+   editing control is gone, not just disabled - nothing suggests an action
+   the server would refuse. */
+body.read-only .category-rail,
+body.read-only .options-panel,
+body.read-only #undo-button {
+  display: none;
+}
+
+body.read-only .app {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+body.read-only .canvas-wrap {
+  grid-column: 1;
+}
+
+body.read-only #stage,
+body.read-only #stage-3d {
+  cursor: grab;
+}
+
+.room-error {
+  position: fixed;
+  inset: 48px 0 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  padding: 1.5rem;
+  text-align: center;
+  background: #11161b;
+  z-index: 5;
+}
+
+.room-error h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+
+.room-error p {
+  margin: 0 0 0.6rem;
+  opacity: 0.75;
+}
+
+/* Native <dialog>: modal, focus-trapped and Esc-dismissable by the
+   browser itself, so none of that is reimplemented here. */
+.sheet {
+  width: min(30rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 3rem);
+  overflow-y: auto;
+  background: #171e25;
+  color: #d8e2e8;
+  border: 1px solid #333f4a;
+  border-radius: 0.6rem;
+  padding: 1rem 1.1rem 1.1rem;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+}
+
+.sheet::backdrop {
+  background: rgba(6, 10, 14, 0.6);
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 0.6rem;
+}
+
+.sheet h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.sheet h3 {
+  margin: 1.1rem 0 0.4rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+}
+
+.sheet label {
+  display: block;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.share-row + .share-row {
+  margin-top: 1rem;
+}
+
+.share-help,
+.share-note {
+  margin: 0.2rem 0 0.45rem;
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+.share-note {
+  margin-top: 1.1rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid #2a333b;
+}
+
+.copy-field {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.copy-field input {
+  flex: 1;
+  min-width: 0;
+  background: #0f1418;
+  color: #d8e2e8;
+  border: 1px solid #333f4a;
+  border-radius: 0.35rem;
+  padding: 0.45rem 0.55rem;
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+.copy-field input:focus {
+  outline: 2px solid #4a86ad;
+  outline-offset: 0;
+}
+
+.new-map label {
+  margin-bottom: 0.4rem;
+}
+
+.form-error {
+  margin: 0.4rem 0 0;
+  font-size: 0.75rem;
+  color: #f19a8e;
+}
+
+.map-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.map-link {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.8rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 0.4rem;
+  background: #1d252d;
+  border: 1px solid #2a333b;
+  color: #d8e2e8;
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+
+.map-link:hover {
+  border-color: #4a86ad;
+}
+
+.map-link.current {
+  border-color: #4a86ad;
+  background: #1f2e3b;
+}
+
+.map-link > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-meta {
+  flex: none;
+  font-size: 0.72rem;
+  opacity: 0.65;
+}
+
+.sheet-footer {
+  margin: 1.1rem 0 0;
+  font-size: 0.75rem;
+  opacity: 0.75;
+}
+
+.sheet-footer a {
+  color: #8fc3e8;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 1.2rem;
+  transform: translateX(-50%);
+  background: #243546;
+  border: 1px solid #4a86ad;
+  color: #d8e2e8;
+  padding: 0.5rem 0.9rem;
+  border-radius: 0.4rem;
+  font-size: 0.8rem;
+  z-index: 10;
+  max-width: calc(100vw - 2rem);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+}
+
+.toast.hidden {
+  display: none;
 }
 
 .topbar-right {
@@ -426,12 +753,47 @@ body {
    horizontal strip, so the editor stays usable on a narrow window/tablet
    instead of clipping the canvas to near-nothing. */
 @media (max-width: 900px) {
+  /* minmax(0, 1fr), not 1fr: a bare 1fr column's minimum is its widest
+     child's content, which forced the page to 474px on any phone and
+     clipped the right edge with no way to scroll to it. */
   .app {
-    grid-template-columns: 1fr;
-    grid-template-rows: 48px auto 1fr auto;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto 1fr auto;
     overflow-y: auto;
     height: auto;
     min-height: 100vh;
+  }
+
+  /* Two rows on a phone: the map (Maps, name, Share) on top, viewing
+     (view switch, Undo, who's here) below. */
+  .topbar {
+    flex-wrap: wrap;
+    row-gap: 0.45rem;
+    padding: 0.5rem 0.75rem;
+  }
+
+  .topbar-room {
+    flex: 1 1 100%;
+  }
+
+  .room-title {
+    flex: 1;
+  }
+
+  .room-name {
+    max-width: none;
+  }
+
+  .topbar-right {
+    gap: 0.6rem;
+  }
+
+  .maps-button span {
+    display: none;
+  }
+
+  body.read-only .canvas-wrap {
+    grid-row: 2 / 4;
   }
 
   html,
@@ -472,10 +834,16 @@ body {
   .camera-float {
     position: static;
     width: auto;
+    max-width: 100%;
     flex-direction: row;
     flex-wrap: wrap;
     justify-content: center;
     margin: 0.5rem;
+  }
+
+  .camera-float label {
+    width: auto;
+    flex: 1 1 8rem;
   }
   .camera-float .oblique-only {
     flex-direction: row;

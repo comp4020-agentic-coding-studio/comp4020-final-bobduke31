@@ -1980,7 +1980,7 @@ browser test. Deploys still need the user's approval each time.
 | Phase | Dates | Delivers | Exit gate |
 |---|---|---|---|
 | 0. Baseline | 21-22 Oct | ✅ Done 2026-10-21, see "Phase 0 results". Parity screenshots of the public room. ADR 3 draft (rooms, links, roles). Migration script dry-run on a production copy. | Row counts preserved in the dry run. |
-| 1. Rooms + links | 22-27 Oct | Migration run at boot inside the new code. Token routing and roles. Phone layout overflow fix. Per-room SSE/undo/activity. Unprefixed routes alias the public room. Share panel and view-only UI. Rate limits on new routes. | Existing 23 tests green. New tests: room isolation, view-only 403 on every write, data survives restart. Parity gate. **Proposed deploy.** |
+| 1. Rooms + links | 22-27 Oct | 🔨 Built and verified 2026-10-21, **awaiting deploy approval**. See "Phase 1 results". Migration run at boot inside the new code. Token routing and roles. Phone layout overflow fix. Per-room SSE/undo/activity. Unprefixed routes alias the public room. Share panel and view-only UI. Rate limits on new routes. | Existing 23 tests green. New tests: room isolation, view-only 403 on every write, data survives restart. Parity gate. **Proposed deploy.** |
 | 2. Create | 28 Oct - 1 Nov | Shared generator with preview. New-map dialog. My maps. Presence. | Generated maps reviewed against references. Generator is deterministic for a given seed (test). Parity gate. |
 | 3. Save, reload, share | 1-4 Nov | Snapshots, autosnapshots, restore (private only), fork, file export/import, PNG export. ADR 4 (history model: B over C). | Restore round-trip test. Public-room restore refused. Import of a corrupt file rejected. Parity gate. |
 | 4. Harden | 5-7 Nov | Caps, headers, both marking viewports, next-day return test after a restart. **Feature freeze 7 Nov.** | Full manual walkthrough of the loop on desktop and phone. |
@@ -2054,6 +2054,67 @@ production today. The phone is a marking viewport, so this is **added to
 phase 1**. It's a layout fix and touches no renderer code, but it will
 change the phone parity images. Those get re-baselined once, deliberately,
 after the user approves the new phone layout.
+
+### Phase 1 results (2026-10-21, branch `final-platform`, not deployed)
+
+**Built.** Server:
+- `src/rooms-schema.ts` holds the one copy of the migration, run at startup
+  by `src/db.ts` after a file backup, and by `scripts/migrate-rooms.ts` for
+  rehearsals.
+- `src/rooms.ts` handles tokens, roles, limits and "My maps".
+- `src/presence.ts` handles who's here.
+- Live-update streams, undo and activity are scoped per room.
+- Every write is checked once in `handleRoomApi`.
+
+Client:
+- `public/world/room-ui.js`: Maps menu, Share sheet, Rename, presence
+  chips, view-only mode, and a "No map at this link" page.
+- `world-client.js` changed only its fetch paths and the paint and pan
+  gating. **No renderer file was touched.**
+
+The phone overflow is fixed: `minmax(0, 1fr)` on the grid, a two-row top
+bar and a wrapping camera strip.
+
+**Decisions made while building.**
+- **Private activity stays out of the public `/logs/`**, because otherwise
+  anyone could watch private maps being edited.
+- **Viewers pan with a plain left-drag**, since they have nothing to paint.
+- **Basic presence (who's here) was pulled forward from phase 2.** It cost
+  one small module on top of per-room streams, and it makes "edit together"
+  visible.
+- **Refused writes are logged but rate-limited**, so a view link can't flood
+  the persisted log.
+- **Limits:** 150 maps total, 10 per session per day, 8 creates or renames
+  per minute, and 400 open live connections. Sized from the measured
+  4 MB/map and the 256 MB machine.
+
+**Verified.**
+
+| Check | Result |
+|---|---|
+| `pnpm check` on an empty data directory (as CI runs it) | typecheck clean, **41/41** tests (23 existing unchanged, 18 new in `spec/rooms.test.ts`), stable over repeated runs. `check:evidence` passes. |
+| Startup migration on the production copy | Backup written, then migrated in ~130 ms with hashes verified. The public room's API output is **identical cell-for-cell** to production's public API (58,370 / 22,259), and all 9 marks are intact. |
+| Restart | A private map's cells, name and "My maps" entry survive. The second startup runs no migration and writes no backup. |
+| Real multi-user browser run (`.localdata/phase0/multiuser.mjs`, 3-4 isolated browser contexts) | **30/30.** Share sheet, Copy, Esc. Bob's stroke reached Alice in **140 ms**. Viewer: no tools, never receives the edit token, drag pans instead of painting, a forced API write gets 403, sees edits and renames live. Presence joins and leaves correctly. "My maps" lists the map. A bad link shows a clear message. Phone: nothing past the edge in editor, viewer or public room, and a tap creates land. No page errors. |
+| Parity gate, desktop | **0 pixels changed inside the map** in all five views. All differences are in rows 9-37 (the new top bar). |
+| Parity gate, phone | Layout changed by design: the canvas is 364 px, fully visible, versus 448 px before (58 px clipped off-screen). The map itself was checked by eye. **The phone baseline needs re-capturing once the user approves this layout.** |
+| Load | 96 MB idle, rising to 116 MB with 400 open streams across 10 maps. The 401st stream gets a clean 503, and the server keeps serving. |
+
+**Found and fixed during testing:** the public room's rename route returned
+404 instead of a clear refusal. The read-only view still showed painting
+hints. Presence chips overlapped and clipped their initials. Refused writes
+used one log label regardless of action.
+
+**Testing limits, stated honestly.**
+- Headless WebGL runs on SwiftShader (CPU). Each tab spends ~6-7 s busy on
+  first load compiling shaders and building trees. That's the same on `main`
+  for the public room (measured), so it's existing renderer cost, not caused
+  by rooms. It is not representative of a real GPU.
+- Docker isn't running on this machine, so the CI image itself wasn't built
+  locally. Same Node 24.21, same empty-data start instead. The Dockerfile
+  copies `src/` and `public/` whole, so the new files ship.
+- Mark owners and the full activity log in the production copy are
+  stand-ins (see phase 0).
 
 Phase 1 comes first because everything else needs rooms, and because it
 carries the only irreversible step. Doing it earliest leaves the most time
@@ -2435,3 +2496,10 @@ the "Product phases" section above.
   unchanged. Current `main` crashes on a migrated database, so the migration
   runs at boot in phase 1. Found a pre-existing phone layout overflow
   (474 px fixed width) and added it to phase 1. ADR 3 drafted.
+- **2026-10-21** - Platform phase 1 built and verified on `final-platform`
+  (not deployed, production untouched): rooms, edit and view-only links,
+  Share and Maps UI, presence, per-room streams/undo/activity, and the phone
+  layout fix. 41/41 tests. 30/30 real multi-user browser checks. Desktop
+  parity: 0 changed pixels inside the map. The startup migration on a
+  production copy serves cell-for-cell identical data. Awaiting the user's
+  approval to deploy. See "Phase 1 results".

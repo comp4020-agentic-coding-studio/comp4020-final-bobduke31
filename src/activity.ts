@@ -1,6 +1,7 @@
 import { db } from "./db.ts";
 import { displayNameFor } from "./identity.ts";
 import { broadcast } from "./realtime.ts";
+import { PUBLIC_ROOM_ID } from "./rooms-schema.ts";
 
 // C10 requires server-side activity logs that distinguish users and their
 // actual actions, and that "outlive the crit" - not something bolted on for
@@ -25,6 +26,8 @@ export const ACTIONS = [
   "terrain-type:paint",
   "mark:create",
   "mark:delete",
+  "room:create",
+  "room:rename",
 ] as const;
 export type ActivityAction = (typeof ACTIONS)[number];
 
@@ -40,18 +43,11 @@ export interface ActivityEntry {
   createdAt: string;
 }
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS activity_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL,
-    action TEXT NOT NULL,
-    detail TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  )
-`);
+// Table created by src/rooms-schema.ts (keyed to a room since ADR 3).
 
 interface ActivityRow {
   id: number;
+  room_id: string;
   session_id: string;
   action: string;
   detail: string;
@@ -67,7 +63,7 @@ const rowToEntry = (row: ActivityRow): ActivityEntry => ({
 });
 
 const insertStmt = db.prepare(
-  "INSERT INTO activity_log (session_id, action, detail) VALUES (?, ?, ?) RETURNING *",
+  "INSERT INTO activity_log (room_id, session_id, action, detail) VALUES (?, ?, ?, ?) RETURNING *",
 );
 
 // Records one activity-log entry and prints the same thing to stdout, so a
@@ -77,22 +73,25 @@ const insertStmt = db.prepare(
 // the raw cell array: C10's bar is "distinguish users and their actual
 // actions," which a bounding box and count already does, without an
 // unbounded log line per multi-hundred-cell brush stroke.
-export function log(sessionId: string, action: ActivityAction, detail: string): ActivityEntry {
-  const row = insertStmt.get(sessionId, action, detail) as unknown as ActivityRow;
+//
+// Scoped to a room: an entry is broadcast only on that room's own stream,
+// so a private map's activity never reaches the public /logs/ viewer (which
+// subscribes to the public room's stream). stdout still carries everything,
+// for the operator.
+export function log(roomId: string, sessionId: string, action: ActivityAction, detail: string): ActivityEntry {
+  const row = insertStmt.get(roomId, sessionId, action, detail) as unknown as ActivityRow;
   const entry = rowToEntry(row);
-  console.log(`[activity] ${entry.createdAt} ${entry.displayName} (${sessionId}) ${action}: ${detail}`);
-  // Same SSE channel terrain:update already uses (src/realtime.ts) - the
-  // in-app log viewer (/logs/) is just another subscriber on /api/events,
-  // not a second real-time transport.
-  broadcast("activity:new", entry);
+  const where = roomId === PUBLIC_ROOM_ID ? "" : ` [room ${roomId}]`;
+  console.log(`[activity] ${entry.createdAt} ${entry.displayName} (${sessionId})${where} ${action}: ${detail}`);
+  broadcast(roomId, "activity:new", entry);
   return entry;
 }
 
-const recentStmt = db.prepare("SELECT * FROM activity_log ORDER BY id DESC LIMIT ?");
+const recentStmt = db.prepare("SELECT * FROM activity_log WHERE room_id = ? ORDER BY id DESC LIMIT ?");
 
 // Newest first, capped - a real-time log viewer wants "what just happened"
 // on load, then the live SSE stream carries everything after. No pagination:
 // this is a debugging/demo aid, not an archive browser.
-export function recentActivity(limit = 200): ActivityEntry[] {
-  return (recentStmt.all(limit) as unknown as ActivityRow[]).map(rowToEntry);
+export function recentActivity(roomId: string, limit = 200): ActivityEntry[] {
+  return (recentStmt.all(roomId, limit) as unknown as ActivityRow[]).map(rowToEntry);
 }
