@@ -60,6 +60,9 @@ bag:
    fidelity target and continent-scale is "the same engine at a later,
    larger scope" via task 10/11, not a separate system; an isometric city
    view is explicitly out of scope for now, not a deferred task.
+   **Update 2026-10-21:** tasks 10-11 are now one plan, "Platform: create,
+   edit together, save, reload, share" (below task 9). It's the priority for
+   the rest of the Final. Task 12 is deferred.
 
 Phases are sequential in intent (no point hand-placing buildings on a map
 whose terrain still looks wrong), but, as task 13 shows, a phase-2 problem
@@ -1797,25 +1800,223 @@ all yet, plus the "full hydrology model" direction noted as Approach C in
 task 1, revisited here once a simpler flat-water-plane baseline (task 1)
 exists to build on.
 
+## Platform: create, edit together, save, reload, share (2026-10-21) - supersedes tasks 10-11
+
+**Status:** 🔍 Assessed and agreed with the user (2026-10-21). Not
+implemented yet; implementation waits for the user to say go.
+
+### Goal
+
+One complete experience, not a feature list: **create a map, edit it
+together, save it, come back to it, share it.** Every item below either
+serves one of those five steps or is cut. The Final brief
+(`assessments/final-project`, due 2026-11-09 noon) explicitly does not
+require accounts, rooms or history. It marks process legibility at 50% and
+penalises "features with no reason to exist". So scope is judged by whether
+the loop is complete and the visuals are no worse, not by feature count.
+
+### Decisions already made (user, 2026-10-21)
+
+- **The existing world stays a public room** at `/`, editable by anyone, with
+  its production data preserved (57,432 elevation cells, 18,581 type cells,
+  9 marks at the 2026-10-20 deploy).
+- **Every other room gets two links: edit and view-only.** View-only is
+  enforced on the server on every write route, extending ADR 2's pattern.
+- **Contributors are shown by anonymous display names** (`src/identity.ts`).
+  No accounts.
+- **Visual quality must not drop to make room for features.** See the
+  parity gate under "Development order".
+- The iPhone rendering fix (`da9bc2e`) has been confirmed on the user's real
+  device, so mobile is no longer a release risk.
+
+### Constraints measured, not assumed
+
+- Production is one `shared-cpu-1x` machine with **256 MB RAM** and a
+  **1 GB volume** (`fly.toml`).
+- A copy of the live world's database is **4.1 MB** as rows
+  (`.localdata/prodcopy.db`). A fully painted or fully generated room
+  therefore costs about 4-5 MB, so the volume holds roughly 200 such rooms.
+  Room creation needs a cap.
+- A whole-map snapshot (elevation float32 plus type byte per cell) is
+  **151 KB gzipped**, or 75 KB with int16 elevation. Measured on the
+  production copy. Snapshots are cheap enough to keep.
+- `terrain-fields.js` has no DOM dependencies. A generator in the same
+  shared JS can run in the browser for preview and in Node for the stored
+  result.
+- The existing tests and client call unprefixed routes (`/api/terrain`,
+  `/api/terrain/cells`, `/api/events`, etc.). These stay as aliases for the
+  public room, so the current checks keep passing unchanged.
+
+### History and saving: three options compared
+
+The replay and full-history idea was compared against simpler options
+before choosing.
+
+| | A. Always-on autosave + file export | B. Named snapshots + restore/fork + file export | C. Full edit log (event sourcing) + replay + deep undo |
+|---|---|---|---|
+| **Summary** | What exists now, per room: every stroke is saved instantly. Add download/upload of a map file. No way back in time. | A: plus "Save version" with a name, an automatic snapshot before any restore, and periodic autosnapshots. Any version can be restored (private rooms) or forked into a new room. | Every stroke's before/after cells appended to a log, with checkpoints. Enables timelapse replay, browsing history at any point, and multi-level persistent undo. |
+| Completes the create/save/reload/share loop | 6 | 9 | 9 |
+| Protects users from mistakes (incl. other people's) | 3 | 8 | 9 |
+| Risk to the existing write path | 10 | 8 | 4 |
+| Storage predictability on a 1 GB volume | 10 | 8 | 5 |
+| Impl. cost (10=cheap) | 9 | 7 | 3 |
+
+**Why not C now:** it changes every write path (paint, type paint, undo,
+restore), its storage grows with activity rather than with user intent, and
+replay needs its own UI and playback renderer. Those costs sit squarely on
+the loop the user named as the priority. Its unique payoffs (timelapse,
+fine-grained history) are showcase features, not loop features. One design
+choice matters if C is ever built: log **cell changes, not brush commands**.
+Brush maths lives only in `world-client.js`, so replaying commands would
+silently change old history whenever a brush is retuned.
+
+**Recommendation: B.** It's the smallest option that makes "save" and
+"reload" mean something beyond "it's always saved", and the snapshot before
+each restore makes restores reversible. It also leaves C open: periodic
+autosnapshots can be played back as a coarse timelapse later at almost no
+cost (a stretch item below). Undo stays as it is today, one level per
+session, now scoped per room. Deeper undo is C's job and is not attempted.
+
+### Rooms: data model, three options compared
+
+| | A. `room_id` column on existing tables | B. One SQLite file per room | C. Each room's grid stored as one compressed blob |
+|---|---|---|---|
+| **Summary** | Composite keys `(room_id, x, y)` on `terrain_cells`/`terrain_type_cells`; every query gains a room filter. | Open a `DatabaseSync` per room on demand. | Keep grids in memory per active room, flush as a ~150 KB blob. |
+| Reuses existing code paths | 9 | 6 | 3 |
+| Migration risk for production data | 7 | 6 | 4 |
+| Memory on 256 MB | 9 | 7 | 5 |
+| Write cost per stroke | 9 | 9 | 4 (rewrites the whole blob) |
+| Impl. cost (10=cheap) | 8 | 5 | 4 |
+
+**Recommendation: A.** SQLite can't change a primary key in place, so the
+migration rebuilds both tables (create new, `INSERT ... SELECT` with the
+public room's id, swap) in one transaction. It's guarded by a `schema_meta`
+version, exactly like the existing `grid_size` check. Snapshots (option B
+above) are gzip blobs in their own table, which is the one place C's idea
+is used.
+
+### Scope
+
+**In, in order:**
+
+1. **Rooms + links.** `rooms(id, name, edit_token, view_token, created_by,
+   seed, params, created_at)`. Both tokens are 128-bit random and base64url.
+   `/m/<token>` serves the editor, and the server resolves the token to a
+   room plus a role. Per-room routes, SSE topics, undo maps and activity
+   entries. Writes with a view token get 403 and are logged as `DENIED`.
+   Edit-link holders can see both links in a Share panel. View-only visitors
+   never receive the edit token and see the editor with tools hidden.
+   Responses send `Referrer-Policy: no-referrer` so tokens in URLs don't leak
+   to other sites.
+2. **Create.** A "New map" dialog: choose blank or generated. Generated maps
+   have a seed, a few sliders (land amount, mountains, forest) and reroll,
+   with a live preview made by the shared generator in the browser. The
+   server regenerates from `(seed, params)` and never trusts client cells.
+3. **My maps.** A list of rooms this browser created or edited, keyed by
+   session (`room_members`). Cross-device access is by the link itself, which
+   is the stated substitute for accounts.
+4. **Presence.** Who is in this room now, by anonymous name. This comes from
+   per-room SSE connections, so it needs no new transport. It's the
+   cheapest feature that makes co-presence visible.
+5. **Save versions / restore / fork.** Named snapshots plus periodic
+   autosnapshots, capped per room. Restore is available in private rooms
+   only. It takes an automatic snapshot first, broadcasts a full reload to
+   everyone, and is logged. **The public room cannot be restored**, only
+   forked, because anyone can edit it and a restore would let one visitor
+   wipe everyone's work.
+6. **Export / import.** Download a map file (gzip grid plus metadata) and
+   upload one into a new room. PNG export of the current view.
+
+**Stretch, only if phases 1-4 are done early, in this order:**
+live cursors (needs a client-to-server position channel at ~10 Hz);
+a coarse timelapse played from autosnapshots; and visual follow-ups from
+the overhaul's open list (narrow-mountain needle summits first).
+
+**Deferred or not built, and said so in the README:** accounts, the full
+edit log and replay (option C), multi-level undo, task 12 (buildings, roads,
+objects), continent-scale maps, and a room member cap.
+
+### Visual quality: how it's protected
+
+- **The renderer is not modified for platform work.** Rooms change where
+  data comes from, not how it's drawn. A **parity gate** runs at the end of
+  every phase. The public room, loaded from the same production-copy DB, is
+  screenshotted in Top-down and Oblique at fixed cameras before phase 1 and
+  after each phase. Any visible difference blocks the phase until it's
+  explained or fixed.
+- **The generator is visual work and is judged as such.** Generated maps
+  are what new users see first. They're screenshotted next to the reference
+  images in `research/roadmap/references/`, not just checked for valid
+  cells. They must produce connected ranges and organic forests, not the
+  circular mountains and rectangular forests `CLAUDE.md` warns about. That
+  means fixing shape at the data layer (falloff, ridged ranges, moisture),
+  with heights calibrated to the renderer's 0.42-0.85 mountain band. This
+  also replaces the open follow-up to retune `seed-test-scene.ts`.
+- **Reuse before build:** the generator adapts published techniques already
+  credited in `CREDITS.md` (mapgen4's ridged multifractal, simplex noise
+  shared with `terrain-fields.js`). Before writing it, check Azgaar (MIT) and
+  mapgen4 (Apache-2.0) for heightmap and moisture approaches. Both are
+  mesh-based, so the expectation is to adopt techniques, not code. Record
+  what was found in `CREDITS.md`.
+
+### Main risks
+
+| Risk | Impact | Mitigation |
+|---|---|---|
+| Production data migration (the one irreversible step) | Losing the live world | Dry run on `prodcopy.db` first. Take a Fly volume snapshot before deploying. Assert row counts before and after (57,432 / 18,581 / 9). Deploy at the end of phase 1, so there's time to recover. |
+| Storage on 1 GB | Volume fills, writes fail | Caps on rooms (total and per session per day) and on snapshots per room, chosen from the measured 4-5 MB/room and 150 KB/snapshot. A check asserts the caps are enforced. |
+| View-only bypass | A viewer edits | Every write route (paint, types, undo, snapshot, restore) resolves the role from the token server-side. A test sends each write with a view token and expects 403. |
+| Restore in a shared room | One user wipes others' work | Private rooms only. Automatic snapshot first, so a restore is itself reversible. Logged with the actor. |
+| Visual regression | The map looks worse | Parity gate every phase. Renderer files untouched outside the generator's calibration. |
+| Generated maps look procedural or blobby | Poor first impression | Visual gate against references. Budget two iterations in phase 2. Blank map stays available. |
+| Abuse with no rate limit (open from the release audit) | Room or snapshot spam | Per-session limits on create/snapshot/import, added in phase 1 alongside the routes they protect. |
+| Schedule (19 days) | Loop incomplete at the deadline | Strict phase order. Each phase ends usable and deployable. Feature freeze 2026-11-07. |
+
+### Development order
+
+Each phase ends with `pnpm check`, the parity gate, and a two-profile
+browser test. Deploys still need the user's approval each time.
+
+| Phase | Dates | Delivers | Exit gate |
+|---|---|---|---|
+| 0. Baseline | 21-22 Oct | Parity screenshots of the public room. ADR 3 draft (rooms, links, roles). Migration script dry-run on `prodcopy.db`. | Row counts preserved in the dry run. |
+| 1. Rooms + links | 22-27 Oct | Schema migration. Token routing and roles. Per-room SSE/undo/activity. Unprefixed routes alias the public room. Share panel and view-only UI. Rate limits on new routes. | Existing 23 tests green. New tests: room isolation, view-only 403 on every write, data survives restart. Parity gate. **Proposed deploy.** |
+| 2. Create | 28 Oct - 1 Nov | Shared generator with preview. New-map dialog. My maps. Presence. | Generated maps reviewed against references. Generator is deterministic for a given seed (test). Parity gate. |
+| 3. Save, reload, share | 1-4 Nov | Snapshots, autosnapshots, restore (private only), fork, file export/import, PNG export. ADR 4 (history model: B over C). | Restore round-trip test. Public-room restore refused. Import of a corrupt file rejected. Parity gate. |
+| 4. Harden | 5-7 Nov | Caps, headers, both marking viewports, next-day return test after a restart. **Feature freeze 7 Nov.** | Full manual walkthrough of the loop on desktop and phone. |
+| 5. Write-up | 7-9 Nov | README argued around the loop, with a "not built" list. `CLAUDE.md` and `spec/` aligned with it. `PROCESS.md` rewritten with real commits. Final reflection. Research note finalised. | `pnpm check` and `pnpm check:evidence` green on the deployed build. All writing within its word guidance. |
+
+### Writing track (runs alongside the phases, not only at the end)
+
+Figures from `topics/assessment` and `assessments/final-project`, checked
+2026-10-21. There's no word-limit penalty, but badly overshooting can cost
+marks under the response criterion.
+
+| Deliverable | Guidance | Current state | Schedule |
+|---|---|---|---|
+| `research-note.md` (COMP8020, repo root) | 600-800 words. A cited *position* on good agentic development practice or where the field is heading. Sources weighed against each other, counter-case met. Worth 10% of the course. No crit covers it. | Doesn't exist. The brief said to start reading by week 10, so this is behind. | Reading list and one-sentence position by 24 Oct. Outline by 28 Oct. Full draft by 2 Nov. Revision 6-8 Nov. Use this project's own record as evidence (e.g. C8's tests passing on a bad result, ROADMAP's measure-first discipline), but argue from the literature rather than summarise it. |
+| Final reflection, `reflections/final.md` | The two standing prompts, 150-300 words. **The brief doesn't define a Final reflection**: reflections are one per crit and the sweep reads only `crit-N.md`. Written as a user-requested addition, not a required file. | Doesn't exist. | Notes collected at each phase's end. Written 8 Nov. |
+| `PROCESS.md` | 900-1100 words, *rewritten* (not appended), covering brief → harness → workflow, stack and workflow trade-offs, and claims backed by commit links. | **6,778 words**, mostly per-crit history. | Plan the cut by 2 Nov (what moves to ROADMAP or reflections). Rewrite 7-8 Nov. |
+| `README.md` | 400-600 words. The argued definition of "good", influences, "not built" list. | 552 words, but it describes the single-map app. | Rewrite 7 Nov, once the loop is real. |
+| `reflections/crit-10.md` | 150-300 words. | 546 words. | Already submitted for its crit. Left as is. |
+
+Phase 1 comes first because everything else needs rooms, and because it
+carries the only irreversible step. Doing it earliest leaves the most time
+to recover. Creation comes before saving because a user needs a second room
+before versions and forks mean anything.
+
 ## 10. Map expansion, multiple maps, saving and loading
 
-**Status:** ⬜ Not started.
-
-Scope: currently exactly one fixed 256×256 world, one SQLite file, no
-concept of multiple saved maps or growing the map area. Likely the first
-task in this list that touches the server/data model and the SQLite schema
-rather than just the client renderer - needs its own design pass (chunking,
-per-map tables, or separate DB files) before scoring approaches.
+**Status:** Superseded by "Platform: create, edit together, save, reload,
+share" above. Multiple maps are rooms, and saving and loading are snapshots
+and export/import. *Growing* a map's area (chunking, continent scale) is
+deferred and not part of that plan.
 
 ## 11. Procedural/random map generation
 
-**Status:** ⬜ Not started.
-
-Scope: generating a starting terrain (coastline, mountain ranges, forests)
-rather than starting from a blank sea, as a seed/starting-point for
-collaborative editing, not a replacement for it. The `scripts/seed-test-scene.ts`
-dev script already does a hand-authored version of this for QA purposes -
-this task is about a real in-app, likely parameterized/randomized version.
+**Status:** Superseded by "Platform: create, edit together, save, reload,
+share" above (scope item 2, "Create"). The generator replaces the follow-up
+to retune `scripts/seed-test-scene.ts`.
 
 ## 12. D&D-style buildings, walls, roads and draggable objects
 
@@ -2160,3 +2361,13 @@ the "Product phases" section above.
   the end of task 13 above for the evidence and task pointers. `.gitignore`
   updated to exclude `.localdata/` (local test databases), which had been
   showing as untracked without actually being ignored.
+- **2026-10-21** - Platform plan assessed and agreed with the user: one
+  complete loop (create, edit together, save, reload, share) instead of
+  separate tasks 10-11. Recorded in "Platform: create, edit together, save,
+  reload, share". Decided: the existing world stays a public room, other
+  rooms get edit and view-only links, contributors get anonymous display
+  names, there are no accounts, and history uses named snapshots (option B).
+  A full edit log with replay (option C) was compared and deferred. Storage
+  figures were measured on `.localdata/prodcopy.db`: 4.1 MB per fully painted
+  room, 151 KB per gzipped snapshot. The iPhone fix (`da9bc2e`) was confirmed
+  on the user's real device. No implementation yet.
