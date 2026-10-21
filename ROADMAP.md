@@ -1963,7 +1963,7 @@ objects), continent-scale maps, and a room member cap.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Production data migration (the one irreversible step) | Losing the live world | Dry run on `prodcopy.db` first. Take a Fly volume snapshot before deploying. Assert row counts before and after (57,432 / 18,581 / 9). Deploy at the end of phase 1, so there's time to recover. |
+| Production data migration (the one irreversible step) | Losing the live world | Dry run done (phase 0). Take a Fly volume snapshot before deploying. The migration backs the file up, checks counts *and* per-cell content hashes, and rolls back on any mismatch. Expected counts are read live at deploy time, because production keeps growing. Deploy at the end of phase 1, so there's time to recover. |
 | Storage on 1 GB | Volume fills, writes fail | Caps on rooms (total and per session per day) and on snapshots per room, chosen from the measured 4-5 MB/room and 150 KB/snapshot. A check asserts the caps are enforced. |
 | View-only bypass | A viewer edits | Every write route (paint, types, undo, snapshot, restore) resolves the role from the token server-side. A test sends each write with a view token and expects 403. |
 | Restore in a shared room | One user wipes others' work | Private rooms only. Automatic snapshot first, so a restore is itself reversible. Logged with the actor. |
@@ -1979,8 +1979,8 @@ browser test. Deploys still need the user's approval each time.
 
 | Phase | Dates | Delivers | Exit gate |
 |---|---|---|---|
-| 0. Baseline | 21-22 Oct | Parity screenshots of the public room. ADR 3 draft (rooms, links, roles). Migration script dry-run on `prodcopy.db`. | Row counts preserved in the dry run. |
-| 1. Rooms + links | 22-27 Oct | Schema migration. Token routing and roles. Per-room SSE/undo/activity. Unprefixed routes alias the public room. Share panel and view-only UI. Rate limits on new routes. | Existing 23 tests green. New tests: room isolation, view-only 403 on every write, data survives restart. Parity gate. **Proposed deploy.** |
+| 0. Baseline | 21-22 Oct | ✅ Done 2026-10-21, see "Phase 0 results". Parity screenshots of the public room. ADR 3 draft (rooms, links, roles). Migration script dry-run on a production copy. | Row counts preserved in the dry run. |
+| 1. Rooms + links | 22-27 Oct | Migration run at boot inside the new code. Token routing and roles. Phone layout overflow fix. Per-room SSE/undo/activity. Unprefixed routes alias the public room. Share panel and view-only UI. Rate limits on new routes. | Existing 23 tests green. New tests: room isolation, view-only 403 on every write, data survives restart. Parity gate. **Proposed deploy.** |
 | 2. Create | 28 Oct - 1 Nov | Shared generator with preview. New-map dialog. My maps. Presence. | Generated maps reviewed against references. Generator is deterministic for a given seed (test). Parity gate. |
 | 3. Save, reload, share | 1-4 Nov | Snapshots, autosnapshots, restore (private only), fork, file export/import, PNG export. ADR 4 (history model: B over C). | Restore round-trip test. Public-room restore refused. Import of a corrupt file rejected. Parity gate. |
 | 4. Harden | 5-7 Nov | Caps, headers, both marking viewports, next-day return test after a restart. **Feature freeze 7 Nov.** | Full manual walkthrough of the loop on desktop and phone. |
@@ -1999,6 +1999,61 @@ marks under the response criterion.
 | `PROCESS.md` | 900-1100 words, *rewritten* (not appended), covering brief → harness → workflow, stack and workflow trade-offs, and claims backed by commit links. | **6,778 words**, mostly per-crit history. | Plan the cut by 2 Nov (what moves to ROADMAP or reflections). Rewrite 7-8 Nov. |
 | `README.md` | 400-600 words. The argued definition of "good", influences, "not built" list. | 552 words, but it describes the single-map app. | Rewrite 7 Nov, once the loop is real. |
 | `reflections/crit-10.md` | 150-300 words. | 546 words. | Already submitted for its crit. Left as is. |
+
+### Phase 0 results (2026-10-21, branch `final-platform`)
+
+No production data was modified. Production was only read through its
+public GET endpoints. An SSH-based copy of the real database file was
+blocked by the permission classifier, so the copy below is built from public
+data.
+
+**Database copy.** The real schema comes from the app's own code (an empty
+database initialised by `src/server.ts`). The data comes from production's
+public API on 2026-10-21. It holds **58,370 elevation cells, 22,259 type
+cells and 9 marks**. Production has grown since the 2026-10-20 deploy
+(57,432 / 18,581), so the migration's expected counts must be read from the
+live database at deploy time, not from this file. Mark owners and the full
+activity log aren't public, so those are stand-ins (9 marks under one
+placeholder session, 5,000 synthetic activity rows at a realistic volume).
+File: 4.96 MB, kept with a sha256 checksum that still verified after every
+step below.
+
+**Parity baseline.** Seven fixed captures: desktop 1600x1000 (Top-down,
+Oblique default, zoom, low angle, high E→W) and phone 390x844 (Top-down,
+Oblique). There were no console or page errors.
+- **Noise floor:** two identical runs are **pixel-identical (0.000%, max
+  channel difference 0)**. Rendering is deterministic for the same data, so
+  the gate can require zero difference rather than a tolerance.
+- **Sensitivity:** one 5x5-cell stroke (0.04% of the map) was detected in
+  all seven images (0.04-0.24% of pixels changed), and the diff image marks
+  exactly that spot.
+- Tools: `.localdata/phase0/parity-shoot.mjs` and `parity-diff.mjs` (dev-only).
+- Images: `.localdata/phase0/shots/baseline-run1/` (gitignored, like
+  `research/`).
+
+**Migration dry run** (`scripts/migrate-rooms.ts`, each case on a fresh copy):
+
+| Case | Result |
+|---|---|
+| Normal run | 53 ms. Counts unchanged (58,370 / 22,259 / 9 marks / 5,000 activity). **Content hashes of every cell identical.** `integrity_check` ok. |
+| Second run | No-op ("already at rooms_version=1"). |
+| Failure injected just before commit | Rolled back. Schema, counts and hashes identical to the original. |
+| Half-migrated state (`rooms` table, no version) | Refused, nothing modified. |
+| Missing file | Refused. |
+| File size | 4.96 MB grew to 9.0 MB from free pages left by the dropped tables. With `VACUUM` added: **4.2 MB**, hashes unchanged. |
+| Current `main` code started on a migrated database | **Crashes on startup** (`ON CONFLICT clause does not match any PRIMARY KEY`). This fails loudly rather than corrupting anything, but it fixes the deploy order: the migration runs inside the phase 1 code at boot, not as a step before deploying. |
+
+The existing 23 tests pass on a fresh database. `ADR.md` has an ADR 3 draft
+(rooms, links, roles).
+
+**Found during the baseline, not caused by it:** at phone width the layout
+is a fixed **474 px wide**. At 360, 390 and 430 px the top bar, category
+rail and canvas run off the right edge. The page doesn't scroll sideways, so
+"Oblique" and "Activity log" are clipped and can't be reached. This is in
+production today. The phone is a marking viewport, so this is **added to
+phase 1**. It's a layout fix and touches no renderer code, but it will
+change the phone parity images. Those get re-baselined once, deliberately,
+after the user approves the new phone layout.
 
 Phase 1 comes first because everything else needs rooms, and because it
 carries the only irreversible step. Doing it earliest leaves the most time
@@ -2371,3 +2426,12 @@ the "Product phases" section above.
   figures were measured on `.localdata/prodcopy.db`: 4.1 MB per fully painted
   room, 151 KB per gzipped snapshot. The iPhone fix (`da9bc2e`) was confirmed
   on the user's real device. No implementation yet.
+- **2026-10-21** - Platform phase 0 done on `final-platform`. Production was
+  read only through public GET endpoints, and no production data was
+  modified. Results are in "Phase 0 results". The parity baseline is
+  pixel-identical between runs and catches a 5x5-cell change.
+  `scripts/migrate-rooms.ts` passed normal, repeat, injected-failure,
+  half-migrated and missing-file cases with per-cell content hashes
+  unchanged. Current `main` crashes on a migrated database, so the migration
+  runs at boot in phase 1. Found a pre-existing phone layout overflow
+  (474 px fixed width) and added it to phase 1. ADR 3 drafted.

@@ -141,3 +141,61 @@ undo an earlier stroke. This is a real, named limitation, not a persisted
 feature: ROADMAP.md task 10 (map version history) is the actual, durable
 answer to "I want to go back further," tracked separately as final-project
 scope, not conflated with this narrower, demo-week permission feature.
+
+# ADR 3: rooms, share links and roles (draft, 2026-10-21)
+
+*Draft written in phase 0 of the platform plan (ROADMAP.md, "Platform:
+create, edit together, save, reload, share"). Not implemented yet.*
+
+## Context
+
+The app has one shared world. The Final plan adds separate maps, which
+people create, edit together, save, reload and share. That needs an answer
+to: who may see or change which map, without accounts?
+
+## Decision
+
+- **A room is one map.** Terrain rows gain a `room_id`, and every query,
+  SSE topic, undo snapshot and activity entry is scoped to one room. ADR 1's
+  model (ownerless cells, last write wins) is unchanged *inside* a room.
+- **The existing world becomes the room `public`**, and stays editable by
+  anyone at `/`. The unprefixed `/api/terrain*` routes keep serving it.
+- **Every other room has two unguessable links**: an edit link and a
+  view-only link (128-bit random tokens). The token in the URL is the
+  credential. The server resolves it to a room plus a role on every
+  request. A write with a view token gets 403 and is logged as `DENIED`.
+  This is ADR 2's pattern again: the decision is made from what the server
+  resolved, not from anything the client claims.
+- **No accounts.** People are the existing anonymous session cookie, shown
+  by display name. "My maps" lists rooms by session on this browser. On
+  another device, the link itself is the way back.
+
+## Alternatives considered
+
+- **Accounts.** They give cross-device lists and revocable access, at the
+  cost of password storage, resets and account takeover, none of which the
+  brief requires. Links are the standard for casual real-time tools
+  (Excalidraw, tldraw).
+- **One link with a password for editing.** A password is a second secret
+  to share and forget, and it adds nothing the two-link split doesn't.
+- **Owner-only editing, others view.** This contradicts the "edit together"
+  goal.
+
+## Cost
+
+- Links can't be revoked. A leaked edit link means anyone holding it can
+  edit until the room is forked. Token rotation is a possible later
+  addition.
+- Losing the edit link means losing edit access, unless "My maps" on the
+  same browser still has it.
+- Tokens in URLs can leak through history and screenshots.
+  `Referrer-Policy: no-referrer` stops them leaking to other sites through
+  the Referer header.
+
+## Migration (dry run done, phase 0)
+
+`scripts/migrate-rooms.ts` rebuilds the terrain tables with
+`(room_id, x, y)` keys in one transaction, with content-hash validation.
+Today's code crashes on startup against a migrated database (its
+`ON CONFLICT (x, y)` no longer matches a key), so the migration must run
+inside the new code at boot, never ahead of the deploy that understands it.
