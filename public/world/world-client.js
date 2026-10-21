@@ -23,6 +23,7 @@ import {
 } from "./terrain-renderer.js";
 import { createTerrainScene3D, isWebGL2Available, MAX_DEVICE_PIXEL_RATIO } from "./terrain-renderer-3d.js";
 import { snoise } from "./terrain-fields.js";
+import { apiPath, room, loadRoom, wireRoomUi, wireRoomEvents, openShareIfRequested, toast } from "./room-ui.js";
 
 const canvasArea = document.getElementById("canvas-area");
 
@@ -251,6 +252,20 @@ function scheduleFlush() {
   flushHandle = setTimeout(flush, FLUSH_INTERVAL_MS);
 }
 
+// A 403 means this link lost edit rights (or never had them); stop
+// pretending the stroke landed and re-sync from the server.
+async function postBatch(path, cells) {
+  const res = await fetch(apiPath(path), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cells }),
+  });
+  if (res.status === 403) {
+    toast("This is a view-only link - changes aren't saved.");
+    loadTerrain();
+  }
+}
+
 async function flush() {
   flushHandle = null;
   // If a previous flush's request is still in flight (e.g. a slow
@@ -269,18 +284,10 @@ async function flush() {
   pendingTypes.clear();
   try {
     if (elevationCells.length > 0) {
-      await fetch("/api/terrain/cells", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cells: elevationCells }),
-      });
+      await postBatch("/api/terrain/cells", elevationCells);
     }
     if (typeCells.length > 0) {
-      await fetch("/api/terrain/types", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cells: typeCells }),
-      });
+      await postBatch("/api/terrain/types", typeCells);
     }
   } catch {
     // Best-effort for this pass: a dropped batch is visible again next
@@ -647,6 +654,9 @@ function isOffTerrain(pos) {
 }
 
 function handlePointerDown(event) {
+  // View-only: left-drag does nothing (the server would refuse it anyway);
+  // pan and zoom are wired separately and still work.
+  if (!room.canEdit || event.button !== 0) return;
   painting = true;
   scene3d?.setStrokeActive(true);
   event.currentTarget.setPointerCapture(event.pointerId);
@@ -782,7 +792,7 @@ async function undoLastStroke() {
   if (flushHandle) clearTimeout(flushHandle);
   flushHandle = null;
   await flush();
-  const res = await fetch("/api/terrain/undo", { method: "POST" });
+  const res = await fetch(apiPath("/api/terrain/undo"), { method: "POST" });
   if (!res.ok) return; // 409 "nothing to undo" - nothing to show for it locally
   // The server already broadcasts the restored cells over SSE, which this
   // same tab also receives - rather than apply the change twice (once from
@@ -1072,8 +1082,11 @@ function wireCameraControls() {
   // Kept on the canvas because Top-down has no camera panel at all, and a
   // zoomed-in Top-down view with no way to pan would be unusable.
   let panDrag = null;
+  // View-only visitors have nothing to paint, so a plain left-drag (or a
+  // one-finger drag on a phone) pans too.
   canvas3d.addEventListener("pointerdown", (event) => {
-    if (event.button !== 1 && event.button !== 2) return;
+    const pans = event.button === 1 || event.button === 2 || (!room.canEdit && event.button === 0);
+    if (!pans) return;
     event.stopImmediatePropagation();
     panDrag = { x: event.clientX, y: event.clientY };
     canvas3d.setPointerCapture(event.pointerId);
@@ -1097,8 +1110,8 @@ function wireCameraControls() {
 
 async function loadTerrain() {
   const [elevationRes, typesRes] = await Promise.all([
-    fetch("/api/terrain"),
-    fetch("/api/terrain-types"),
+    fetch(apiPath("/api/terrain")),
+    fetch(apiPath("/api/terrain-types")),
   ]);
   setElevationFromList(elevationGrid, await elevationRes.json());
   setTypesFromList(typeGrid, await typesRes.json());
@@ -1130,7 +1143,8 @@ function withoutPendingOverrides(cells, pending) {
 }
 
 function connectEvents() {
-  const source = new EventSource("/api/events");
+  const source = new EventSource(apiPath("/api/events"));
+  wireRoomEvents(source);
   // Fires on the first connect AND on every automatic reconnect after a
   // drop, so a client that missed events while disconnected always
   // recovers by re-fetching the authoritative state, rather than trusting
@@ -1166,5 +1180,9 @@ wireToolbar();
 wireCategoryRail();
 wireViewToggle();
 wireCameraControls();
-loadTerrain();
-connectEvents();
+wireRoomUi();
+if (await loadRoom()) {
+  openShareIfRequested();
+  loadTerrain();
+  connectEvents();
+}

@@ -1963,7 +1963,7 @@ objects), continent-scale maps, and a room member cap.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Production data migration (the one irreversible step) | Losing the live world | Dry run on `prodcopy.db` first. Take a Fly volume snapshot before deploying. Assert row counts before and after (57,432 / 18,581 / 9). Deploy at the end of phase 1, so there's time to recover. |
+| Production data migration (the one irreversible step) | Losing the live world | Dry run done (phase 0). Take a Fly volume snapshot before deploying. The migration backs the file up, checks counts *and* per-cell content hashes, and rolls back on any mismatch. Expected counts are read live at deploy time, because production keeps growing. Deploy at the end of phase 1, so there's time to recover. |
 | Storage on 1 GB | Volume fills, writes fail | Caps on rooms (total and per session per day) and on snapshots per room, chosen from the measured 4-5 MB/room and 150 KB/snapshot. A check asserts the caps are enforced. |
 | View-only bypass | A viewer edits | Every write route (paint, types, undo, snapshot, restore) resolves the role from the token server-side. A test sends each write with a view token and expects 403. |
 | Restore in a shared room | One user wipes others' work | Private rooms only. Automatic snapshot first, so a restore is itself reversible. Logged with the actor. |
@@ -1979,8 +1979,8 @@ browser test. Deploys still need the user's approval each time.
 
 | Phase | Dates | Delivers | Exit gate |
 |---|---|---|---|
-| 0. Baseline | 21-22 Oct | Parity screenshots of the public room. ADR 3 draft (rooms, links, roles). Migration script dry-run on `prodcopy.db`. | Row counts preserved in the dry run. |
-| 1. Rooms + links | 22-27 Oct | Schema migration. Token routing and roles. Per-room SSE/undo/activity. Unprefixed routes alias the public room. Share panel and view-only UI. Rate limits on new routes. | Existing 23 tests green. New tests: room isolation, view-only 403 on every write, data survives restart. Parity gate. **Proposed deploy.** |
+| 0. Baseline | 21-22 Oct | ✅ Done 2026-10-21, see "Phase 0 results". Parity screenshots of the public room. ADR 3 draft (rooms, links, roles). Migration script dry-run on a production copy. | Row counts preserved in the dry run. |
+| 1. Rooms + links | 22-27 Oct | ✅ Deployed 2026-10-21 (release v10), verified live. See "Phase 1 deploy". Migration run at boot inside the new code. Token routing and roles. Phone layout overflow fix. Per-room SSE/undo/activity. Unprefixed routes alias the public room. Share panel and view-only UI. Rate limits on new routes. | Existing 23 tests green. New tests: room isolation, view-only 403 on every write, data survives restart. Parity gate. **Proposed deploy.** |
 | 2. Create | 28 Oct - 1 Nov | Shared generator with preview. New-map dialog. My maps. Presence. | Generated maps reviewed against references. Generator is deterministic for a given seed (test). Parity gate. |
 | 3. Save, reload, share | 1-4 Nov | Snapshots, autosnapshots, restore (private only), fork, file export/import, PNG export. ADR 4 (history model: B over C). | Restore round-trip test. Public-room restore refused. Import of a corrupt file rejected. Parity gate. |
 | 4. Harden | 5-7 Nov | Caps, headers, both marking viewports, next-day return test after a restart. **Feature freeze 7 Nov.** | Full manual walkthrough of the loop on desktop and phone. |
@@ -1999,6 +1999,172 @@ marks under the response criterion.
 | `PROCESS.md` | 900-1100 words, *rewritten* (not appended), covering brief → harness → workflow, stack and workflow trade-offs, and claims backed by commit links. | **6,778 words**, mostly per-crit history. | Plan the cut by 2 Nov (what moves to ROADMAP or reflections). Rewrite 7-8 Nov. |
 | `README.md` | 400-600 words. The argued definition of "good", influences, "not built" list. | 552 words, but it describes the single-map app. | Rewrite 7 Nov, once the loop is real. |
 | `reflections/crit-10.md` | 150-300 words. | 546 words. | Already submitted for its crit. Left as is. |
+
+### Phase 0 results (2026-10-21, branch `final-platform`)
+
+No production data was modified. Production was only read through its
+public GET endpoints. An SSH-based copy of the real database file was
+blocked by the permission classifier, so the copy below is built from public
+data.
+
+**Database copy.** The real schema comes from the app's own code (an empty
+database initialised by `src/server.ts`). The data comes from production's
+public API on 2026-10-21. It holds **58,370 elevation cells, 22,259 type
+cells and 9 marks**. Production has grown since the 2026-10-20 deploy
+(57,432 / 18,581), so the migration's expected counts must be read from the
+live database at deploy time, not from this file. Mark owners and the full
+activity log aren't public, so those are stand-ins (9 marks under one
+placeholder session, 5,000 synthetic activity rows at a realistic volume).
+File: 4.96 MB, kept with a sha256 checksum that still verified after every
+step below.
+
+**Parity baseline.** Seven fixed captures: desktop 1600x1000 (Top-down,
+Oblique default, zoom, low angle, high E→W) and phone 390x844 (Top-down,
+Oblique). There were no console or page errors.
+- **Noise floor:** two identical runs are **pixel-identical (0.000%, max
+  channel difference 0)**. Rendering is deterministic for the same data, so
+  the gate can require zero difference rather than a tolerance.
+- **Sensitivity:** one 5x5-cell stroke (0.04% of the map) was detected in
+  all seven images (0.04-0.24% of pixels changed), and the diff image marks
+  exactly that spot.
+- Tools: `.localdata/phase0/parity-shoot.mjs` and `parity-diff.mjs` (dev-only).
+- Images: `.localdata/phase0/shots/baseline-run1/` (gitignored, like
+  `research/`).
+
+**Migration dry run** (`scripts/migrate-rooms.ts`, each case on a fresh copy):
+
+| Case | Result |
+|---|---|
+| Normal run | 53 ms. Counts unchanged (58,370 / 22,259 / 9 marks / 5,000 activity). **Content hashes of every cell identical.** `integrity_check` ok. |
+| Second run | No-op ("already at rooms_version=1"). |
+| Failure injected just before commit | Rolled back. Schema, counts and hashes identical to the original. |
+| Half-migrated state (`rooms` table, no version) | Refused, nothing modified. |
+| Missing file | Refused. |
+| File size | 4.96 MB grew to 9.0 MB from free pages left by the dropped tables. With `VACUUM` added: **4.2 MB**, hashes unchanged. |
+| Current `main` code started on a migrated database | **Crashes on startup** (`ON CONFLICT clause does not match any PRIMARY KEY`). This fails loudly rather than corrupting anything, but it fixes the deploy order: the migration runs inside the phase 1 code at boot, not as a step before deploying. |
+
+The existing 23 tests pass on a fresh database. `ADR.md` has an ADR 3 draft
+(rooms, links, roles).
+
+**Found during the baseline, not caused by it:** at phone width the layout
+is a fixed **474 px wide**. At 360, 390 and 430 px the top bar, category
+rail and canvas run off the right edge. The page doesn't scroll sideways, so
+"Oblique" and "Activity log" are clipped and can't be reached. This is in
+production today. The phone is a marking viewport, so this is **added to
+phase 1**. It's a layout fix and touches no renderer code, but it will
+change the phone parity images. Those get re-baselined once, deliberately,
+after the user approves the new phone layout.
+
+### Phase 1 results (2026-10-21, branch `final-platform`, not deployed)
+
+**Built.** Server:
+- `src/rooms-schema.ts` holds the one copy of the migration, run at startup
+  by `src/db.ts` after a file backup, and by `scripts/migrate-rooms.ts` for
+  rehearsals.
+- `src/rooms.ts` handles tokens, roles, limits and "My maps".
+- `src/presence.ts` handles who's here.
+- Live-update streams, undo and activity are scoped per room.
+- Every write is checked once in `handleRoomApi`.
+
+Client:
+- `public/world/room-ui.js`: Maps menu, Share sheet, Rename, presence
+  chips, view-only mode, and a "No map at this link" page.
+- `world-client.js` changed only its fetch paths and the paint and pan
+  gating. **No renderer file was touched.**
+
+The phone overflow is fixed: `minmax(0, 1fr)` on the grid, a two-row top
+bar and a wrapping camera strip.
+
+**Decisions made while building.**
+- **Private activity stays out of the public `/logs/`**, because otherwise
+  anyone could watch private maps being edited.
+- **Viewers pan with a plain left-drag**, since they have nothing to paint.
+- **Basic presence (who's here) was pulled forward from phase 2.** It cost
+  one small module on top of per-room streams, and it makes "edit together"
+  visible.
+- **Refused writes are logged but rate-limited**, so a view link can't flood
+  the persisted log.
+- **Limits:** 150 maps total, 10 per session per day, 8 creates or renames
+  per minute, and 400 open live connections. Sized from the measured
+  4 MB/map and the 256 MB machine.
+
+**Verified.**
+
+| Check | Result |
+|---|---|
+| `pnpm check` on an empty data directory (as CI runs it) | typecheck clean, **41/41** tests (23 existing unchanged, 18 new in `spec/rooms.test.ts`), stable over repeated runs. `check:evidence` passes. |
+| Startup migration on the production copy | Backup written, then migrated in ~130 ms with hashes verified. The public room's API output is **identical cell-for-cell** to production's public API (58,370 / 22,259), and all 9 marks are intact. |
+| Restart | A private map's cells, name and "My maps" entry survive. The second startup runs no migration and writes no backup. |
+| Real multi-user browser run (`.localdata/phase0/multiuser.mjs`, 3-4 isolated browser contexts) | **30/30.** Share sheet, Copy, Esc. Bob's stroke reached Alice in **140 ms**. Viewer: no tools, never receives the edit token, drag pans instead of painting, a forced API write gets 403, sees edits and renames live. Presence joins and leaves correctly. "My maps" lists the map. A bad link shows a clear message. Phone: nothing past the edge in editor, viewer or public room, and a tap creates land. No page errors. |
+| Parity gate, desktop | **0 pixels changed inside the map** in all five views. All differences are in rows 9-37 (the new top bar). |
+| Parity gate, phone | Layout changed by design: the canvas is 364 px, fully visible, versus 448 px before (58 px clipped off-screen). The map itself was checked by eye. **The phone baseline needs re-capturing once the user approves this layout.** |
+| Load | 96 MB idle, rising to 116 MB with 400 open streams across 10 maps. The 401st stream gets a clean 503, and the server keeps serving. |
+
+**Found and fixed during testing:** the public room's rename route returned
+404 instead of a clear refusal. The read-only view still showed painting
+hints. Presence chips overlapped and clipped their initials. Refused writes
+used one log label regardless of action.
+
+**Testing limits, stated honestly.**
+- Headless WebGL runs on SwiftShader (CPU). Each tab spends ~6-7 s busy on
+  first load compiling shaders and building trees. That's the same on `main`
+  for the public room (measured), so it's existing renderer cost, not caused
+  by rooms. It is not representative of a real GPU.
+- Docker isn't running on this machine, so the CI image itself wasn't built
+  locally. Same Node 24.21, same empty-data start instead. The Dockerfile
+  copies `src/` and `public/` whole, so the new files ship.
+- Mark owners and the full activity log in the production copy are
+  stand-ins (see phase 0).
+
+### Phase 1 deploy (2026-10-21, user-approved, Fly release v10)
+
+**Backups taken before the deploy.**
+1. Fly volume snapshot `vs_k4NM7w0wvzGheyqkP2Pa`, created 09:01:01 UTC, 35 s
+   before the release was recorded and 50 s before the new machine started.
+   It's a genuine pre-migration image.
+2. The startup backup `/data/app.db.pre-rooms-1792573314153.bak` on the
+   volume, written by the new code just before migrating.
+3. A checksummed local export of the public API (`.localdata/deploy1/pre-*.json`).
+
+The SSH-based on-machine copy stayed blocked by the permission check and
+wasn't retried.
+
+**Migration (production logs).** 315 ms, content hashes verified inside the
+transaction. 58,370 elevation cells, 22,259 type cells and 1,871 real
+activity rows. No errors.
+
+**Verified live.**
+- The public API's elevation, type and mark data match their pre-deploy
+  content hashes exactly, both straight after deploy and again after all
+  testing. The marks JSON is byte-identical.
+- `/`, `/world/`, `/readme/`, `/credits/`, `/logs/` and `/isle/` all return
+  200, with the new security headers.
+- `spec/rooms.test.ts` and `spec/invariants.test.ts` pass against
+  production: 20/20.
+- The real multi-user browser run against production passes 30/30. Live
+  edits arrived in 211 ms over the internet. View-only was refused, the
+  phone layout fit at 390 px, and a phone tap painted.
+- The production logs show 0 errors.
+
+The other spec files write test cells into the shared world, so they were
+deliberately **not** run against production.
+
+**Process slip, recorded honestly.** I moved on to the deploy before the
+snapshot had appeared in the snapshot list, having misread my own pending
+wait as a result. The timestamps above show the snapshot completed before
+the migration ran, so nothing was exposed. From now on the rule is to deploy
+only after the snapshot is listed.
+
+**Test maps created on production:** about 17 private maps from the room
+tests and the browser run (names like "Test map", "Map A", "The Reaches,
+revised"). They count toward the 150-map cap and could be cleared later.
+
+**Rollback, if ever needed.**
+1. Redeploy `da9bc2e`.
+2. Restore `/data/app.db` from the `.pre-rooms-*.bak` file, or from volume
+   snapshot `vs_k4NM7w0wvzGheyqkP2Pa`. The old code can't run on the
+   migrated file.
+3. Any edits made since the deploy would be lost.
 
 Phase 1 comes first because everything else needs rooms, and because it
 carries the only irreversible step. Doing it earliest leaves the most time
@@ -2371,3 +2537,26 @@ the "Product phases" section above.
   figures were measured on `.localdata/prodcopy.db`: 4.1 MB per fully painted
   room, 151 KB per gzipped snapshot. The iPhone fix (`da9bc2e`) was confirmed
   on the user's real device. No implementation yet.
+- **2026-10-21** - Platform phase 0 done on `final-platform`. Production was
+  read only through public GET endpoints, and no production data was
+  modified. Results are in "Phase 0 results". The parity baseline is
+  pixel-identical between runs and catches a 5x5-cell change.
+  `scripts/migrate-rooms.ts` passed normal, repeat, injected-failure,
+  half-migrated and missing-file cases with per-cell content hashes
+  unchanged. Current `main` crashes on a migrated database, so the migration
+  runs at boot in phase 1. Found a pre-existing phone layout overflow
+  (474 px fixed width) and added it to phase 1. ADR 3 drafted.
+- **2026-10-21** - Platform phase 1 built and verified on `final-platform`
+  (not deployed, production untouched): rooms, edit and view-only links,
+  Share and Maps UI, presence, per-room streams/undo/activity, and the phone
+  layout fix. 41/41 tests. 30/30 real multi-user browser checks. Desktop
+  parity: 0 changed pixels inside the map. The startup migration on a
+  production copy serves cell-for-cell identical data. Awaiting the user's
+  approval to deploy. See "Phase 1 results".
+- **2026-10-21** - Platform phase 1 deployed with user approval (Fly
+  release v10). Backups were taken first (volume snapshot
+  `vs_k4NM7w0wvzGheyqkP2Pa`, the startup `.bak` file, and a local API
+  export). The production migration verified 58,370 / 22,259 cells by
+  content hash, and the public data is identical to pre-deploy. 20/20 room
+  tests and 30/30 browser checks pass against production. See "Phase 1
+  deploy".

@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
+import { copyFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { ensureRoomsSchema, needsRoomsMigration } from "./rooms-schema.ts";
 
 export const MARK_KINDS = ["flag", "campfire", "tent", "boat", "tree", "ruin"] as const;
 export type MarkKind = (typeof MARK_KINDS)[number];
@@ -18,6 +19,50 @@ const dbPath = process.env.DB_PATH ?? "/data/app.db";
 mkdirSync(dirname(dbPath), { recursive: true });
 
 export const db = new DatabaseSync(dbPath);
+
+// The grid resolution persisted data was written at. Old-resolution
+// coordinates are also valid, differently-wrong coordinates at a new
+// resolution, so a mismatch must fail loudly, never be applied silently.
+export const GRID_SIZE = 256;
+
+function assertGridSize(): void {
+  db.exec("CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  const stored = (db.prepare("SELECT value FROM schema_meta WHERE key = 'grid_size'").get() as { value: string } | undefined)
+    ?.value;
+  const hasTerrain =
+    (db.prepare("SELECT count(*) c FROM sqlite_master WHERE type = 'table' AND name = 'terrain_cells'").get() as { c: number })
+      .c > 0;
+  const hasData = hasTerrain && db.prepare("SELECT 1 FROM terrain_cells LIMIT 1").get() !== undefined;
+  if (stored === undefined) {
+    if (hasData) {
+      throw new Error(
+        "terrain_cells has data but no schema_meta.grid_size record - this looks like pre-migration data. " +
+          `Run 'node scripts/migrate-terrain-grid.ts <db-path>' first, or DB_PATH=${dbPath} is the wrong file.`,
+      );
+    }
+    db.prepare("INSERT INTO schema_meta (key, value) VALUES ('grid_size', ?)").run(String(GRID_SIZE));
+  } else if (Number(stored) !== GRID_SIZE) {
+    throw new Error(
+      `database is at grid_size=${stored} but the code expects ${GRID_SIZE}. ` +
+        "Run 'node scripts/migrate-terrain-grid.ts <db-path>' to upgrade it first.",
+    );
+  }
+}
+
+assertGridSize();
+// Pre-rooms data is backed up beside the database before the one-way
+// rooms migration (ADR 3); the copy stays on the volume as the recovery path.
+if (needsRoomsMigration(db)) {
+  const backupPath = `${dbPath}.pre-rooms-${Date.now()}.bak`;
+  copyFileSync(dbPath, backupPath);
+  console.log(`[schema] backed up pre-rooms database to ${backupPath}`);
+}
+const migration = ensureRoomsSchema(db);
+if (migration.status === "migrated") {
+  console.log(
+    `[schema] migrated to rooms in ${migration.elapsedMs.toFixed(0)} ms, content hashes verified: ${JSON.stringify(migration.counts)}`,
+  );
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS marks (

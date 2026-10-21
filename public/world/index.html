@@ -9,7 +9,20 @@
   <body>
     <div class="app">
       <header class="topbar">
-        <span class="brand">Shared terrain</span>
+        <div class="topbar-room">
+          <button type="button" id="maps-button" class="ghost-button maps-button" aria-haspopup="dialog" aria-controls="maps-dialog">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z M9 3v15 M15 6v15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+            <span>Maps</span>
+          </button>
+          <div class="room-title">
+            <span id="room-name" class="room-name">The shared world</span>
+            <button type="button" id="rename-button" class="icon-button hidden" title="Rename this map" aria-label="Rename this map">
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z M14 6l4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+            </button>
+            <span id="role-badge" class="role-badge hidden">View only</span>
+          </div>
+          <button type="button" id="share-button" class="primary-button hidden" aria-haspopup="dialog" aria-controls="share-dialog">Share</button>
+        </div>
         <div class="view-switch" role="group" aria-label="Map view">
           <button type="button" data-view="top" class="active" title="Flat map, accurate shapes - best for precise editing.">
             Top-down
@@ -31,10 +44,10 @@
           >
             Undo
           </button>
-          <a href="/logs/" class="ghost-link">Activity log</a>
-          <a href="/isle/" class="ghost-link">The Isle (Crit 8)</a>
+          <div id="presence" class="presence" aria-live="polite"></div>
         </div>
       </header>
+
 
       <nav class="category-rail" aria-label="Tool categories">
         <button type="button" class="category-btn active" data-category="land">
@@ -149,6 +162,75 @@
         </div>
       </aside>
     </div>
+
+    <div id="room-error" class="room-error hidden" role="alert">
+      <h2>No map at this link</h2>
+      <p>It may have been mistyped, or only part of the link was copied.</p>
+      <a href="/" class="primary-button">Go to the shared world</a>
+    </div>
+
+    <dialog id="share-dialog" class="sheet" aria-labelledby="share-title">
+      <form method="dialog" class="sheet-head">
+        <h2 id="share-title">Share this map</h2>
+        <button class="icon-button" value="close" aria-label="Close">&times;</button>
+      </form>
+      <div class="share-row">
+        <label for="share-edit">Can edit</label>
+        <p class="share-help">Anyone with this link can change the map. Share it only with people you trust.</p>
+        <div class="copy-field">
+          <input id="share-edit" type="text" readonly />
+          <button type="button" class="primary-button" data-copy="share-edit">Copy</button>
+        </div>
+      </div>
+      <div class="share-row">
+        <label for="share-view">Can view</label>
+        <p class="share-help">Sees every change live, but can't edit.</p>
+        <div class="copy-field">
+          <input id="share-view" type="text" readonly />
+          <button type="button" class="ghost-button" data-copy="share-view">Copy</button>
+        </div>
+      </div>
+      <p class="share-note">There are no accounts: these links are the only way in. Keep the edit link somewhere safe. This browser also remembers it under Maps.</p>
+    </dialog>
+
+    <dialog id="maps-dialog" class="sheet" aria-labelledby="maps-title">
+      <form method="dialog" class="sheet-head">
+        <h2 id="maps-title">Maps</h2>
+        <button class="icon-button" value="close" aria-label="Close">&times;</button>
+      </form>
+      <form id="new-map-form" class="new-map">
+        <label for="new-map-name">Start a new map</label>
+        <div class="copy-field">
+          <input id="new-map-name" name="name" type="text" maxlength="60" placeholder="e.g. The Northern Reaches" required autocomplete="off" />
+          <button type="submit" class="primary-button">Create</button>
+        </div>
+        <p id="new-map-error" class="form-error hidden" role="alert"></p>
+      </form>
+      <h3>Your maps</h3>
+      <ul id="my-maps" class="map-list"></ul>
+      <p id="my-maps-empty" class="share-help">Maps you create or open appear here, on this browser.</p>
+      <h3>Everyone</h3>
+      <ul class="map-list">
+        <li><a href="/" class="map-link"><span>The shared world</span><span class="map-meta">Anyone can edit</span></a></li>
+      </ul>
+      <p class="sheet-footer"><a id="activity-link" href="/logs/">Activity log</a> · <a href="/isle/">The Isle (Crit 8)</a></p>
+    </dialog>
+
+    <dialog id="rename-dialog" class="sheet" aria-labelledby="rename-title">
+      <form method="dialog" class="sheet-head">
+        <h2 id="rename-title">Rename map</h2>
+        <button class="icon-button" value="close" aria-label="Close">&times;</button>
+      </form>
+      <form id="rename-form" class="new-map">
+        <div class="copy-field">
+          <input id="rename-input" type="text" maxlength="60" required autocomplete="off" aria-label="Map name" />
+          <button type="submit" class="primary-button">Save</button>
+        </div>
+        <p id="rename-error" class="form-error hidden" role="alert"></p>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast hidden" role="status"></div>
     <script src="/world/vendor/d3-array.js"></script>
     <script src="/world/vendor/d3-contour.js"></script>
     <script type="module" src="/world/world-client.js"></script>

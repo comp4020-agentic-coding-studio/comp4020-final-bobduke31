@@ -18,7 +18,23 @@ import {
 import type { TerrainCell, TerrainTypeCell } from "./terrain.ts";
 import { subscribe, broadcast } from "./realtime.ts";
 import { log as logActivity, recentActivity } from "./activity.ts";
+import type { ActivityAction } from "./activity.ts";
 import { captureStroke, undoLastStroke } from "./undo.ts";
+import {
+  PUBLIC_ACCESS,
+  PUBLIC_ROOM_ID,
+  ROOM_NAME_MAX,
+  MAX_ROOMS_PER_SESSION_PER_DAY,
+  cleanRoomName,
+  createRoom,
+  rememberRoom,
+  renameRoom,
+  resolveToken,
+  roomsForSession,
+  shareTokensFor,
+} from "./rooms.ts";
+import type { RoomAccess } from "./rooms.ts";
+import { join as joinPresence, presenceFor } from "./presence.ts";
 
 const PORT = Number(process.env.PORT ?? 8080);
 const PUBLIC_DIR = new URL("../public/", import.meta.url).pathname;
@@ -101,6 +117,235 @@ function cellsSummary(cells: { x: number; y: number }[]): string {
   return `${cells.length} cell${cells.length === 1 ? "" : "s"}, bbox ${bbox}`;
 }
 
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify(body));
+}
+
+async function readJsonOr400(req: IncomingMessage, res: ServerResponse): Promise<Record<string, unknown> | null> {
+  try {
+    const payload = await readJsonBody(req);
+    return (payload ?? {}) as Record<string, unknown>;
+  } catch {
+    sendJson(res, 400, { error: "invalid JSON body" });
+    return null;
+  }
+}
+
+const PUBLIC_ROOM_PATHS = new Set([
+  "/api/room",
+  "/api/room/name",
+  "/api/terrain",
+  "/api/terrain-types",
+  "/api/terrain/cells",
+  "/api/terrain/types",
+  "/api/terrain/undo",
+  "/api/events",
+  "/api/activity",
+]);
+
+const DENIED_ACTION = {
+  "/api/terrain/cells": "terrain:paint",
+  "/api/terrain/types": "terrain-type:paint",
+  "/api/terrain/undo": "terrain:undo",
+  "/api/room/name": "room:rename",
+} as const satisfies Record<string, ActivityAction>;
+const WRITE_PATHS = new Set(Object.keys(DENIED_ACTION));
+
+// Fixed-window per-session limit on room creation and renames, on top of
+// the stored per-day cap in rooms.ts: those actions write rows that persist.
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX = 8;
+const rateHits = new Map<string, { start: number; n: number }>();
+function rateLimited(sessionId: string): boolean {
+  const now = Date.now();
+  const hit = rateHits.get(sessionId);
+  if (!hit || now - hit.start > RATE_WINDOW_MS) {
+    rateHits.set(sessionId, { start: now, n: 1 });
+    if (rateHits.size > 10_000) rateHits.clear();
+    return false;
+  }
+  return ++hit.n > RATE_MAX;
+}
+
+async function handleCreateRoom(req: IncomingMessage, res: ServerResponse, sessionId: string): Promise<void> {
+  const payload = await readJsonOr400(req, res);
+  if (!payload) return;
+  const name = cleanRoomName(payload.name);
+  if (!name) {
+    sendJson(res, 400, { error: `a map name is 1-${ROOM_NAME_MAX} characters` });
+    return;
+  }
+  if (rateLimited(sessionId)) {
+    sendJson(res, 429, { error: "too many maps created just now - try again in a minute" });
+    return;
+  }
+  const result = createRoom(name, sessionId);
+  if (!result.ok) {
+    const error =
+      result.reason === "server-full"
+        ? "this server has reached its map limit"
+        : `you can create up to ${MAX_ROOMS_PER_SESSION_PER_DAY} maps a day`;
+    sendJson(res, 429, { error });
+    return;
+  }
+  logActivity(result.access.roomId, sessionId, "room:create", `"${name}"`);
+  sendJson(res, 201, { name, editToken: result.editToken, viewToken: result.viewToken });
+}
+
+// Every room-scoped API route, public or private. Returns false for a path
+// it doesn't own so the caller can fall through to a 404. Writes are
+// checked here, once, against the role the server resolved from the URL
+// token - there is no request field that can raise it.
+async function handleRoomApi(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  access: RoomAccess,
+  sessionId: string,
+): Promise<boolean> {
+  const { roomId } = access;
+  const isWrite = req.method === "POST" && WRITE_PATHS.has(path);
+  if (isWrite && access.role !== "edit") {
+    // Logged, but rate-limited: a scripted view link mustn't be able to
+    // grow the persisted log without bound by hammering refused writes.
+    if (!rateLimited(`denied:${sessionId}`)) {
+      logActivity(roomId, sessionId, DENIED_ACTION[path as keyof typeof DENIED_ACTION], `DENIED ${path} (view-only link)`);
+    }
+    sendJson(res, 403, { error: "this is a view-only link - ask for the edit link to make changes" });
+    return true;
+  }
+
+  if (path === "/api/room" && req.method === "GET") {
+    if (!access.isPublic) rememberRoom(sessionId, roomId, access.role);
+    const share = shareTokensFor(access);
+    sendJson(res, 200, {
+      name: access.name,
+      role: access.role,
+      isPublic: access.isPublic,
+      ...(share ?? {}),
+      present: presenceFor(roomId),
+    });
+    return true;
+  }
+
+  if (path === "/api/room/name" && req.method === "POST") {
+    const payload = await readJsonOr400(req, res);
+    if (!payload) return true;
+    const name = cleanRoomName(payload.name);
+    if (!name || access.isPublic) {
+      sendJson(res, 400, { error: access.isPublic ? "the shared world can't be renamed" : `a map name is 1-${ROOM_NAME_MAX} characters` });
+      return true;
+    }
+    if (rateLimited(sessionId)) {
+      sendJson(res, 429, { error: "too many renames just now - try again in a minute" });
+      return true;
+    }
+    renameRoom(access, name);
+    broadcast(roomId, "room:update", { name });
+    logActivity(roomId, sessionId, "room:rename", `"${name}"`);
+    res.writeHead(204);
+    res.end();
+    return true;
+  }
+
+  if (path === "/api/terrain" && req.method === "GET") {
+    sendJson(res, 200, listCells(roomId));
+    return true;
+  }
+
+  if (path === "/api/terrain-types" && req.method === "GET") {
+    sendJson(res, 200, listTerrainTypes(roomId));
+    return true;
+  }
+
+  if (path === "/api/terrain/cells" && req.method === "POST") {
+    const payload = await readJsonOr400(req, res);
+    if (!payload) return true;
+    const { cells } = payload;
+    if (!Array.isArray(cells) || cells.length === 0 || cells.length > MAX_CELLS_PER_BATCH || !cells.every(isValidCell)) {
+      sendJson(res, 400, { error: "cells must be a non-empty array of {x, y, elevation} within grid bounds" });
+      return true;
+    }
+    const validCells = cells as TerrainCell[];
+    // Snapshotted server-side before the write lands - what undo later
+    // restores for this session in this room, and only that (src/undo.ts).
+    captureStroke(roomId, sessionId, validCells, []);
+    const submerged = applyCells(roomId, validCells);
+    broadcast(roomId, "terrain:update", { cells: validCells });
+    // Elevation is the one source of truth for land vs sea (ADR.md): any
+    // cell pushed underwater loses its terrain type server-side, and every
+    // client in the room is told so.
+    if (submerged.length > 0) {
+      broadcast(roomId, "terrain-type:clear", { cells: submerged.map(({ x, y }) => ({ x, y })) });
+    }
+    logActivity(roomId, sessionId, "terrain:paint", cellsSummary(validCells));
+    res.writeHead(204);
+    res.end();
+    return true;
+  }
+
+  if (path === "/api/terrain/types" && req.method === "POST") {
+    const payload = await readJsonOr400(req, res);
+    if (!payload) return true;
+    const { cells } = payload;
+    if (!Array.isArray(cells) || cells.length === 0 || cells.length > MAX_CELLS_PER_BATCH || !cells.every(isValidTerrainTypeCell)) {
+      sendJson(res, 400, {
+        error: "cells must be a non-empty array of {x, y, terrain}, terrain one of grassland/sand/forest/rock",
+      });
+      return true;
+    }
+    // A type painted over sea is a silent no-op: a stroke straddling a
+    // coastline is the normal case, not a malformed request.
+    const onLand = (cells as TerrainTypeCell[]).filter((cell) => isLand(roomId, cell.x, cell.y));
+    if (onLand.length > 0) {
+      captureStroke(roomId, sessionId, [], onLand);
+      applyTerrainTypes(roomId, onLand);
+      broadcast(roomId, "terrain-type:update", { cells: onLand });
+      logActivity(roomId, sessionId, "terrain-type:paint", cellsSummary(onLand));
+    }
+    res.writeHead(204);
+    res.end();
+    return true;
+  }
+
+  if (path === "/api/terrain/undo" && req.method === "POST") {
+    // The session id from the request's own cookie and the room from the
+    // URL token are the entire input: nothing here can name another
+    // session's stroke (ADR 2).
+    const result = undoLastStroke(roomId, sessionId);
+    if (!result.ok) {
+      sendJson(res, 409, { error: "nothing to undo for this session" });
+      return true;
+    }
+    broadcast(roomId, "terrain:update", { cells: result.elevationCells });
+    if (result.restoredTypeCells.length > 0) broadcast(roomId, "terrain-type:update", { cells: result.restoredTypeCells });
+    if (result.clearedTypeCells.length > 0) broadcast(roomId, "terrain-type:clear", { cells: result.clearedTypeCells });
+    logActivity(roomId, sessionId, "terrain:undo", cellsSummary(result.elevationCells));
+    res.writeHead(204);
+    res.end();
+    return true;
+  }
+
+  if (path === "/api/events" && req.method === "GET") {
+    let leave: (() => void) | undefined;
+    const ok = subscribe(roomId, res, () => leave?.());
+    if (!ok) {
+      sendJson(res, 503, { error: "too many open connections - try again shortly" });
+      return true;
+    }
+    leave = joinPresence(roomId, sessionId, access.role);
+    return true;
+  }
+
+  if (path === "/api/activity" && req.method === "GET") {
+    sendJson(res, 200, recentActivity(roomId));
+    return true;
+  }
+
+  return false;
+}
+
 // Never hand another visitor's session id to the client - just whether this
 // mark is theirs to remove.
 function toClientMark(mark: Mark, sessionId: string) {
@@ -112,6 +357,11 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   const url = new URL(req.url ?? "/", "http://localhost");
   const { sessionId, setCookieHeader } = resolveSession(req);
   if (setCookieHeader) res.setHeader("Set-Cookie", setCookieHeader);
+  // Share tokens live in URL paths: never send them to another site in a
+  // Referer header (ADR 3).
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
 
   if (url.pathname === "/readme/" && req.method === "GET") {
     const html = renderReadmePage();
@@ -154,7 +404,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       return;
     }
     const mark = insertMark(x, y, kind, sessionId);
-    logActivity(sessionId, "mark:create", `${kind} at (${x}, ${y})`);
+    logActivity(PUBLIC_ROOM_ID, sessionId, "mark:create", `${kind} at (${x}, ${y})`);
     const body = JSON.stringify(toClientMark(mark, sessionId));
     res.writeHead(201, { "Content-Type": "application/json; charset=utf-8" });
     res.end(body);
@@ -174,12 +424,12 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       // Logged as its own line, not silently 403'd: this is exactly what
       // C10's crit demo reads from the logs - a session attempting an
       // action scoped to a *different* session, and the server refusing it.
-      logActivity(sessionId, "mark:delete", `DENIED mark #${id} (not this session's)`);
+      logActivity(PUBLIC_ROOM_ID, sessionId, "mark:delete", `DENIED mark #${id} (not this session's)`);
       res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
       res.end(JSON.stringify({ error: "you can only remove marks you placed yourself" }));
       return;
     }
-    logActivity(sessionId, "mark:delete", `mark #${id}`);
+    logActivity(PUBLIC_ROOM_ID, sessionId, "mark:delete", `mark #${id}`);
     res.writeHead(204);
     res.end();
     return;
@@ -198,8 +448,13 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   // still fully functional; its own page moved to `/isle/` rather than
   // being deleted, so existing marks data and that whole experience stay
   // reachable, just no longer at `/`. See README.md and CLAUDE.md.
+  // A private map's page (/m/<token>) is the same editor file; the client
+  // reads the token from its own URL and asks /api/r/<token>/room for its
+  // role. Unknown tokens still get the page, which shows "no map at this
+  // link" from that API call rather than a bare 404.
+  const isMapPage = /^\/m\/[A-Za-z0-9_-]{1,64}\/?$/.test(url.pathname);
   if (
-    (url.pathname === "/" || url.pathname === "/world" || url.pathname === "/world/") &&
+    (url.pathname === "/" || url.pathname === "/world" || url.pathname === "/world/" || isMapPage) &&
     req.method === "GET"
   ) {
     const file = await serveStatic("/world/index.html");
@@ -219,127 +474,33 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     }
   }
 
-  if (url.pathname === "/api/terrain" && req.method === "GET") {
-    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify(listCells()));
+  // Rooms (ADR 3). The unprefixed routes are the public room, kept
+  // byte-compatible with every client and test that already uses them;
+  // /api/r/<token>/... is the same API for one private room, with the role
+  // the token grants.
+  if (url.pathname === "/api/rooms" && req.method === "POST") {
+    await handleCreateRoom(req, res, sessionId);
+    return;
+  }
+  if (url.pathname === "/api/rooms/mine" && req.method === "GET") {
+    sendJson(res, 200, roomsForSession(sessionId));
     return;
   }
 
-  if (url.pathname === "/api/terrain/cells" && req.method === "POST") {
-    let payload: unknown;
-    try {
-      payload = await readJsonBody(req);
-    } catch {
-      res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ error: "invalid JSON body" }));
+  let access: RoomAccess | null = null;
+  let apiPath = url.pathname;
+  const roomApi = /^\/api\/r\/([^/]+)(\/.*)$/.exec(url.pathname);
+  if (roomApi) {
+    access = resolveToken(roomApi[1]);
+    if (!access) {
+      sendJson(res, 404, { error: "no map at this link" });
       return;
     }
-    const { cells } = (payload ?? {}) as Record<string, unknown>;
-    if (!Array.isArray(cells) || cells.length === 0 || cells.length > MAX_CELLS_PER_BATCH || !cells.every(isValidCell)) {
-      res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(
-        JSON.stringify({
-          error: "cells must be a non-empty array of {x, y, elevation} within grid bounds",
-        }),
-      );
-      return;
-    }
-    const validCells = cells as TerrainCell[];
-    // Snapshotted here, server-side, before the write lands - this is what
-    // /api/terrain/undo later restores for this session, and only this
-    // session (see src/undo.ts).
-    captureStroke(sessionId, validCells, []);
-    const submerged = applyCells(validCells);
-    broadcast("terrain:update", { cells: validCells });
-    // Elevation is the one source of truth for land vs sea (ADR.md): any
-    // cell pushed underwater here loses its terrain type server-side, and
-    // every connected client - including the one that just painted it -
-    // is told so, rather than trusting each client to clear it themselves.
-    if (submerged.length > 0) {
-      broadcast("terrain-type:clear", { cells: submerged.map(({ x, y }) => ({ x, y })) });
-    }
-    logActivity(sessionId, "terrain:paint", cellsSummary(validCells));
-    res.writeHead(204);
-    res.end();
-    return;
+    apiPath = `/api${roomApi[2]}`;
+  } else if (PUBLIC_ROOM_PATHS.has(url.pathname)) {
+    access = PUBLIC_ACCESS;
   }
-
-  if (url.pathname === "/api/terrain/undo" && req.method === "POST") {
-    // No body to validate: the session id from the request's own cookie is
-    // the entire input. There is no field here a client could set to
-    // address another session's stroke - that's the server-side check C10
-    // asks for, not an `if` that compares two ids a request could lie about.
-    const result = undoLastStroke(sessionId);
-    if (!result.ok) {
-      res.writeHead(409, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ error: "nothing to undo for this session" }));
-      return;
-    }
-    // Broadcast exactly like a fresh paint: an undo must be just as visible
-    // to every other connected client as the original stroke was.
-    broadcast("terrain:update", { cells: result.elevationCells });
-    if (result.restoredTypeCells.length > 0) {
-      broadcast("terrain-type:update", { cells: result.restoredTypeCells });
-    }
-    if (result.clearedTypeCells.length > 0) {
-      broadcast("terrain-type:clear", { cells: result.clearedTypeCells });
-    }
-    logActivity(sessionId, "terrain:undo", cellsSummary(result.elevationCells));
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-
-  if (url.pathname === "/api/terrain-types" && req.method === "GET") {
-    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify(listTerrainTypes()));
-    return;
-  }
-
-  if (url.pathname === "/api/terrain/types" && req.method === "POST") {
-    let payload: unknown;
-    try {
-      payload = await readJsonBody(req);
-    } catch {
-      res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify({ error: "invalid JSON body" }));
-      return;
-    }
-    const { cells } = (payload ?? {}) as Record<string, unknown>;
-    if (!Array.isArray(cells) || cells.length === 0 || cells.length > MAX_CELLS_PER_BATCH || !cells.every(isValidTerrainTypeCell)) {
-      res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(
-        JSON.stringify({
-          error: `cells must be a non-empty array of {x, y, terrain}, terrain one of grassland/sand/forest/rock`,
-        }),
-      );
-      return;
-    }
-    // Painting a terrain type over sea is a silent no-op rather than an
-    // error: a brush stroke straddling a coastline is the normal case, not
-    // a malformed request.
-    const onLand = (cells as TerrainTypeCell[]).filter((cell) => isLand(cell.x, cell.y));
-    if (onLand.length > 0) {
-      captureStroke(sessionId, [], onLand);
-      applyTerrainTypes(onLand);
-      broadcast("terrain-type:update", { cells: onLand });
-      logActivity(sessionId, "terrain-type:paint", cellsSummary(onLand));
-    }
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-
-  if (url.pathname === "/api/events" && req.method === "GET") {
-    subscribe(res);
-    return;
-  }
-
-  if (url.pathname === "/api/activity" && req.method === "GET") {
-    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-    res.end(JSON.stringify(recentActivity()));
-    return;
-  }
+  if (access && (await handleRoomApi(req, res, apiPath, access, sessionId))) return;
 
   // In-app real-time log viewer (C10): the crit's own demo format is
   // narrating from `flyctl logs` in a terminal, which stays the primary

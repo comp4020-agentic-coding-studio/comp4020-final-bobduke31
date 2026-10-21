@@ -31,7 +31,10 @@ interface StrokeSnapshot {
   capturedAt: number;
 }
 
+// Keyed by room *and* session: undo in one map must never reach into a
+// stroke the same person made in another map.
 const lastStroke = new Map<string, StrokeSnapshot>();
+const keyFor = (roomId: string, sessionId: string) => `${roomId}\u0000${sessionId}`;
 
 // One brush stroke (ROADMAP.md: Mountain/Peak set elevation *and* rock type
 // together) reaches the server as two separate, sequential POSTs from the
@@ -52,6 +55,7 @@ const STROKE_MERGE_WINDOW_MS = 400;
 // ever read, so the snapshot always reflects the real prior state, not a
 // value trusted from the client that painted it.
 export function captureStroke(
+  roomId: string,
   sessionId: string,
   elevationCells: TerrainCell[],
   typeCells: TerrainTypeCell[],
@@ -62,7 +66,8 @@ export function captureStroke(
   const cells = [...touched.values()];
 
   const now = Date.now();
-  const existing = lastStroke.get(sessionId);
+  const key = keyFor(roomId, sessionId);
+  const existing = lastStroke.get(key);
   const sameStroke = existing && now - existing.capturedAt <= STROKE_MERGE_WINDOW_MS;
   const snapshot: StrokeSnapshot = sameStroke
     ? existing
@@ -75,10 +80,10 @@ export function captureStroke(
   // its own two dabs.
   const newCells = cells.filter((c) => !snapshot.elevationBefore.has(`${c.x},${c.y}`));
   if (newCells.length > 0) {
-    for (const c of elevationsFor(newCells)) snapshot.elevationBefore.set(`${c.x},${c.y}`, c);
-    for (const c of terrainTypesFor(newCells)) snapshot.typesBefore.set(`${c.x},${c.y}`, c);
+    for (const c of elevationsFor(roomId, newCells)) snapshot.elevationBefore.set(`${c.x},${c.y}`, c);
+    for (const c of terrainTypesFor(roomId, newCells)) snapshot.typesBefore.set(`${c.x},${c.y}`, c);
   }
-  lastStroke.set(sessionId, snapshot);
+  lastStroke.set(key, snapshot);
 }
 
 export type UndoResult =
@@ -97,20 +102,21 @@ export type UndoResult =
 // input, so the caller can broadcast terrain-type:update /
 // terrain-type:clear exactly like a live paint would - an undone stroke
 // must be just as visible to every other connected client as the original.
-export function undoLastStroke(sessionId: string): UndoResult {
-  const snapshot = lastStroke.get(sessionId);
+export function undoLastStroke(roomId: string, sessionId: string): UndoResult {
+  const key = keyFor(roomId, sessionId);
+  const snapshot = lastStroke.get(key);
   if (!snapshot) return { ok: false, reason: "nothing-to-undo" };
-  lastStroke.delete(sessionId);
+  lastStroke.delete(key);
 
   const elevationCells = [...snapshot.elevationBefore.values()];
   const typesBefore = [...snapshot.typesBefore.values()];
 
-  applyCells(elevationCells);
+  applyCells(roomId, elevationCells);
 
   const restoredTypeCells = typesBefore.filter((c): c is TerrainTypeCell => c.terrain !== null);
   const clearedTypeCells = typesBefore.filter((c) => c.terrain === null);
-  if (restoredTypeCells.length > 0) applyTerrainTypes(restoredTypeCells);
-  if (clearedTypeCells.length > 0) clearTerrainTypes(clearedTypeCells);
+  if (restoredTypeCells.length > 0) applyTerrainTypes(roomId, restoredTypeCells);
+  if (clearedTypeCells.length > 0) clearTerrainTypes(roomId, clearedTypeCells);
 
   return { ok: true, elevationCells, restoredTypeCells, clearedTypeCells };
 }
