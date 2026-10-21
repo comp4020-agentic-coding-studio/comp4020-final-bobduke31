@@ -2037,6 +2037,10 @@ Proposal with mockups: `research/ux-mockups/atlas-table-redesign.html`
 | VII. Depth | 4-6 Nov | Automatic versions, send-a-copy links, the Atlas live-now strip, link-preview images, Follow, and a second generator pass. |
 | VIII. Harden and write up | 7-9 Nov | Feature freeze 7 Nov. Both viewports, real phone, next-day return. README, CLAUDE.md, PROCESS.md rewrite, research note, reflection. |
 
+*Dates in the two tables above are superseded by "Remaining plan
+(revised 2026-10-22, after step II)" below; the step contents still
+apply.*
+
 **If time runs short.** Track one is protected. Track two shrinks from the
 end: Follow and the second generator pass go first, then automatic versions
 and send-a-copy. Live cursors are cut last.
@@ -2176,7 +2180,7 @@ and send-a-copy. Live cursors are cut last.
   the old code starts on a database with `people`, serves identical
   elevation and type data, and still creates maps.
 
-### Step II results (2026-10-22, branch `atlas-forge`, not merged or deployed)
+### Step II results (2026-10-22, branch `atlas-forge`, merged and deployed as v13)
 
 The plan's Forge, plus the user's request from the step I review: "terrain
 height changes can be too abrupt ... finer and more flexible controls for
@@ -2310,6 +2314,55 @@ What changed:
   maps are ordinary terrain rows. The snapshot above is there if needed.
 - Two test maps were added on production ("Forge check" and "The Northern
   Reaches").
+
+### Remaining plan (revised 2026-10-22, after step II)
+
+Agreed with the user at the end of step II. Step II finished two days
+ahead of its 24-26 Oct slot, and this plan uses that slack. **These dates
+replace the dates in the track one and track two tables above.** Those
+tables still describe the content of each step. Nothing below is built
+yet.
+
+**New direction (from the user).** Atlas Table should grow towards a
+D&D-style tabletop fantasy map editor, not just a geographic terrain tool:
+castles, villages, roads, buildings and a wider asset library. Most of this
+is **planned for after the deadline**. Before 9 Nov, at most the
+groundwork goes in, so the work done now doesn't block it later.
+
+| Stage | Dates | Delivers | Exit gate |
+|---|---|---|---|
+| A. Front door | 23-27 Oct | **Homepage (the Atlas, `/`)**: map cards with size-capped thumbnails, your maps, shared with you, and the shared world as a card. **First-time experience**: a short welcome for a first visit that leads straight into the Forge or the shared world, plus brief tool hints the first time the editor opens. **Map gallery**: maps whose owners choose to publish them (opt-in, off by default, stored in a new table) shown as a browsable set of cards. | Old links (`/`, `/world/`, `/m/<token>`) still reach the right map. A new visitor can reach a first edit in under a minute (timed in a real browser). Nothing private appears in the gallery (test). Desktop and phone checked. Parity gate. |
+| B. Keep and share | 28-31 Oct | **Versions**: named saves, restore (private maps only, automatic checkpoint first), copy a version to a new world. **Export**: PNG image, plus a JSON file of the map's data. **Sharing and invitations**: the Gate arrival card for a map link (who invited you, the map, your role, who's here), a plain-language share sheet with the map preview, and separate edit and view invites that can be withdrawn. **The full loop works end to end.** | Restore round trip; shared-world restore refused; version caps enforced. A withdrawn invite stops working. Real multi-user browser run of the whole loop. **Proposed deploy 31 Oct** (needs approval, snapshot, CI). |
+| C. The Table | 1-5 Nov | **Collaboration**: live named cursors, a "here now" panel with recent activity, a save indicator. **Phone UI**: dock and brush sheet, with the 12 px / 4.5:1 / 44 px rules. **3D terrain display**: fix moderate relief showing only as a crease (the renderer squashes elevation below 0.42), and strong ranges reading as walls at low tilt. | Two-browser and real-phone runs. **The terrain fix intentionally changes how existing maps look**, so the parity gate is replaced by before/after screenshots of the shared world and the reference images in `research/`, shown to the user before merging. Map data itself is untouched. **Proposed deploy 5 Nov.** |
+| D. Tabletop groundwork | 5-6 Nov, small | The research and decisions only: the reuse-before-build search for CC0/CC-BY building, settlement and road assets in the painted style, recorded in `CREDITS.md`. A data-model ADR for placed objects (a new table, separate from terrain and marks). If time allows, one prototype object type behind a flag. | Search recorded honestly, including "nothing usable". ADR written. No change to existing tables. |
+| E. Freeze, test, write up | 7-9 Nov | **Feature freeze 7 Nov, morning.** Full test pass: both viewports, real phone, multi-user, next-day return, and a backup restore drill. Final deploy by **8 Nov evening**. README, CLAUDE.md, PROCESS.md rewrite, research note final revision, final reflection. 9 Nov morning is buffer only; the deadline is noon. | `pnpm check` green; live data hashes match; every cited commit resolves (`check:evidence`). |
+
+**After the deadline (planned, not scheduled).** The tabletop editor
+proper: castles, villages, towns, walls, roads that follow the terrain,
+individual buildings, a searchable asset library, and draggable, rotatable,
+scalable objects with owners. Later still: area growth beyond the 256-cell
+grid (continent scale), and the isometric city view (out of scope in
+CLAUDE.md for now).
+
+**The COMP8020 research note runs alongside every stage** (see the writing
+track). It is already behind: reading list and position by 24 Oct, outline
+by 28 Oct, full draft by 2 Nov, revision 6-8 Nov. These dates don't move
+if features slip.
+
+**If time runs short, cut in this order:** stage D's prototype object (keep
+the research and ADR), then the gallery, then live cursors, then JSON
+export. The homepage, versions, the Gate and the 3D terrain fix are kept.
+The writing in stage E is never cut.
+
+**Risks.**
+- The 3D terrain fix is the first renderer change since the freeze, and it
+  changes every map's appearance. It gets its own branch, a before/after
+  review, and user approval, and can be reverted on its own.
+- The tabletop direction is large, and it could swallow the remaining
+  time. Before the deadline it is held to research and an ADR.
+- Every stage that deploys keeps the existing rules: approval first, a
+  snapshot listed in `flyctl volumes snapshots list`, deploy through GitHub
+  and CI only, new tables only, and live data hashes checked after.
 
 ### Writing track (runs alongside the phases, not only at the end)
 
@@ -2520,7 +2573,9 @@ to retune `scripts/seed-test-scene.ts`.
 
 ## 12. D&D-style buildings, walls, roads and draggable objects
 
-**Status:** ⬜ Not started.
+**Status:** ⬜ Not started. Now the long-term direction (user, 2026-10-22).
+Before the deadline only stage D's groundwork is planned: asset research
+and an ADR. See "Remaining plan (revised 2026-10-22, after step II)".
 
 Scope: a new category of placeable, likely-draggable objects distinct from
 terrain painting - closer in spirit to C8's marks (owned, placed, moved)
