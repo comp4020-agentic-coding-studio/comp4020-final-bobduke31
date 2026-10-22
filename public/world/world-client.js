@@ -25,6 +25,7 @@ import { createTerrainScene3D, isWebGL2Available, MAX_DEVICE_PIXEL_RATIO } from 
 import { snoise } from "./terrain-fields.js";
 import { strengthFromSlider, sliderFromStrength, formatStrength, brushFalloff, softRaise, mountainRaise, coverageAccepts } from "./brush.js";
 import { apiPath, room, loadRoom, loadMe, wireRoomUi, wireRoomEvents, openShareIfRequested, toast } from "./room-ui.js";
+import { wireHistory, wireHistoryEvents, showHistoryEntry } from "./history-ui.js";
 
 const canvasArea = document.getElementById("canvas-area");
 
@@ -1318,6 +1319,8 @@ function withoutPendingOverrides(cells, pending) {
 function connectEvents() {
   const source = new EventSource(apiPath("/api/events"));
   wireRoomEvents(source);
+  // A restore replaced the whole map: fetch it again, as on reconnect.
+  wireHistoryEvents(source, loadTerrain);
   // Fires on the first connect AND on every automatic reconnect after a
   // drop, so a client that missed events while disconnected always
   // recovers by re-fetching the authoritative state, rather than trusting
@@ -1354,8 +1357,10 @@ wireCategoryRail();
 wireViewToggle();
 wireCameraControls();
 wireRoomUi();
+wireHistory();
 loadMe();
 if (await loadRoom()) {
+  showHistoryEntry();
   openShareIfRequested();
   loadTerrain();
   connectEvents();

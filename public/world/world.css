@@ -953,6 +953,110 @@ body.read-only #stage-3d {
   min-height: 40px;
 }
 
+/* Versions (stage B) */
+.version-list {
+  list-style: none;
+  margin: 0.4rem 0 1rem;
+  padding: 0;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.version-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--shelf-2);
+}
+
+.version-row.checkpoint {
+  background: transparent;
+  border-style: dashed;
+}
+
+.version-name {
+  display: block;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.version-meta {
+  font-size: 0.8rem;
+  color: var(--ink-dim);
+}
+
+.version-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.version-actions button {
+  min-height: 34px;
+  padding: 0 0.7rem;
+}
+
+.export-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  margin-bottom: 0.7rem;
+}
+
+.export-actions a {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+.this-map-link {
+  width: 100%;
+  margin: 0 0 0.9rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--shelf-2);
+  color: var(--brass);
+  font: inherit;
+  font-size: 0.88rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.file-button {
+  position: relative;
+  display: inline-flex !important;
+  align-items: center;
+  margin: 0 !important;
+  cursor: pointer;
+}
+
+.file-button input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.import-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.sheet.narrow {
+  width: min(24rem, calc(100vw - 2rem));
+}
+
+body.read-only .edit-only {
+  display: none;
+}
+
 /* "Show in the gallery": a switch, since it takes effect at once. */
 .sheet .gallery-row .link-text {
   margin: 0;

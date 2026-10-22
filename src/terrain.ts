@@ -190,3 +190,24 @@ export function clearTerrainTypes(roomId: string, cells: { x: number; y: number 
     throw err;
   }
 }
+
+// Versions (Atlas Table stage B): the whole map replaced at once, in one
+// transaction, so nobody ever sees half a restore. Rows are deleted and
+// re-inserted only for this room; no other room is touched.
+const deleteRoomCellsStmt = db.prepare("DELETE FROM terrain_cells WHERE room_id = ?");
+const deleteRoomTypesStmt = db.prepare("DELETE FROM terrain_type_cells WHERE room_id = ?");
+
+export function replaceTerrain(roomId: string, cells: TerrainCell[], types: TerrainTypeCell[]): void {
+  touch(roomId);
+  db.exec("BEGIN");
+  try {
+    deleteRoomCellsStmt.run(roomId);
+    deleteRoomTypesStmt.run(roomId);
+    for (const c of cells) upsertStmt.run(roomId, c.x, c.y, c.elevation);
+    for (const t of types) upsertTypeStmt.run(roomId, t.x, t.y, t.terrain);
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
+}

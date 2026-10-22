@@ -84,6 +84,22 @@ const LISTINGS_DDL = `
   ) WITHOUT ROWID
 `;
 
+// Versions (Atlas Table stage B): a saved copy of a map's two grids, gzipped
+// JSON. Additive like the tables above; older code never reads it.
+const VERSIONS_DDL = `
+  CREATE TABLE IF NOT EXISTS room_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    room_id TEXT NOT NULL REFERENCES rooms(id),
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    cells INTEGER NOT NULL,
+    data BLOB NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS room_versions_room ON room_versions (room_id, id)
+`;
+
 const ACTIVITY_DDL = `
   CREATE TABLE IF NOT EXISTS activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,6 +150,7 @@ export function ensureRoomsSchema(db: DatabaseSync, opts: { failBeforeCommit?: b
     db.exec(MEMBERS_DDL);
     db.exec(PEOPLE_DDL);
     db.exec(LISTINGS_DDL);
+    db.exec(VERSIONS_DDL);
     return { status: "current" };
   }
   if (version !== undefined) throw new Error(`unexpected schema_meta.rooms_version=${version} - refusing to guess`);
@@ -152,6 +169,7 @@ export function ensureRoomsSchema(db: DatabaseSync, opts: { failBeforeCommit?: b
       db.exec(MEMBERS_DDL);
       db.exec(PEOPLE_DDL);
       db.exec(LISTINGS_DDL);
+      db.exec(VERSIONS_DDL);
       db.exec(ACTIVITY_DDL);
       if (!columns(db, "activity_log").includes("room_id")) db.exec(ADD_ACTIVITY_ROOM);
       db.prepare("INSERT INTO rooms (id, name) VALUES (?, ?)").run(PUBLIC_ROOM_ID, PUBLIC_ROOM_NAME);
@@ -197,6 +215,7 @@ export function ensureRoomsSchema(db: DatabaseSync, opts: { failBeforeCommit?: b
     db.exec(MEMBERS_DDL);
     db.exec(PEOPLE_DDL);
     db.exec(LISTINGS_DDL);
+    db.exec(VERSIONS_DDL);
 
     const pub = `WHERE room_id = '${PUBLIC_ROOM_ID}'`;
     const after = {

@@ -14,6 +14,7 @@ import {
   applyTerrainTypes,
   isValidTerrainTypeCell,
   isLand,
+  replaceTerrain,
 } from "./terrain.ts";
 import type { TerrainCell, TerrainTypeCell } from "./terrain.ts";
 import { subscribe, broadcast } from "./realtime.ts";
@@ -23,6 +24,17 @@ import { captureStroke, undoLastStroke } from "./undo.ts";
 import { parseForge, forgeIntoRoom } from "./forge.ts";
 import { thumbnailFor, type ThumbSize } from "./thumbnail.ts";
 import { isListed, listGallery, listedRoomByViewToken, setListed } from "./gallery.ts";
+import {
+  cleanVersionName,
+  deleteVersion,
+  listVersions,
+  mapDataFor,
+  MAX_NAME as VERSION_NAME_MAX,
+  parseMapData,
+  restoreVersion,
+  saveVersion,
+  versionData,
+} from "./versions.ts";
 import {
   PUBLIC_ACCESS,
   PUBLIC_ROOM_ID,
@@ -156,6 +168,9 @@ const DENIED_ACTION = {
   "/api/terrain/undo": "terrain:undo",
   "/api/room/name": "room:rename",
   "/api/room/listing": "room:publish",
+  "/api/room/versions": "room:version-save",
+  "/api/room/versions/restore": "room:version-restore",
+  "/api/room/versions/delete": "room:version-delete",
 } as const satisfies Record<string, ActivityAction>;
 const WRITE_PATHS = new Set(Object.keys(DENIED_ACTION));
 
@@ -182,6 +197,31 @@ function roomsForRename(sessionId: string): string[] {
   return [...new Set([...roomsOpenBy(sessionId), ...roomsWithActivityBy(sessionId)])];
 }
 
+// The two non-Forge ways to start a map. `copyFrom` is any link to an
+// existing map (edit or view - seeing a map is enough to copy it, as in
+// Figma's "duplicate"); `version` picks a stored version of it. `import` is
+// an uploaded map file, validated cell by cell (src/versions.ts).
+type Start =
+  | { ok: true; data: { elevation: TerrainCell[]; types: TerrainTypeCell[] }; action: "room:copy" | "room:import"; detail: string }
+  | { ok: false; status: number; error: string };
+function startingTerrain(payload: Record<string, unknown>): Start | null {
+  if (payload.copyFrom !== undefined) {
+    const source = typeof payload.copyFrom === "string" ? resolveToken(payload.copyFrom) : null;
+    if (!source) return { ok: false, status: 404, error: "no map at that link to copy" };
+    const id = payload.version === undefined ? null : Number(payload.version);
+    if (id !== null && !Number.isInteger(id)) return { ok: false, status: 400, error: "version must be a version id" };
+    const data = versionData(source.roomId, id);
+    if (!data) return { ok: false, status: 404, error: "no such version of that map" };
+    return { ok: true, data, action: "room:copy", detail: `copied from "${source.name}"${id === null ? "" : ` (version ${id})`}` };
+  }
+  if (payload.import !== undefined) {
+    const data = parseMapData(payload.import);
+    if (!data) return { ok: false, status: 400, error: "that isn't an Atlas Table map file, or it has cells outside the map" };
+    return { ok: true, data, action: "room:import", detail: `imported from a map file (${data.elevation.length} cells)` };
+  }
+  return null;
+}
+
 async function handleCreateRoom(req: IncomingMessage, res: ServerResponse, sessionId: string): Promise<void> {
   const payload = await readJsonOr400(req, res);
   if (!payload) return;
@@ -195,6 +235,13 @@ async function handleCreateRoom(req: IncomingMessage, res: ServerResponse, sessi
   const forge = payload.forge === undefined ? null : parseForge(payload.forge);
   if (payload.forge !== undefined && !forge) {
     sendJson(res, 400, { error: "forge needs a seed and one of the templates" });
+    return;
+  }
+  // Or start from an existing map (stage B): a copy of any map the caller
+  // can see, at a stored version or as it is now, or an uploaded map file.
+  const start = startingTerrain(payload);
+  if (start && !start.ok) {
+    sendJson(res, start.status, { error: start.error });
     return;
   }
   if (rateLimited(sessionId)) {
@@ -211,7 +258,10 @@ async function handleCreateRoom(req: IncomingMessage, res: ServerResponse, sessi
     return;
   }
   logActivity(result.access.roomId, sessionId, "room:create", `"${name}"`);
-  if (forge && forge.template !== "blank") {
+  if (start?.ok) {
+    replaceTerrain(result.access.roomId, start.data.elevation, start.data.types);
+    logActivity(result.access.roomId, sessionId, start.action, start.detail);
+  } else if (forge && forge.template !== "blank") {
     forgeIntoRoom(result.access.roomId, forge);
     logActivity(result.access.roomId, sessionId, "room:forge", `${forge.template} from seed "${forge.seed}"`);
   }
@@ -223,7 +273,8 @@ async function handleCreateRoom(req: IncomingMessage, res: ServerResponse, sessi
 // checked here, once, against the role the server resolved from the URL
 // token - there is no request field that can raise it.
 function thumbSizeOf(req: IncomingMessage): ThumbSize {
-  return new URL(req.url ?? "/", "http://x").searchParams.get("size") === "og" ? "og" : "card";
+  const size = new URL(req.url ?? "/", "http://x").searchParams.get("size");
+  return size === "og" || size === "full" ? size : "card";
 }
 
 // Map pictures change only when the terrain does; the ETag carries the
@@ -316,6 +367,84 @@ async function handleRoomApi(
     }
     logActivity(roomId, sessionId, "room:publish", result.listed ? "listed in the gallery" : "taken out of the gallery");
     sendJson(res, 200, { listed: result.listed });
+    return true;
+  }
+
+  if (path === "/api/room/versions" && req.method === "GET") {
+    sendJson(res, 200, access.isPublic ? [] : listVersions(roomId));
+    return true;
+  }
+
+  if (path === "/api/room/versions" && req.method === "POST") {
+    const payload = await readJsonOr400(req, res);
+    if (!payload) return true;
+    const name = cleanVersionName(payload.name);
+    if (!name) {
+      sendJson(res, 400, { error: `a version name is 1-${VERSION_NAME_MAX} characters` });
+      return true;
+    }
+    if (rateLimited(sessionId)) {
+      sendJson(res, 429, { error: "too many saves just now - try again in a minute" });
+      return true;
+    }
+    const result = saveVersion(access, sessionId, name);
+    if (!result.ok) {
+      sendJson(res, result.status, { error: result.error });
+      return true;
+    }
+    logActivity(roomId, sessionId, "room:version-save", `"${name}"`);
+    broadcast(roomId, "versions:update", {});
+    sendJson(res, 201, { id: result.value });
+    return true;
+  }
+
+  if ((path === "/api/room/versions/restore" || path === "/api/room/versions/delete") && req.method === "POST") {
+    const payload = await readJsonOr400(req, res);
+    if (!payload) return true;
+    const id = Number(payload.id);
+    if (!Number.isInteger(id)) {
+      sendJson(res, 400, { error: "id must be a version id" });
+      return true;
+    }
+    if (rateLimited(sessionId)) {
+      sendJson(res, 429, { error: "too many changes just now - try again in a minute" });
+      return true;
+    }
+    if (path.endsWith("/delete")) {
+      const result = deleteVersion(access, id);
+      if (!result.ok) {
+        sendJson(res, result.status, { error: result.error });
+        return true;
+      }
+      logActivity(roomId, sessionId, "room:version-delete", `version ${id}`);
+      broadcast(roomId, "versions:update", {});
+      res.writeHead(204);
+      res.end();
+      return true;
+    }
+    const result = restoreVersion(access, sessionId, id);
+    if (!result.ok) {
+      sendJson(res, result.status, { error: result.error });
+      return true;
+    }
+    logActivity(roomId, sessionId, "room:version-restore", `version ${id} (checkpoint ${result.value.checkpoint} saved first)`);
+    // Everyone with the map open reloads it; per-cell events would be
+    // tens of thousands of cells.
+    broadcast(roomId, "terrain:reload", {});
+    broadcast(roomId, "versions:update", {});
+    sendJson(res, 200, { checkpoint: result.value.checkpoint });
+    return true;
+  }
+
+  // Export (stage B): the map's data as a file that can be imported again.
+  if (path === "/api/room/export.json" && req.method === "GET") {
+    const body = JSON.stringify(mapDataFor(roomId, access.name));
+    const file = access.name.replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-|-$/g, "").toLowerCase() || "map";
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Content-Disposition": `attachment; filename="${file}.atlas.json"`,
+    });
+    res.end(body);
     return true;
   }
 

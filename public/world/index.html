@@ -196,7 +196,45 @@
         <input id="share-gallery" type="checkbox" class="switch" role="switch" />
       </div>
       <p id="share-gallery-error" class="form-error hidden" role="alert"></p>
+      <div class="link-row">
+        <div class="link-text"><b>Versions and copies</b><span>Save this moment, roll back, download the map, or start a copy of your own.</span></div>
+        <button type="button" class="ghost-button" id="open-history">History</button>
+      </div>
       <p class="sheet-note">Keep the edit link somewhere safe. This browser also remembers your maps under Atlas Table.</p>
+    </dialog>
+
+    <dialog id="history-dialog" class="sheet" aria-labelledby="history-title">
+      <form method="dialog" class="sheet-head">
+        <h2 id="history-title">History of <span id="history-map-name" class="place-name"></span></h2>
+        <button class="icon-button" value="close" aria-label="Close">&times;</button>
+      </form>
+      <form id="save-version-form" class="new-map edit-only">
+        <label for="version-name">Save this moment</label>
+        <div class="field-row">
+          <input id="version-name" type="text" maxlength="60" placeholder="Before the great flood" required autocomplete="off" />
+          <button type="submit" class="primary-button">Save</button>
+        </div>
+        <p class="sheet-sub">Everyone editing sees the same list. Restoring always saves the map as it is first, so nothing is lost.</p>
+      </form>
+      <p id="history-error" class="form-error hidden" role="alert"></p>
+      <ul id="version-list" class="version-list"></ul>
+      <p id="version-empty" class="sheet-sub hidden">No saved versions yet.</p>
+      <h3>Take it with you</h3>
+      <div class="sheet-actions export-actions">
+        <a id="export-png" class="ghost-button" download>Overview picture (PNG)</a>
+        <a id="export-json" class="ghost-button" download>Map file (JSON)</a>
+        <button type="button" id="copy-map" class="ghost-button">Copy to a new world</button>
+      </div>
+      <p class="sheet-sub">A map file can be opened again from the Maps menu, as a new world.</p>
+    </dialog>
+
+    <dialog id="confirm-dialog" class="sheet narrow" aria-labelledby="confirm-title">
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-body" class="sheet-sub"></p>
+      <div class="sheet-actions">
+        <button type="button" class="ghost-button" value="cancel" id="confirm-cancel">Cancel</button>
+        <button type="button" class="primary-button" id="confirm-ok"></button>
+      </div>
     </dialog>
 
     <dialog id="maps-dialog" class="sheet" aria-labelledby="maps-title">
@@ -204,6 +242,7 @@
         <h2 id="maps-title">Your maps</h2>
         <button class="icon-button" value="close" aria-label="Close">&times;</button>
       </form>
+      <button type="button" id="open-history-maps" class="this-map-link hidden">This map: history, downloads and copies</button>
       <form id="new-map-form" class="new-map">
         <label for="new-map-name">Start a new world</label>
         <div class="field-row">
@@ -236,6 +275,7 @@
         </fieldset>
         <p id="new-map-error" class="form-error hidden" role="alert"></p>
       </form>
+      <p class="sheet-sub import-row"><label class="ghost-button file-button">Open a map file<input type="file" id="import-file" accept=".json,application/json" /></label> <span>Starts a new world from a <code>.atlas.json</code> file.</span></p>
       <ul id="my-maps" class="map-list"></ul>
       <p id="my-maps-empty" class="sheet-sub">Maps you create or open appear here, on this browser.</p>
       <h3>Open to everyone</h3>

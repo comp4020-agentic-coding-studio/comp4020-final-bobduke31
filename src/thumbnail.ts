@@ -14,6 +14,10 @@ import { listCells, listTerrainTypes, terrainRevision } from "./terrain.ts";
 export const THUMB_SIZES = {
   card: [480, 300],
   og: [1200, 630],
+  // Export (stage B): an overview of the whole map. 1024, not larger: past
+  // ~4 px per cell this summary's cell-by-cell coastline and material edges
+  // show as steps. A renderer-quality export is a separate, later job.
+  full: [1024, 1024],
 } as const;
 export type ThumbSize = keyof typeof THUMB_SIZES;
 
