@@ -2523,6 +2523,26 @@ ab8593a (places). Fixes after the first review are in 12b13f3.
     saw a raised hill re-level a house pad live.
   - Known limit: a building right on a cliff edge sits half on its cut.
 
+#### Next: connected walls and roads (user request, 22 Oct; not started)
+
+Stage B accepted by the user as a direction. Recorded for the next stage,
+not built:
+
+- **Walls as continuous structures.** Today each wall is a separate piece.
+  Walls should join up: endpoints snap to each other, corners form where
+  two runs meet, and runs connect properly to towers and gates. This likely
+  means drawing a wall as a path (a list of points) rather than placing
+  pieces one by one, and fitting straight, corner and end pieces along it.
+  Gates are a new kind to add.
+- **Roads**, to make villages and castles feel complete. The KayKit road
+  pieces are hex tiles, so roads need a painted-path tool that follows the
+  terrain. Reuse before build: search for an existing path/spline-road
+  approach and CC0 road textures first, and record what was found in
+  `CREDITS.md`.
+- Both depend on the foundation levelling in 12b13f3: wall runs and roads
+  should seat on the same levelled surface, so they don't float or bury on
+  slopes.
+
 ### Writing track (runs alongside the phases, not only at the end)
 
 Figures from `topics/assessment` and `assessments/final-project`, checked
