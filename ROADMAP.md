@@ -2364,7 +2364,7 @@ The writing in stage E is never cut.
   snapshot listed in `flyctl volumes snapshots list`, deploy through GitHub
   and CI only, new tables only, and live data hashes checked after.
 
-#### Stage A progress (22 Oct, branch `atlas-home`, not merged or deployed)
+#### Stage A progress (22 Oct; merged in e044b07 and deployed, see below)
 
 Built in 48b6d34, ahead of the 23-27 Oct slot. Sources and decisions are in
 `CREDITS.md`, "The Atlas home and gallery".
@@ -2396,10 +2396,30 @@ Checked locally, against a copy of production data and a fresh database:
 - A scripted first visit reached a stored edit in 21.6 s. That is the app's
   own floor, because a script spends no time reading, not a human's time.
 
-Not yet done:
-- a run on a real phone;
-- the user's review;
-- the deploy (planned for stage B, 31 Oct, or earlier if approved).
+**Deployed 22 Oct with the user's approval**, as Fly release v15:
+- Merge e044b07 was pushed and deployed by CI run 39723601468 (checks,
+  deploy and the online check all green).
+- The pre-deploy volume snapshot is `vs_ogY0Nvlv9xRhn2R5wPzX`, listed as
+  created before the push.
+- After the deploy:
+  - The shared world's terrain, terrain types and marks match their
+    pre-deploy SHA-256 hashes (58,370 cells, 22,259 type cells, 9 marks).
+  - A private map from step II and one created just before this deploy
+    are byte-identical.
+  - Edit and view links return their roles. View links get 403 for
+    painting and publishing. An unknown token gets 404.
+  - `/`, `/world/`, `/m/<token>`, `/readme/`, `/credits/` and `/logs/`
+    serve, and the thumbnails are PNG.
+  - `rooms.test.ts` and `invariants.test.ts` pass against production
+    (20/20).
+  - Browser runs at 1366x860 and at 390x844 (emulated) show no page errors
+    and no horizontal scroll. The gallery switch was turned on and off on
+    the test map, which was left unlisted.
+- To roll back: redeploy 576b697. No database restore is needed, because
+  the only schema change is the added `room_listings` table, which the old
+  code ignores.
+
+Still not done: a run on a real phone.
 
 ### Writing track (runs alongside the phases, not only at the end)
 
