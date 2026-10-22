@@ -10,6 +10,7 @@
 // replaying anything.
 import { gunzipSync, gzipSync } from "node:zlib";
 import { db } from "./db.ts";
+import { listObjects, parsePlacement, replaceObjects, type MapObject } from "./objects.ts";
 import { PUBLIC_ROOM_ID } from "./rooms-schema.ts";
 import type { RoomAccess } from "./rooms.ts";
 import {
@@ -43,6 +44,14 @@ export interface MapData {
   name?: string;
   elevation: TerrainCell[];
   types: TerrainTypeCell[];
+  // Places on the map (cottages, castles...). Optional: versions and files
+  // made before objects existed simply have none.
+  objects?: Omit<MapObject, "id">[];
+}
+export interface Snapshot {
+  elevation: TerrainCell[];
+  types: TerrainTypeCell[];
+  objects: Omit<MapObject, "id">[];
 }
 
 const insertStmt = db.prepare(
@@ -58,8 +67,23 @@ const oldestCheckpointStmt = db.prepare(
 );
 const deleteStmt = db.prepare("DELETE FROM room_versions WHERE room_id = ? AND id = ?");
 
+const withoutIds = (list: MapObject[]) => list.map(({ kind, x, y, rotation, scale }) => ({ kind, x, y, rotation, scale }));
+
 export function mapDataFor(roomId: string, name?: string): MapData {
-  return { format: "atlas-table-map", version: 1, name, elevation: listCells(roomId), types: listTerrainTypes(roomId) };
+  return {
+    format: "atlas-table-map",
+    version: 1,
+    name,
+    elevation: listCells(roomId),
+    types: listTerrainTypes(roomId),
+    objects: withoutIds(listObjects(roomId)),
+  };
+}
+
+// Terrain and objects together, as restore and copy apply them.
+export function applySnapshot(roomId: string, snap: Snapshot, sessionId: string): void {
+  replaceTerrain(roomId, snap.elevation, snap.types);
+  replaceObjects(roomId, snap.objects, sessionId);
 }
 
 export function cleanVersionName(value: unknown): string | null {
@@ -87,7 +111,7 @@ function insertVersion(roomId: string, name: string, kind: VersionKind, sessionI
     deleteStmt.run(roomId, oldest.id);
   }
   const data = mapDataFor(roomId);
-  const blob = gzipSync(JSON.stringify({ elevation: data.elevation, types: data.types }));
+  const blob = gzipSync(JSON.stringify({ elevation: data.elevation, types: data.types, objects: data.objects }));
   const row = insertStmt.run(roomId, name, kind, sessionId, data.elevation.length, blob);
   return { ok: true, value: Number(row.lastInsertRowid) };
 }
@@ -104,10 +128,11 @@ export function listVersions(roomId: string): VersionSummary[] {
   );
 }
 
-function readVersion(roomId: string, id: number): { elevation: TerrainCell[]; types: TerrainTypeCell[] } | null {
+function readVersion(roomId: string, id: number): Snapshot | null {
   const row = getStmt.get(roomId, id) as { data: Uint8Array } | undefined;
   if (!row) return null;
-  return JSON.parse(gunzipSync(row.data).toString("utf8"));
+  const snap = JSON.parse(gunzipSync(row.data).toString("utf8"));
+  return { elevation: snap.elevation, types: snap.types, objects: snap.objects ?? [] };
 }
 
 const nameStmt = db.prepare("SELECT name FROM room_versions WHERE room_id = ? AND id = ?");
@@ -125,7 +150,7 @@ export function restoreVersion(access: RoomAccess, sessionId: string, id: number
   // Short: the list shows when it was taken, so the name only says why.
   const checkpoint = insertVersion(access.roomId, `Before restoring "${restoredName(access.roomId, id)}"`.slice(0, MAX_NAME), "checkpoint", sessionId);
   if (!checkpoint.ok) return checkpoint;
-  replaceTerrain(access.roomId, snapshot.elevation, snapshot.types);
+  applySnapshot(access.roomId, snapshot, sessionId);
   return { ok: true, value: { checkpoint: checkpoint.value } };
 }
 
@@ -141,23 +166,28 @@ export function deleteVersion(access: RoomAccess, id: number): Result<null> {
 // The data a "copy to a new world" starts from: a stored version, or the
 // map as it is now when no version is given. Anyone who can see a map may
 // copy it; the copy is theirs.
-export function versionData(roomId: string, id: number | null): { elevation: TerrainCell[]; types: TerrainTypeCell[] } | null {
-  return id === null ? mapDataFor(roomId) : readVersion(roomId, id);
+export function versionData(roomId: string, id: number | null): Snapshot | null {
+  if (id !== null) return readVersion(roomId, id);
+  const now = mapDataFor(roomId);
+  return { elevation: now.elevation, types: now.types, objects: now.objects ?? [] };
 }
 
 // An uploaded map file, checked cell by cell exactly as painting is: a file
 // can never put anything into the database a brush couldn't. Types on sea
 // cells are dropped, as the paint route does.
-export function parseMapData(value: unknown): { elevation: TerrainCell[]; types: TerrainTypeCell[] } | null {
+export function parseMapData(value: unknown): Snapshot | null {
   if (!value || typeof value !== "object") return null;
   const v = value as Partial<MapData>;
   if (v.format !== "atlas-table-map" || v.version !== 1) return null;
   if (!Array.isArray(v.elevation) || !Array.isArray(v.types)) return null;
   if (!v.elevation.every(isValidCell) || !v.types.every(isValidTerrainTypeCell)) return null;
+  const objects = v.objects === undefined ? [] : Array.isArray(v.objects) ? v.objects.map((o) => parsePlacement(o)) : [null];
+  if (objects.some((o) => o === null)) return null;
   const land = new Set(v.elevation.filter((c) => c.elevation > SEA_LEVEL).map((c) => `${c.x},${c.y}`));
   const dedupe = <T extends { x: number; y: number }>(list: T[]) => [...new Map(list.map((c) => [`${c.x},${c.y}`, c])).values()];
   return {
     elevation: dedupe(v.elevation.map(({ x, y, elevation }) => ({ x, y, elevation }))),
     types: dedupe(v.types.filter((t) => land.has(`${t.x},${t.y}`)).map(({ x, y, terrain }) => ({ x, y, terrain }))),
+    objects: (objects as Partial<Omit<MapObject, "id">>[]).map((o) => ({ kind: o.kind!, x: o.x!, y: o.y!, rotation: o.rotation ?? 0, scale: o.scale ?? 1 })),
   };
 }

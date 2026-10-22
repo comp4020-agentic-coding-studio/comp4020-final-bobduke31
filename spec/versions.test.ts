@@ -145,3 +145,59 @@ describe("withdrawing a link", () => {
     expect((await post(`/api/r/${map.editToken}/room/links/reissue`, cookie, { role: "owner" })).status).toBe(400);
   });
 });
+
+describe("places on the map", () => {
+  const objects = async (token: string) => (await (await fetch(url(`/api/r/${token}/objects`))).json()) as { id: number; kind: string; x: number; y: number; rotation: number; scale: number }[];
+
+  it("places, moves, turns and removes a place, edit link only", async () => {
+    const cookie = await newVisitor();
+    const map = await createMap(cookie, "Village", { forge: { seed: "V", template: "blank", settings: {} } });
+    const res = await post(`/api/r/${map.editToken}/objects`, cookie, { kind: "castle", x: 40.5, y: 60.25 });
+    expect(res.status).toBe(201);
+    const castle = await res.json();
+    expect(castle).toMatchObject({ kind: "castle", x: 40.5, y: 60.25, rotation: 0, scale: 1 });
+
+    const moved = await post(`/api/r/${map.editToken}/objects/update`, cookie, { id: castle.id, x: 41, y: 61, rotation: Math.PI / 2, scale: 1.5 });
+    expect(moved.status).toBe(200);
+    expect((await objects(map.viewToken))[0]).toMatchObject({ x: 41, y: 61, scale: 1.5 });
+
+    // A move can't change what the place is.
+    expect((await post(`/api/r/${map.editToken}/objects/update`, cookie, { id: castle.id, kind: "well" })).status).toBe(400);
+    expect((await post(`/api/r/${map.viewToken}/objects`, cookie, { kind: "house", x: 1, y: 1 })).status).toBe(403);
+    expect((await post(`/api/r/${map.viewToken}/objects/delete`, cookie, { id: castle.id })).status).toBe(403);
+
+    expect((await post(`/api/r/${map.editToken}/objects/delete`, cookie, { id: castle.id })).status).toBe(204);
+    expect(await objects(map.viewToken)).toEqual([]);
+  });
+
+  it("refuses unknown kinds, positions off the map and silly sizes", async () => {
+    const cookie = await newVisitor();
+    const map = await createMap(cookie, "Strict", { forge: { seed: "V", template: "blank", settings: {} } });
+    for (const bad of [
+      { kind: "dragon", x: 1, y: 1 },
+      { kind: "house", x: -1, y: 1 },
+      { kind: "house", x: 1, y: 256 },
+      { kind: "house", x: 1, y: 1, scale: 40 },
+      { kind: "house", x: "1", y: 1 },
+    ]) {
+      expect((await post(`/api/r/${map.editToken}/objects`, cookie, bad)).status).toBe(400);
+    }
+  });
+
+  it("keeps places with each version and in exported files", async () => {
+    const cookie = await newVisitor();
+    const map = await createMap(cookie, "Kept places", { forge: { seed: "V", template: "blank", settings: {} } });
+    await post(`/api/r/${map.editToken}/objects`, cookie, { kind: "house", x: 10, y: 10 });
+    const { id } = await (await post(`/api/r/${map.editToken}/room/versions`, cookie, { name: "One house" })).json();
+    await post(`/api/r/${map.editToken}/objects`, cookie, { kind: "tower", x: 20, y: 20 });
+    expect((await objects(map.editToken)).length).toBe(2);
+
+    await post(`/api/r/${map.editToken}/room/versions/restore`, cookie, { id });
+    expect((await objects(map.editToken)).map((o) => o.kind)).toEqual(["house"]);
+
+    const file = await (await fetch(url(`/api/r/${map.viewToken}/room/export.json`))).json();
+    expect(file.objects).toEqual([{ kind: "house", x: 10, y: 10, rotation: 0, scale: 1 }]);
+    const copy = await createMap(cookie, "Imported places", { import: file });
+    expect((await objects(copy.editToken)).map((o) => o.kind)).toEqual(["house"]);
+  });
+});

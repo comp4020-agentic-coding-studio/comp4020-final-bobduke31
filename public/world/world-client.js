@@ -26,6 +26,7 @@ import { snoise } from "./terrain-fields.js";
 import { strengthFromSlider, sliderFromStrength, formatStrength, brushFalloff, softRaise, mountainRaise, coverageAccepts } from "./brush.js";
 import { apiPath, room, loadRoom, loadMe, wireRoomUi, wireRoomEvents, openShareIfRequested, toast } from "./room-ui.js";
 import { wireHistory, wireHistoryEvents, showHistoryEntry } from "./history-ui.js";
+import { createPlaces } from "./places-ui.js";
 
 const canvasArea = document.getElementById("canvas-area");
 
@@ -778,7 +779,12 @@ function strokeToolFor(event) {
   return null;
 }
 
+// Places (stage B) take the pointer while their tab is open.
+const places = scene3d ? createPlaces(scene3d, canvas3d) : null;
+if (!places) document.body.classList.add("no-places");
+
 function handlePointerDown(event) {
+  if (places?.pointerDown(event)) return;
   // View-only: left-drag does nothing (the server would refuse it anyway);
   // pan and zoom are wired separately and still work.
   if (!room.canEdit || event.button !== 0) return;
@@ -795,6 +801,7 @@ function handlePointerDown(event) {
 }
 
 function handlePointerMove(event) {
+  if (places?.pointerMove(event)) return;
   if (!painting) return;
   // A pointerup lost to alt-tab or a system dialog: end the stroke instead
   // of painting on hover and leaving coast/tree rebuilds deferred forever.
@@ -825,7 +832,10 @@ function stopPainting() {
 for (const el of [canvas, canvas3d]) {
   el.addEventListener("pointerdown", handlePointerDown);
   el.addEventListener("pointermove", handlePointerMove);
-  el.addEventListener("pointerup", stopPainting);
+  el.addEventListener("pointerup", (event) => {
+    if (places?.pointerUp(event)) return;
+    stopPainting(event);
+  });
   el.addEventListener("pointercancel", stopPainting);
   el.addEventListener("lostpointercapture", stopPainting);
   el.addEventListener("contextmenu", (event) => event.preventDefault());
@@ -917,6 +927,7 @@ const CATEGORY_FIRST_TOOL = {
   land: "raise",
   terrain: "grassland",
   water: "land",
+  places: null,
 };
 
 // Each category's tools behave differently enough (land tools only ever
@@ -930,6 +941,7 @@ const CATEGORY_HINT = {
   land: "One stroke moves the land by at most Strength - stroke again to build higher. Shift lowers, Alt smooths. [ ] size, - = strength.",
   terrain: "Paint grassland, sand, forest or rock onto land. Lower Coverage for open woods and scattered stands.",
   water: "Create land and Paint sea move the coastline. Deepen and Shallow shape the seabed.",
+  places: "Pick a place, then click the map to set it down (hold Shift to set down several). Click a place to select it; drag to move. Q and E turn it.",
 };
 
 function wireCategoryRail() {
@@ -943,6 +955,18 @@ function wireCategoryRail() {
       for (const other of railButtons) other.classList.remove("active");
       railButton.classList.add("active");
       for (const section of sections) section.classList.toggle("hidden", section.dataset.panel !== category);
+      places?.setActive(category === "places");
+      const cameraHint = document.getElementById("camera-hint");
+      if (category === "places") {
+        // The brush sliders mean nothing for places.
+        document.querySelector(".options-footer").classList.add("hidden");
+        categoryHint.textContent = CATEGORY_HINT.places;
+        cameraHint.dataset.paint ??= cameraHint.textContent;
+        cameraHint.textContent = "Scroll to zoom. Right- or middle-drag to pan. Relief shows places best.";
+        return;
+      }
+      if (cameraHint.dataset.paint) cameraHint.textContent = cameraHint.dataset.paint;
+      document.querySelector(".options-footer").classList.remove("hidden");
       currentTool = CATEGORY_FIRST_TOOL[category];
       for (const toolButton of toolButtons) {
         toolButton.classList.toggle("active", toolButton.dataset.tool === currentTool);
@@ -1321,6 +1345,7 @@ function connectEvents() {
   wireRoomEvents(source);
   // A restore replaced the whole map: fetch it again, as on reconnect.
   wireHistoryEvents(source, loadTerrain);
+  places?.wireEvents(source);
   // Fires on the first connect AND on every automatic reconnect after a
   // drop, so a client that missed events while disconnected always
   // recovers by re-fetching the authoritative state, rather than trusting

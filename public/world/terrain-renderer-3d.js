@@ -593,6 +593,162 @@ function buildTreeLayer(scene, onLoaded) {
   return { rebuild, count: () => chunks.reduce((n, list) => n + list.length, 0) };
 }
 
+// --- Places (map objects, stage B) ----------------------------------------
+// Cottages, castles and the rest, from the CC0 KayKit Medieval Hexagon Pack
+// (CREDITS.md) - the same family and lighting as the trees. Each object
+// sits on the displayed surface at its fractional cell position. Models
+// load on first use, so a map with no places costs nothing and draws
+// exactly as before.
+export const OBJECT_MODELS = {
+  // Sizes in cells, chosen against the trees (a tree crown is ~2 cells): a
+  // cottage is clearly bigger than a tree, a castle dominates a village.
+  cottage: { file: "building_home_A_yellow", size: 3.0 },
+  house: { file: "building_home_B_red", size: 3.6 },
+  church: { file: "building_church_red", size: 4.2 },
+  windmill: { file: "building_windmill_red", size: 4.0 },
+  well: { file: "building_well_red", size: 1.8 },
+  farm: { file: "building_grain", size: 4.5 },
+  tower: { file: "building_tower_A_red", size: 4.0 },
+  castle: { file: "building_castle_red", size: 8.0 },
+  wall: { file: "wall_straight", size: 4.0 },
+  bridge: { file: "building_bridge_A", size: 4.5 },
+  ruins: { file: "building_destroyed", size: 3.6 },
+};
+const OBJECT_DIR = "/world/assets/kaykit-medieval/";
+
+function buildObjectLayer(scene, onChange) {
+  const loader = new GLTFLoader();
+  const templates = new Map(); // kind -> Promise<{ object, footprint }>
+  const live = new Map(); // id -> { data, node }
+  let surface = null;
+  let selected = null;
+  const selectRing = new THREE.Mesh(
+    new THREE.RingGeometry(0.9, 1.05, 48),
+    new THREE.MeshBasicMaterial({ color: 0xe0b55a, transparent: true, opacity: 0.9, depthTest: false }),
+  );
+  selectRing.rotation.x = -Math.PI / 2;
+  selectRing.renderOrder = 10;
+  selectRing.visible = false;
+  scene.add(selectRing);
+
+  function template(kind) {
+    if (!templates.has(kind)) {
+      templates.set(
+        kind,
+        new Promise((resolve) => {
+          const model = OBJECT_MODELS[kind];
+          loader.load(OBJECT_DIR + model.file + ".gltf", (gltf) => {
+            gltf.scene.traverse((o) => {
+              if (o.isMesh) {
+                o.castShadow = true;
+                o.receiveShadow = true;
+                o.material.metalness = 0;
+                o.material.roughness = 1;
+              }
+            });
+            // Normalise: the model's widest footprint becomes 1 cell, then
+            // `size` cells; its base sits at y = 0.
+            const box = new THREE.Box3().setFromObject(gltf.scene);
+            const width = Math.max(box.max.x - box.min.x, box.max.z - box.min.z) || 1;
+            const k = model.size / width;
+            const holder = new THREE.Group();
+            gltf.scene.position.set(-(box.min.x + box.max.x) / 2, -box.min.y, -(box.min.z + box.max.z) / 2);
+            holder.add(gltf.scene);
+            holder.scale.setScalar(k);
+            resolve({ object: holder, radius: model.size / 2 });
+          }, undefined, () => resolve(null));
+        }),
+      );
+    }
+    return templates.get(kind);
+  }
+
+  function seat(entry) {
+    const { data, node } = entry;
+    const h = surface ? sampleSurface(surface, data.x, data.y) * HEIGHT_SCALE : 0;
+    // Built ground never sits below the waterline (a bridge or a jetty
+    // still reads as standing on the water).
+    node.position.set(data.x, Math.max(h, 0), data.y);
+    node.rotation.y = -data.rotation;
+    node.scale.setScalar(data.scale);
+    if (selected === data.id) placeRing(entry);
+  }
+
+  function placeRing(entry) {
+    const r = (entry.radius ?? 1.5) * entry.data.scale * 1.1;
+    selectRing.scale.set(r, r, r);
+    selectRing.position.set(entry.node.position.x, entry.node.position.y + 0.05, entry.node.position.z);
+    selectRing.visible = true;
+  }
+
+  async function upsert(data) {
+    let entry = live.get(data.id);
+    if (entry && entry.kind === data.kind) {
+      entry.data = { ...data };
+      seat(entry);
+      onChange();
+      return;
+    }
+    if (entry) remove(data.id);
+    const t = await template(data.kind);
+    if (!t) return;
+    if (live.has(data.id)) return; // a newer upsert raced ahead
+    const node = t.object.clone(true);
+    const wrapper = new THREE.Group();
+    wrapper.add(node);
+    wrapper.userData.objectId = data.id;
+    scene.add(wrapper);
+    entry = { data: { ...data }, node: wrapper, kind: data.kind, radius: t.radius };
+    live.set(data.id, entry);
+    seat(entry);
+    onChange();
+  }
+
+  function remove(id) {
+    const entry = live.get(id);
+    if (!entry) return;
+    scene.remove(entry.node);
+    live.delete(id);
+    if (selected === id) select(null);
+    onChange();
+  }
+
+  function setAll(list) {
+    for (const id of [...live.keys()]) if (!list.some((o) => o.id === id)) remove(id);
+    for (const o of list) upsert(o);
+  }
+
+  function select(id) {
+    selected = id;
+    const entry = id === null ? null : live.get(id);
+    if (entry) placeRing(entry);
+    else selectRing.visible = false;
+    onChange();
+  }
+
+  // Re-seat on the new surface after terrain changes; a few hundred
+  // objects at most, so a full pass is cheap.
+  function setSurface(s) {
+    surface = s;
+    for (const entry of live.values()) seat(entry);
+  }
+
+  const raycaster = new THREE.Raycaster();
+  function pickObject(ray) {
+    if (live.size === 0) return null;
+    raycaster.ray.copy(ray);
+    const hits = raycaster.intersectObjects([...live.values()].map((e) => e.node), true);
+    for (const hit of hits) {
+      let o = hit.object;
+      while (o && o.userData.objectId === undefined) o = o.parent;
+      if (o) return o.userData.objectId;
+    }
+    return null;
+  }
+
+  return { upsert, remove, setAll, select, setSurface, pickObject, count: () => live.size };
+}
+
 // --- Picking --------------------------------------------------------------
 // A ray march against the *displayed* surface (the same displayHeight the
 // vertex shader draws, flattened at sea level), so a stroke lands on the
@@ -602,7 +758,7 @@ function displayedHeightCPU(surface, x, z) {
   return sampleSurface(surface, x, z) * HEIGHT_SCALE;
 }
 
-function pickAgainstHeightfield(origin, direction, surface) {
+function pickAgainstHeightfield(origin, direction, surface, exact = false) {
   const maxHeight = HEIGHT_SCALE * (ELEVATION_MAX + 0.4);
   const minHeight = HEIGHT_SCALE * SEA_LEVEL - 1;
   let tMin = 0;
@@ -644,10 +800,13 @@ function pickAgainstHeightfield(origin, direction, surface) {
         if (my - displayedHeightCPU(surface, origin.x + direction.x * mid, origin.z + direction.z * mid) > 0) lo = mid;
         else hi = mid;
       }
-      const gx = Math.round(origin.x + direction.x * hi);
-      const gz = Math.round(origin.z + direction.z * hi);
+      const fx = origin.x + direction.x * hi;
+      const fz = origin.z + direction.z * hi;
+      const gx = Math.round(fx);
+      const gz = Math.round(fz);
       if (gx < 0 || gx >= GRID_SIZE || gz < 0 || gz >= GRID_SIZE) return null;
-      return { x: gx, y: gz };
+      // `exact`: the fractional point, for placing objects off the grid.
+      return exact ? { x: Math.min(GRID_SIZE - 1, Math.max(0, fx)), y: Math.min(GRID_SIZE - 1, Math.max(0, fz)) } : { x: gx, y: gz };
     }
     prevT = t;
     prevDiff = diff;
@@ -763,6 +922,11 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
   // shadows stale and ask for a redraw.
   let onAsyncChange = () => {};
   const trees = buildTreeLayer(scene, () => {
+    invalidateShadows();
+    onAsyncChange();
+  });
+
+  const objects = buildObjectLayer(scene, () => {
     invalidateShadows();
     onAsyncChange();
   });
@@ -1067,6 +1231,7 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
       }
       surfaceTexture.needsUpdate = true;
       invalidateShadows();
+      objects.setSurface(surfaceData);
     }
     if (elevationChanged || typeChanged) {
       // +1: a cell crossing sea level changes its own type weight only, but
@@ -1090,6 +1255,23 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     return pickAgainstHeightfield(raycaster.ray.origin, raycaster.ray.direction, surfaceData);
   }
 
+  // A place under the cursor, checked before the ground (stage B).
+  function pickObject(px, py) {
+    ndc.x = (px / canvas.width) * 2 - 1;
+    ndc.y = -(py / canvas.height) * 2 + 1;
+    raycaster.setFromCamera(ndc, camera);
+    return objects.pickObject(raycaster.ray);
+  }
+
+  // The exact (fractional) map point under the cursor, for placing and
+  // dragging places off the cell grid.
+  function pickPoint(px, py) {
+    ndc.x = (px / canvas.width) * 2 - 1;
+    ndc.y = -(py / canvas.height) * 2 + 1;
+    raycaster.setFromCamera(ndc, camera);
+    return pickAgainstHeightfield(raycaster.ray.origin, raycaster.ray.direction, surfaceData, true);
+  }
+
   function dispose() {
     groundGeometry.dispose();
     groundMaterial.dispose();
@@ -1109,6 +1291,15 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     updateType: (g, t) => update(g, t, { elevationChanged: false }),
     setStrokeActive,
     pick,
+    pickObject,
+    pickPoint,
+    objects: {
+      setAll: (list) => objects.setAll(list),
+      upsert: (o) => objects.upsert(o),
+      remove: (id) => objects.remove(id),
+      select: (id) => objects.select(id),
+      count: () => objects.count(),
+    },
     setAspect,
     dispose,
     setMode,

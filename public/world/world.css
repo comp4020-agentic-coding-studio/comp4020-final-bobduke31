@@ -953,6 +953,41 @@ body.read-only #stage-3d {
   min-height: 40px;
 }
 
+/* Places (stage B) */
+.place-grid button {
+  font-size: 0.85rem;
+}
+
+.place-selected {
+  margin-top: 1rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid var(--rule);
+  display: grid;
+  gap: 0.6rem;
+}
+
+.place-selected h3 {
+  margin: 0;
+}
+
+.danger-text {
+  color: var(--danger);
+}
+
+.places-credit {
+  margin: 1rem 0 0;
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+}
+
+#stage-3d.placing {
+  cursor: copy;
+}
+
+body.no-places .places-only {
+  display: none;
+}
+
 /* Sharing (stage B) */
 .share-preview {
   display: block;

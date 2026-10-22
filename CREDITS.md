@@ -102,6 +102,35 @@ Sebastian Lague's hydraulic erosion (MIT) as too slow to run per preview at
 256x256 in the browser without a worker, kept as an option for a later
 "weathering" pass.
 
+### Places: buildings and map objects (Atlas Table stage B)
+
+- **Asset**: `public/world/assets/kaykit-medieval/` (11 models as glTF +
+  .bin, one shared 15 KB colour atlas `hexagons_medieval.png`, and the
+  pack's own `LICENSE.txt`)
+- **Pack**: [KayKit Medieval Hexagon Pack 1.0](https://github.com/KayKit-Game-Assets/KayKit-Medieval-Hexagon-Pack-1.0)
+- **Author**: Kay Lousberg (<https://www.kaylousberg.com>), the same author
+  as the KayKit trees already in the renderer
+- **Licence**: [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/),
+  quoted from the pack's `LICENSE.txt`: "free to use in personal,
+  educational and commercial projects". Credit is not required, but is given
+  here and in the Places panel.
+- **Modified**: no. The files are as downloaded; the app scales and seats
+  them at load time.
+- **Chosen by rendering, not by description.** Candidates were rendered in
+  the app's own Three.js, under the renderer's sun and sky lights, next to
+  the existing KayKit tree. The red-roofed buildings and the yellow thatched
+  cottage read as one family with the trees.
+- **Passed over:**
+  - The pack's tavern: its giant barrel reads as a joke at map scale.
+  - The blue, green and yellow team colours: they look like a strategy game.
+  - The hex road tiles: they only work on a hex grid, so roads need a
+    painted-path tool instead. That is not built yet.
+  - Kenney's Castle Kit and Fantasy Town Kit (CC0) were the runners-up. They
+    were not used because KayKit already matched the trees in the scene.
+- **Known limit**: in the overhead Chart view, 3D buildings show mostly as
+  roofs. Relief shows them best. Painted top-down symbols, as Inkarnate
+  uses, would be the fix if Chart needs to show places better.
+
 ### The Atlas home and gallery (Atlas Table stage A)
 
 `public/atlas/` (the home page at `/`), `src/gallery.ts`, `src/thumbnail.ts`

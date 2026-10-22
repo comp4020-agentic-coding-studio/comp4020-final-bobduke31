@@ -74,6 +74,10 @@
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M2 10c2-2 4-2 6 0s4 2 6 0 4-2 6 0M2 16c2-2 4-2 6 0s4 2 6 0 4-2 6 0" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" /></svg>
           <span>Water</span>
         </button>
+        <button type="button" class="category-btn places-only" data-category="places">
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M3 21V11l4-3 4 3v10zM13 21V7l4-4 4 4v14z" fill="currentColor" /></svg>
+          <span>Places</span>
+        </button>
         <button type="button" class="category-btn rail-undo" id="rail-undo" aria-label="Undo your last stroke">
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M9 14L4 9l5-5M4 9h11a5 5 0 010 10h-3" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" /></svg>
           <span>Undo</span>
@@ -156,6 +160,22 @@
             <button type="button" data-tool="deepen" title="Deepens existing sea. Has no effect on land.">Deepen</button>
             <button type="button" data-tool="shallow" title="Shallows existing sea, but stops short of the coastline.">Shallow</button>
           </div>
+        </section>
+
+        <section class="options-section hidden" data-panel="places">
+          <h3>Set down a place</h3>
+          <div class="btn-grid place-grid" id="place-palette"></div>
+          <div id="place-selected" class="place-selected hidden">
+            <h3>Selected: <span id="place-selected-name"></span></h3>
+            <div class="btn-grid">
+              <button type="button" id="place-turn-left" title="Turn left (Q)">Turn left</button>
+              <button type="button" id="place-turn-right" title="Turn right (E)">Turn right</button>
+              <button type="button" id="place-smaller" title="Make it smaller">Smaller</button>
+              <button type="button" id="place-bigger" title="Make it bigger">Bigger</button>
+            </div>
+            <button type="button" id="place-remove" class="ghost-button full-width danger-text" title="Remove (Delete)">Remove from the map</button>
+          </div>
+          <p class="places-credit">Buildings: KayKit Medieval pack by Kay Lousberg (CC0).</p>
         </section>
 
         <div class="options-footer">

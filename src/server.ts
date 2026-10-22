@@ -34,7 +34,10 @@ import {
   restoreVersion,
   saveVersion,
   versionData,
+  applySnapshot,
+  type Snapshot,
 } from "./versions.ts";
+import { createObject, deleteObject, listObjects, parsePlacement, updateObject } from "./objects.ts";
 import {
   PUBLIC_ACCESS,
   PUBLIC_ROOM_ID,
@@ -161,6 +164,9 @@ const PUBLIC_ROOM_PATHS = new Set([
   "/api/terrain/undo",
   "/api/events",
   "/api/activity",
+  "/api/objects",
+  "/api/objects/update",
+  "/api/objects/delete",
 ]);
 
 const DENIED_ACTION = {
@@ -173,6 +179,9 @@ const DENIED_ACTION = {
   "/api/room/versions/restore": "room:version-restore",
   "/api/room/versions/delete": "room:version-delete",
   "/api/room/links/reissue": "room:link-reissue",
+  "/api/objects": "object:place",
+  "/api/objects/update": "object:move",
+  "/api/objects/delete": "object:remove",
 } as const satisfies Record<string, ActivityAction>;
 const WRITE_PATHS = new Set(Object.keys(DENIED_ACTION));
 
@@ -181,7 +190,11 @@ const WRITE_PATHS = new Set(Object.keys(DENIED_ACTION));
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX = 8;
 const rateHits = new Map<string, { start: number; n: number }>();
-function rateLimited(sessionId: string): boolean {
+// Placing and moving objects is ordinary editing, not row creation like a
+// new map: a much higher ceiling, still bounded.
+const OBJECT_RATE_MAX = 240;
+
+function rateLimited(sessionId: string, max = RATE_MAX): boolean {
   const now = Date.now();
   const hit = rateHits.get(sessionId);
   if (!hit || now - hit.start > RATE_WINDOW_MS) {
@@ -189,7 +202,7 @@ function rateLimited(sessionId: string): boolean {
     if (rateHits.size > 10_000) rateHits.clear();
     return false;
   }
-  return ++hit.n > RATE_MAX;
+  return ++hit.n > max;
 }
 
 // Where a rename gets logged: rooms the person has open now or has
@@ -204,7 +217,7 @@ function roomsForRename(sessionId: string): string[] {
 // Figma's "duplicate"); `version` picks a stored version of it. `import` is
 // an uploaded map file, validated cell by cell (src/versions.ts).
 type Start =
-  | { ok: true; data: { elevation: TerrainCell[]; types: TerrainTypeCell[] }; action: "room:copy" | "room:import"; detail: string }
+  | { ok: true; data: Snapshot; action: "room:copy" | "room:import"; detail: string }
   | { ok: false; status: number; error: string };
 function startingTerrain(payload: Record<string, unknown>): Start | null {
   if (payload.copyFrom !== undefined) {
@@ -261,7 +274,7 @@ async function handleCreateRoom(req: IncomingMessage, res: ServerResponse, sessi
   }
   logActivity(result.access.roomId, sessionId, "room:create", `"${name}"`);
   if (start?.ok) {
-    replaceTerrain(result.access.roomId, start.data.elevation, start.data.types);
+    applySnapshot(result.access.roomId, start.data, sessionId);
     logActivity(result.access.roomId, sessionId, start.action, start.detail);
   } else if (forge && forge.template !== "blank") {
     forgeIntoRoom(result.access.roomId, forge);
@@ -475,6 +488,69 @@ async function handleRoomApi(
       "Content-Disposition": `attachment; filename="${file}.atlas.json"`,
     });
     res.end(body);
+    return true;
+  }
+
+  // Places on the map (stage B). Writes are edit-only through WRITE_PATHS
+  // above; every change is broadcast so all open maps update live.
+  if (path === "/api/objects" && req.method === "GET") {
+    sendJson(res, 200, listObjects(roomId));
+    return true;
+  }
+
+  if ((path === "/api/objects" || path === "/api/objects/update" || path === "/api/objects/delete") && req.method === "POST") {
+    const payload = await readJsonOr400(req, res);
+    if (!payload) return true;
+    if (rateLimited(`objects:${sessionId}`, OBJECT_RATE_MAX)) {
+      sendJson(res, 429, { error: "too many changes just now - try again in a moment" });
+      return true;
+    }
+    if (path === "/api/objects") {
+      const placement = parsePlacement(payload);
+      if (!placement) {
+        sendJson(res, 400, { error: "a place needs a known kind and a position on the map" });
+        return true;
+      }
+      const result = createObject(roomId, sessionId, placement);
+      if (!result.ok) {
+        sendJson(res, result.status, { error: result.error });
+        return true;
+      }
+      broadcast(roomId, "objects:upsert", result.object);
+      logActivity(roomId, sessionId, "object:place", `${result.object.kind} at ${result.object.x.toFixed(1)},${result.object.y.toFixed(1)}`);
+      sendJson(res, 201, result.object);
+      return true;
+    }
+    const id = Number(payload.id);
+    if (!Number.isInteger(id)) {
+      sendJson(res, 400, { error: "id must be a place id" });
+      return true;
+    }
+    if (path === "/api/objects/delete") {
+      if (!deleteObject(roomId, id)) {
+        sendJson(res, 404, { error: "that place is no longer on the map" });
+        return true;
+      }
+      broadcast(roomId, "objects:delete", { id });
+      logActivity(roomId, sessionId, "object:remove", `place ${id}`);
+      res.writeHead(204);
+      res.end();
+      return true;
+    }
+    const changes = parsePlacement(payload, true);
+    if (!changes || changes.kind !== undefined) {
+      sendJson(res, 400, { error: "a move needs a position on the map, a rotation or a scale" });
+      return true;
+    }
+    const result = updateObject(roomId, id, changes);
+    if (!result.ok) {
+      sendJson(res, result.status, { error: result.error });
+      return true;
+    }
+    broadcast(roomId, "objects:upsert", result.object);
+    // Moves are frequent; the log records them without flooding it.
+    if (!rateLimited(`objlog:${sessionId}`)) logActivity(roomId, sessionId, "object:move", `${result.object.kind} ${id}`);
+    sendJson(res, 200, result.object);
     return true;
   }
 
