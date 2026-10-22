@@ -2455,6 +2455,51 @@ forward. Order of work, each part merged only after the user has seen it:
 Protections as before: new tables only, parity gate, real browser runs at
 both viewports, nothing merged or deployed without the user's approval.
 
+#### Stage B progress (22 Oct, branch `atlas-keep`, not merged or deployed)
+
+Built in f96a53a (versions and export), 17b8262 (withdrawing links) and
+5492e02 (places).
+
+- **Versions.**
+  - Named saves, plus an automatic checkpoint before every restore. A
+    restore can therefore always be undone by restoring that checkpoint.
+  - A restore replaces the map in one transaction. Everyone with the map
+    open reloads it live: checked in a browser, where a watcher's page
+    fetched the terrain again.
+  - Edit link only. The shared world has no versions. 30 per map.
+- **Export and import.**
+  - A map file (JSON) that opens again as a new world.
+  - An overview PNG at 1024 px. 2048 px was tried and rejected: the server
+    picture's cell-stepped coastline shows at that size. A renderer-quality
+    export is a separate job.
+- **Copy to a new world** from any link the visitor can see, at any
+  version.
+- **Sharing.**
+  - The share sheet shows the map as it is now.
+  - "Withdraw this link" makes a new edit or view link. The old one stops
+    working at once, and pages open on it are cut off with a plain message.
+    Checked with three browsers.
+- **Places** (pulled forward from stage D at the user's request):
+  - 11 kinds from the CC0 KayKit Medieval pack, chosen by rendering them
+    next to the existing trees (`CREDITS.md`).
+  - Set down, select, drag, turn, resize and remove, live for everyone.
+    Places travel with versions, copies and files.
+  - New `room_objects` table.
+- **Checks.**
+  - 86/86 tests pass, twice on a fresh database.
+  - Typecheck is clean.
+  - Parity gate with no places placed: 0 differing pixels in Chart and
+    Relief.
+  - Browser runs at 1366x860 and at 390x844 (emulated) show no page errors
+    and no horizontal scroll.
+- **Not done, and known limits.**
+  - Roads: the pack's road pieces are hex tiles, so roads need a
+    painted-path tool.
+  - Trees still grow through places.
+  - In Chart view, places show mostly as roofs.
+  - The "Gate" arrival card was not built.
+  - No real-phone run yet.
+
 ### Writing track (runs alongside the phases, not only at the end)
 
 Figures from `topics/assessment` and `assessments/final-project`, checked
