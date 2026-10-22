@@ -539,14 +539,18 @@ export function previewPixels({ elevation, types }, size) {
     for (let px = 0; px < size; px++) {
       const fx = (px + 0.5) * k - 0.5, fy = (py + 0.5) * k - 0.5;
       const e = at(fx, fy);
-      const i = clamp(Math.round(fy), 0, N - 1) * N + clamp(Math.round(fx), 0, N - 1);
       let c;
       if (e <= 0) {
         const t = clamp(-e / 0.5, 0, 1);
         c = t < 0.35 ? lerp3(SHALLOW, MID, t / 0.35) : lerp3(MID, DEEP, (t - 0.35) / 0.65);
       } else {
-        const t = types[i];
-        c = t === 1 ? SAND : t === 2 ? FOREST : t === 3 ? ROCK : GRASS;
+        // Materials blended between the four nearest cells, so forest and
+        // shore edges are soft rather than stair-stepped at large sizes.
+        const mat = (t) => (t === 1 ? SAND : t === 2 ? FOREST : t === 3 ? ROCK : GRASS);
+        const x0 = clamp(Math.floor(fx), 0, N - 1), y0 = clamp(Math.floor(fy), 0, N - 1);
+        const x1 = Math.min(N - 1, x0 + 1), y1 = Math.min(N - 1, y0 + 1);
+        const tx = clamp(fx - x0, 0, 1), ty = clamp(fy - y0, 0, 1);
+        c = lerp3(lerp3(mat(types[y0 * N + x0]), mat(types[y0 * N + x1]), tx), lerp3(mat(types[y1 * N + x0]), mat(types[y1 * N + x1]), tx), ty);
         c = lerp3(c, ROCK, smoothstep(0.4, 0.6, e));
         c = lerp3(c, SNOW, smoothstep(0.7, 0.82, e));
         // Hillshade lit from the north-west, as the renderer's sun.

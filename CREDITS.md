@@ -102,6 +102,30 @@ Sebastian Lague's hydraulic erosion (MIT) as too slow to run per preview at
 256x256 in the browser without a worker, kept as an option for a later
 "weathering" pass.
 
+### The Atlas home and gallery (Atlas Table stage A)
+
+`public/atlas/` (the home page at `/`), `src/gallery.ts`, `src/thumbnail.ts`
+and `public/world/thumbnail.js`. Searched first, per `CLAUDE.md`. No code or
+art was taken: these are patterns from how similar products greet a
+newcomer and publish work, each checked on the page cited.
+
+| Source | Pattern adopted |
+| --- | --- |
+| [Excalidraw](https://docs.excalidraw.com/docs/), and [an onboarding teardown of it](https://onboardingoptimization.com/guides/excalidraw-first-value-before-signup/) | value before sign-up: the home page opens on a real world generated for you, and one click makes it yours |
+| [Owlbear Rodeo rooms](https://docs.owlbear.rodeo/docs/rooms/) and [dev log 7](https://blog.owlbear.rodeo/owlbear-rodeo-dev-log-7/) | a returning visitor sees their own maps first, as pictures |
+| [Figma Community: publish](https://help.figma.com/hc/en-us/articles/360040035974-Publish-files-to-the-Figma-Community), [unpublish](https://help.figma.com/hc/en-us/articles/1500007575382-Remove-or-unpublish-Community-files) | only edit access can publish; unpublishing takes effect at once |
+| Figma's [thumbnail complaints](https://forum.figma.com/suggest-a-feature-11/auto-update-thumbnails-29386) | pictures are drawn from the stored map, so they can't go stale or be swapped |
+| [Inkarnate feedback: cloneable maps](https://feedback.inkarnate.com/p/make-all-published-maps-cloneable), [search all maps](https://feedback.inkarnate.com/feature-requests/p/be-able-to-search-all-maps) | the gallery shows the view link, leaving copying to the versions work in stage B |
+| [Dungeon Scrawl showcase](https://www.dungeonscrawl.com/showcase), [Canva templates](https://www.canva.com/templates/) | starter worlds shown alongside the gallery while it is sparse |
+| [Azgaar's Fantasy Map Generator](https://github.com/Azgaar/Fantasy-Map-Generator), [Watabou's city generator](https://watabou.itch.io/medieval-fantasy-city-generator) | seed in view and a reroll button: the same seed always makes the same world |
+
+Passed over: a client-uploaded screenshot as the map picture (Figma's
+stale-thumbnail problem); an image library such as `sharp` or `pngjs` for
+the PNG (node:zlib is all a PNG needs, and this repo avoids dependencies);
+search and tags in the gallery (not needed until there are more maps than a
+page holds). The picture palette mirrors the renderer's ground and sea
+colours, so if those change, `thumbnail.js` should change with them.
+
 ### Considered and not used, for the 3D renderer
 
 - **[THREE.Terrain](https://github.com/IceCreamYou/THREE.Terrain)** (npm

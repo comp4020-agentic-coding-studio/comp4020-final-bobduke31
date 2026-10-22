@@ -40,3 +40,5 @@ against a throwaway database, as CI does. `rooms.test.ts` and
 against the live app. `forge.test.ts` also only creates private maps, but
 each stores tens of thousands of cells, so don't run it against production:
 it would spend the live volume and the 150-map cap on test worlds.
+`gallery.test.ts` forges maps the same way and publishes some of them to the
+gallery on the Atlas home, so it too runs only against a throwaway database.

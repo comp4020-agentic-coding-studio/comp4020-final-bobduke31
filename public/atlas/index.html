@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0e1a24" />
+    <title>Atlas Table · make fantasy maps together</title>
+    <meta name="description" content="Forge a fantasy world in seconds, shape its mountains, coasts and forests, and edit it live with friends by sharing a link. No account needed." />
+    <meta property="og:title" content="Atlas Table" />
+    <meta property="og:description" content="Forge a fantasy world, then shape it together, live, by sharing a link." />
+    <meta property="og:image" content="/api/room/thumbnail.png?size=og" />
+    <link rel="preload" href="/world/vendor/fonts/figtree-latin-var.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/world/vendor/fonts/im-fell-english-sc-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="/atlas/atlas.css" />
+  </head>
+  <body>
+    <svg width="0" height="0" class="defs" aria-hidden="true">
+      <defs>
+        <path id="shield" d="M2 2h22v12c0 7-5 11.5-11 14C7 25.5 2 21 2 14z" />
+        <symbol id="rose" viewBox="0 0 32 32">
+          <circle cx="16" cy="16" r="14.5" fill="none" stroke="currentColor" stroke-width="1.4" />
+          <path d="M16 3l3 13-3 13-3-13z" fill="currentColor" />
+          <path d="M3 16l13-3 13 3-13 3z" fill="currentColor" opacity=".45" />
+          <circle cx="16" cy="16" r="2" fill="var(--sea)" />
+        </symbol>
+      </defs>
+    </svg>
+
+    <header class="masthead">
+      <div class="wrap masthead-row">
+        <a href="/" class="brand" aria-label="Atlas Table, home">
+          <svg width="24" height="24" class="rose" aria-hidden="true"><use href="#rose" /></svg>
+          <span class="wordmark">Atlas Table</span>
+        </a>
+        <nav class="masthead-nav" aria-label="Sections">
+          <a href="#yours" id="nav-yours" class="hidden">Your maps</a>
+          <a href="#gallery">Gallery</a>
+          <a href="/world/">Shared world</a>
+        </nav>
+        <span id="me" class="me hidden" title="Your name and colour on every map">
+          <span class="sigil" data-tincture="argent"><svg viewBox="0 0 26 30" aria-hidden="true"><use href="#shield" /></svg><em id="me-initial"></em></span>
+          <span id="me-name" class="me-name"></span>
+        </span>
+      </div>
+    </header>
+
+    <main>
+      <!-- Your maps: first for a returning visitor (moved above the Forge by
+           atlas.js when there are any), absent for a first visit. -->
+      <section id="yours" class="band yours hidden" aria-labelledby="yours-title">
+        <div class="wrap">
+          <div class="band-head">
+            <h2 id="yours-title">Your maps</h2>
+            <form id="open-link" class="open-link">
+              <label for="open-link-input" class="sr-only">Paste a map link</label>
+              <input id="open-link-input" type="text" placeholder="Paste a map link to open it" autocomplete="off" spellcheck="false" />
+              <button type="submit" class="ghost-button">Open</button>
+            </form>
+          </div>
+          <p id="open-link-error" class="form-error hidden" role="alert"></p>
+          <ul id="your-maps" class="cards"></ul>
+          <p class="band-note">Kept for this browser. Each map's link is its key, so keep the link to get back from another device.</p>
+        </div>
+      </section>
+
+      <section id="forge" class="band forge-hero" aria-labelledby="forge-title">
+        <div class="wrap forge-grid">
+          <div class="forge-copy">
+            <p class="eyebrow" id="forge-eyebrow">A shared atlas for fantasy worlds</p>
+            <h1 id="forge-title">Forge a world. <br />Shape it together.</h1>
+            <p class="lede">
+              This <span id="lede-kind">continent</span> was generated for you just now. Make it yours in one click, then raise its mountains, carve its
+              coasts and plant its forests with friends, live, from a single link. No account.
+            </p>
+
+            <form id="forge-form" class="forge-form">
+              <div class="forge-templates" role="radiogroup" aria-label="Kind of world">
+                <label><input type="radio" name="template" value="continent" checked /><span>Continent</span></label>
+                <label><input type="radio" name="template" value="coast" /><span>Coast</span></label>
+                <label><input type="radio" name="template" value="archipelago" /><span>Islands</span></label>
+              </div>
+              <label for="world-name" class="field-label">Name your world</label>
+              <div class="field-row">
+                <input id="world-name" type="text" maxlength="60" required autocomplete="off" />
+                <button type="submit" class="primary-button big" id="create-button">Create this world</button>
+              </div>
+              <p id="forge-error" class="form-error hidden" role="alert"></p>
+              <details class="forge-more">
+                <summary>Adjust land, mountains and forest</summary>
+                <div class="forge-sliders">
+                  <label class="slider-label"><span>Land <output id="land-out">Some</output></span><input id="land" type="range" min="0" max="1" step="0.05" value="0.5" /></label>
+                  <label class="slider-label"><span>Mountains <output id="mountains-out">Ranges</output></span><input id="mountains" type="range" min="0" max="1" step="0.05" value="0.5" /></label>
+                  <label class="slider-label"><span>Forest <output id="forest-out">Woods</output></span><input id="forest" type="range" min="0" max="1" step="0.05" value="0.5" /></label>
+                </div>
+              </details>
+              <p class="forge-alt">or <a href="/world/">walk into the shared world</a>, the one map anyone can paint.</p>
+            </form>
+          </div>
+
+          <figure class="forge-figure">
+            <div class="forge-frame">
+              <canvas id="preview" width="560" height="560" role="img" aria-label="The generated world"></canvas>
+              <button type="button" id="reroll" class="reroll" title="Generate another world">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20 12a8 8 0 11-2.34-5.66M20 4v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                Another world
+              </button>
+            </div>
+            <figcaption>
+              <span class="seed-label">Seed</span>
+              <input id="seed" type="text" maxlength="40" autocomplete="off" spellcheck="false" aria-label="Seed: the same seed always makes the same world" />
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="band steps" aria-labelledby="steps-title">
+        <div class="wrap">
+          <h2 id="steps-title" class="sr-only">How it works</h2>
+          <ol class="step-list">
+            <li>
+              <span class="step-no">I</span>
+              <h3>Forge</h3>
+              <p>Pick a continent, a coast or a scatter of islands. The same seed always makes the same world, so a good one is never lost.</p>
+            </li>
+            <li>
+              <span class="step-no">II</span>
+              <h3>Shape</h3>
+              <p>Raise ranges and peaks, smooth valleys, paint forests and shores, and see it all in Chart or 3D Relief.</p>
+            </li>
+            <li>
+              <span class="step-no">III</span>
+              <h3>Share</h3>
+              <p>Send an edit link to paint together live, or a view link to let people watch. Each person appears under their own heraldic colour.</p>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section id="gallery" class="band gallery" aria-labelledby="gallery-title">
+        <div class="wrap">
+          <div class="band-head">
+            <h2 id="gallery-title">Gallery</h2>
+            <p class="band-sub">Maps their makers chose to show. Open one to watch it change live.</p>
+          </div>
+          <ul id="gallery-maps" class="cards">
+            <li class="card featured">
+              <a href="/world/" class="card-link">
+                <img src="/api/room/thumbnail.png" alt="" width="480" height="300" loading="lazy" />
+                <span class="card-body">
+                  <span class="card-title place-name">The shared world</span>
+                  <span class="card-meta">Open to everyone · anyone can paint</span>
+                </span>
+                <span class="badge live">Everyone</span>
+              </a>
+            </li>
+          </ul>
+          <div id="starters" class="starters hidden">
+            <h3>Or start from one of these</h3>
+            <ul id="starter-list" class="cards small"></ul>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="colophon">
+      <div class="wrap colophon-row">
+        <span>Atlas Table, a COMP4020 project.</span>
+        <nav aria-label="About">
+          <a href="/readme/">About</a>
+          <a href="/credits/">Credits</a>
+          <a href="/logs/">Activity</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script type="module" src="/atlas/atlas.js"></script>
+  </body>
+</html>

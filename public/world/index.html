@@ -172,7 +172,7 @@
       <svg width="48" height="48" class="rose" aria-hidden="true"><use href="#rose" /></svg>
       <h2>No map at this link</h2>
       <p>It may have been mistyped, or only part of the link was copied. Ask whoever sent it for the full link.</p>
-      <a href="/" class="primary-button">Go to the shared world</a>
+      <a href="/" class="primary-button">Go to the Atlas home</a>
     </div>
 
     <dialog id="share-dialog" class="sheet" aria-labelledby="share-title">
@@ -191,6 +191,11 @@
         <button type="button" class="ghost-button" data-copy="share-view">Copy link</button>
         <input id="share-view" class="link-field" type="text" readonly aria-label="View-only link" />
       </div>
+      <div class="link-row gallery-row">
+        <label class="link-text" for="share-gallery"><b>Show in the gallery</b><span id="share-gallery-help">Anyone can find it on the Atlas home and watch. Only edit links can change it.</span></label>
+        <input id="share-gallery" type="checkbox" class="switch" role="switch" />
+      </div>
+      <p id="share-gallery-error" class="form-error hidden" role="alert"></p>
       <p class="sheet-note">Keep the edit link somewhere safe. This browser also remembers your maps under Atlas Table.</p>
     </dialog>
 
@@ -235,9 +240,9 @@
       <p id="my-maps-empty" class="sheet-sub">Maps you create or open appear here, on this browser.</p>
       <h3>Open to everyone</h3>
       <ul class="map-list">
-        <li><a href="/" class="map-link"><span class="place-name">The shared world</span><span class="map-meta">Anyone can edit</span></a></li>
+        <li><a href="/world/" class="map-link"><span class="place-name">The shared world</span><span class="map-meta">Anyone can edit</span></a></li>
       </ul>
-      <p class="sheet-footer"><a id="activity-link" href="/logs/">Activity in the shared world</a></p>
+      <p class="sheet-footer"><a href="/">Atlas home and gallery</a><a id="activity-link" href="/logs/">Activity in the shared world</a></p>
     </dialog>
 
     <dialog id="rename-dialog" class="sheet" aria-labelledby="rename-title">

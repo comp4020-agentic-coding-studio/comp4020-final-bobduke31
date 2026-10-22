@@ -81,6 +81,7 @@ export async function loadRoom() {
   if (data.editToken) {
     $("share-edit").value = linkFor(data.editToken);
     $("share-view").value = linkFor(data.viewToken);
+    $("share-gallery").checked = !!data.listed;
   }
   if (token) {
     $("activity-link").href = `/logs/#map=${encodeURIComponent(token)}`;
@@ -395,6 +396,7 @@ export function wireRoomUi() {
   });
 
   els.share.addEventListener("click", () => els.shareDialog.showModal());
+  wireGalleryToggle();
   for (const button of document.querySelectorAll("[data-copy]")) {
     button.addEventListener("click", () => copyField(button.dataset.copy, button));
   }
@@ -444,9 +446,45 @@ export function wireRoomUi() {
   }
 }
 
+// "Show in the gallery": only in the share sheet, which only edit-link
+// holders see. The server re-checks the role and the land rule.
+function wireGalleryToggle() {
+  const box = $("share-gallery");
+  const error = $("share-gallery-error");
+  box.addEventListener("change", async () => {
+    const wanted = box.checked;
+    box.disabled = true;
+    error.classList.add("hidden");
+    try {
+      const res = await fetch(apiPath("/api/room/listing"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ listed: wanted }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Couldn't change the gallery setting.");
+      box.checked = body.listed;
+      toast(body.listed ? `${room.name} is in the gallery on the Atlas home.` : `${room.name} is out of the gallery.`);
+    } catch (err) {
+      box.checked = !wanted;
+      error.textContent = err instanceof Error ? err.message : "Couldn't reach the server. Check your connection and try again.";
+      error.classList.remove("hidden");
+    } finally {
+      box.disabled = false;
+    }
+  });
+}
+
 export function openShareIfRequested() {
   if (location.hash === "#share" && !els.share.classList.contains("hidden")) {
     history.replaceState(null, "", location.pathname);
     els.shareDialog.showModal();
+    // #share only arrives from creating a map: once the sheet is closed,
+    // say what to do first (stage A's first-time hint).
+    els.shareDialog.addEventListener(
+      "close",
+      () => toast(matchMedia("(pointer: coarse)").matches ? "Your world is ready. Pick Raise or Lower and drag on the land to shape it." : "Your world is ready. Pick Raise or Lower, then drag on the land to shape it. Scroll to zoom."),
+      { once: true },
+    );
   }
 }

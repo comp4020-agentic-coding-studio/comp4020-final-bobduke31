@@ -2364,6 +2364,43 @@ The writing in stage E is never cut.
   snapshot listed in `flyctl volumes snapshots list`, deploy through GitHub
   and CI only, new tables only, and live data hashes checked after.
 
+#### Stage A progress (22 Oct, branch `atlas-home`, not merged or deployed)
+
+Built in 48b6d34, ahead of the 23-27 Oct slot. Sources and decisions are in
+`CREDITS.md`, "The Atlas home and gallery".
+
+- **`/` is the Atlas home.** A first visit opens on a world generated in the
+  page by `forge.js`, with "Create this world" as the one primary action.
+  It lands in the new map with the share sheet open, and closing the sheet
+  shows a one-line hint about what to do first. A returning visitor sees
+  "Your maps" (edit and view-only) first, as pictures. **The shared world
+  moved to `/world/`.** `/m/<token>` links are unchanged. The few in-app
+  links that meant "the shared world" by `/` now point to `/world/`.
+- **Gallery.** The shared world as a featured card, then maps their makers
+  published from the share sheet (edit link only, off by default, 500 land
+  cells minimum, unpublish at once). Starter seeds are shown while there are
+  fewer than three. The listing carries view tokens only. A new
+  `room_listings` table has a `hidden` flag for moderation. No existing rows
+  are changed.
+- **Map pictures** are drawn on the server from stored data. They are cached
+  per terrain revision and revalidated by ETag, and take about 70-165 ms to
+  draw.
+
+Checked locally, against a copy of production data and a fresh database:
+- `spec/gallery.test.ts` passes, along with the full suite (74/74, twice).
+- Typecheck is clean.
+- Editor parity is 0 differing pixels in both Chart and Relief.
+- Browser runs at 1366x860 and at 390x844 (emulated): first visit, create,
+  share, gallery switch, returning visit. No page errors and no horizontal
+  scroll.
+- A scripted first visit reached a stored edit in 21.6 s. That is the app's
+  own floor, because a script spends no time reading, not a human's time.
+
+Not yet done:
+- a run on a real phone;
+- the user's review;
+- the deploy (planned for stage B, 31 Oct, or earlier if approved).
+
 ### Writing track (runs alongside the phases, not only at the end)
 
 Figures from `topics/assessment` and `assessments/final-project`, checked
