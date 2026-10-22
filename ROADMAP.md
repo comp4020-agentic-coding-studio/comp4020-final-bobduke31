@@ -2421,6 +2421,40 @@ Checked locally, against a copy of production data and a fresh database:
 
 Still not done: a run on a real phone.
 
+#### Stage B plan (22 Oct, branch `atlas-keep`)
+
+Started early, straight after stage A, at the user's request. The user also
+asked for a first step towards the tabletop direction: placeable map
+objects (cottages, houses, castles, roads). That pulls part of stage D
+forward. Order of work, each part merged only after the user has seen it:
+
+1. **Versions and restore.** A new `room_versions` table holds compressed
+   snapshots of a map's two grids (elevation and terrain type): named saves,
+   plus an automatic checkpoint before every restore so a restore can always
+   be undone. Restore applies the snapshot and broadcasts `terrain:reload`,
+   so everyone with the map open reloads it. Rules:
+   - edit link only;
+   - the shared world can't be restored, because nobody owns it;
+   - capped at 30 versions per map, with the oldest automatic checkpoints
+     dropped first.
+
+   **Copy to a new world** makes a new private map from any version.
+2. **Export.** A full-resolution PNG of the map (the server-drawn picture at
+   2048 px), and a JSON file of the map's data that can be read back in.
+3. **Sharing.** The share sheet gets the map picture and clearer wording.
+   Edit and view links can be reissued, which withdraws the old link at once.
+   "Gate" arrival card for someone opening a link: who's here, the map, and
+   their role.
+4. **Map objects (pulled forward from stage D).** A reuse-first search for
+   low-poly assets matching the KayKit trees already in the renderer, licence
+   checked and recorded in `CREDITS.md`. Then a new `room_objects` table and a
+   first set of objects that can be placed, moved, rotated and removed live.
+   Renderer change: objects only, existing terrain drawing untouched, so the
+   parity gate still applies with no objects placed.
+
+Protections as before: new tables only, parity gate, real browser runs at
+both viewports, nothing merged or deployed without the user's approval.
+
 ### Writing track (runs alongside the phases, not only at the end)
 
 Figures from `topics/assessment` and `assessments/final-project`, checked
