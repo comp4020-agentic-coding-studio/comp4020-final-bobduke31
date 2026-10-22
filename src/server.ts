@@ -21,6 +21,8 @@ import { log as logActivity, recentActivity, roomsWithActivityBy } from "./activ
 import type { ActivityAction } from "./activity.ts";
 import { captureStroke, undoLastStroke } from "./undo.ts";
 import { parseForge, forgeIntoRoom } from "./forge.ts";
+import { thumbnailFor, type ThumbSize } from "./thumbnail.ts";
+import { isListed, listGallery, listedRoomByViewToken, setListed } from "./gallery.ts";
 import {
   PUBLIC_ACCESS,
   PUBLIC_ROOM_ID,
@@ -138,6 +140,7 @@ async function readJsonOr400(req: IncomingMessage, res: ServerResponse): Promise
 const PUBLIC_ROOM_PATHS = new Set([
   "/api/room",
   "/api/room/name",
+  "/api/room/thumbnail.png",
   "/api/terrain",
   "/api/terrain-types",
   "/api/terrain/cells",
@@ -152,6 +155,7 @@ const DENIED_ACTION = {
   "/api/terrain/types": "terrain-type:paint",
   "/api/terrain/undo": "terrain:undo",
   "/api/room/name": "room:rename",
+  "/api/room/listing": "room:publish",
 } as const satisfies Record<string, ActivityAction>;
 const WRITE_PATHS = new Set(Object.keys(DENIED_ACTION));
 
@@ -218,6 +222,24 @@ async function handleCreateRoom(req: IncomingMessage, res: ServerResponse, sessi
 // it doesn't own so the caller can fall through to a 404. Writes are
 // checked here, once, against the role the server resolved from the URL
 // token - there is no request field that can raise it.
+function thumbSizeOf(req: IncomingMessage): ThumbSize {
+  return new URL(req.url ?? "/", "http://x").searchParams.get("size") === "og" ? "og" : "card";
+}
+
+// Map pictures change only when the terrain does; the ETag carries the
+// terrain revision, so a revisit costs a 304 and an edit shows next load.
+function sendThumbnail(req: IncomingMessage, res: ServerResponse, roomId: string, size: ThumbSize): void {
+  const thumb = thumbnailFor(roomId, size);
+  const headers = { ETag: thumb.etag, "Cache-Control": "no-cache" };
+  if (req.headers["if-none-match"] === thumb.etag) {
+    res.writeHead(304, headers);
+    res.end();
+    return;
+  }
+  res.writeHead(200, { ...headers, "Content-Type": "image/png", "Content-Length": thumb.png.length });
+  res.end(thumb.png);
+}
+
 async function handleRoomApi(
   req: IncomingMessage,
   res: ServerResponse,
@@ -245,6 +267,7 @@ async function handleRoomApi(
       role: access.role,
       isPublic: access.isPublic,
       ...(share ?? {}),
+      ...(access.isPublic ? {} : { listed: isListed(roomId) }),
       present: presenceFor(roomId),
     });
     return true;
@@ -267,6 +290,32 @@ async function handleRoomApi(
     logActivity(roomId, sessionId, "room:rename", `"${name}"`);
     res.writeHead(204);
     res.end();
+    return true;
+  }
+
+  if (path === "/api/room/thumbnail.png" && req.method === "GET") {
+    sendThumbnail(req, res, roomId, thumbSizeOf(req));
+    return true;
+  }
+
+  if (path === "/api/room/listing" && req.method === "POST") {
+    const payload = await readJsonOr400(req, res);
+    if (!payload) return true;
+    if (typeof payload.listed !== "boolean") {
+      sendJson(res, 400, { error: "listed must be true or false" });
+      return true;
+    }
+    if (rateLimited(sessionId)) {
+      sendJson(res, 429, { error: "too many changes just now - try again in a minute" });
+      return true;
+    }
+    const result = setListed(access, sessionId, payload.listed);
+    if (!result.ok) {
+      sendJson(res, result.status, { error: result.error });
+      return true;
+    }
+    logActivity(roomId, sessionId, "room:publish", result.listed ? "listed in the gallery" : "taken out of the gallery");
+    sendJson(res, 200, { listed: result.listed });
     return true;
   }
 
@@ -481,10 +530,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   // link" from that API call rather than a bare 404.
   const isMapPage = /^\/m\/[A-Za-z0-9_-]{1,64}\/?$/.test(url.pathname);
   if (
-    (url.pathname === "/" || url.pathname === "/world" || url.pathname === "/world/" || isMapPage) &&
+    (url.pathname === "/world" || url.pathname === "/world/" || isMapPage) &&
     req.method === "GET"
   ) {
     const file = await serveStatic("/world/index.html");
+    if (file) {
+      res.writeHead(200, { "Content-Type": file.type });
+      res.end(file.body);
+      return;
+    }
+  }
+
+  // The Atlas home page (stage A): the front door. The shared world's
+  // editor, which used to be served here too, keeps its own /world/ address.
+  if (url.pathname === "/" && req.method === "GET") {
+    const file = await serveStatic("/atlas/index.html");
     if (file) {
       res.writeHead(200, { "Content-Type": file.type });
       res.end(file.body);
@@ -505,6 +565,21 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   // byte-compatible with every client and test that already uses them;
   // /api/r/<token>/... is the same API for one private room, with the role
   // the token grants.
+  if (url.pathname === "/api/gallery" && req.method === "GET") {
+    sendJson(res, 200, listGallery());
+    return;
+  }
+  const galleryThumb = /^\/api\/gallery\/([A-Za-z0-9_-]{22})\/thumbnail\.png$/.exec(url.pathname);
+  if (galleryThumb && req.method === "GET") {
+    const roomId = listedRoomByViewToken(galleryThumb[1]);
+    if (!roomId) {
+      sendJson(res, 404, { error: "not in the gallery" });
+      return;
+    }
+    sendThumbnail(req, res, roomId, thumbSizeOf(req));
+    return;
+  }
+
   if (url.pathname === "/api/rooms" && req.method === "POST") {
     await handleCreateRoom(req, res, sessionId);
     return;

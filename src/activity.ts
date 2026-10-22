@@ -29,6 +29,7 @@ export const ACTIONS = [
   "room:create",
   "room:rename",
   "room:forge",
+  "room:publish",
   "person:rename",
 ] as const;
 export type ActivityAction = (typeof ACTIONS)[number];

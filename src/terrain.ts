@@ -32,6 +32,17 @@ export interface TerrainTypeCell {
 // anything on land - a grassland cell that's painted sea becomes plain
 // water, not "submerged grassland".
 
+// Bumped by every write below, per room. Lets derived things (the map
+// thumbnails in src/thumbnail.ts) know when they're stale without querying.
+// In memory only: after a restart everything is simply regenerated once.
+const revisions = new Map<string, number>();
+export function terrainRevision(roomId: string): number {
+  return revisions.get(roomId) ?? 0;
+}
+function touch(roomId: string): void {
+  revisions.set(roomId, terrainRevision(roomId) + 1);
+}
+
 const listStmt = db.prepare("SELECT x, y, elevation FROM terrain_cells WHERE room_id = ?");
 const getElevationStmt = db.prepare("SELECT elevation FROM terrain_cells WHERE room_id = ? AND x = ? AND y = ?");
 
@@ -91,6 +102,7 @@ const deleteTypeStmt = db.prepare("DELETE FROM terrain_type_cells WHERE room_id 
 // terrain type too: a cell's type and its land status must never disagree,
 // and the server is where that invariant is actually enforced.
 export function applyCells(roomId: string, cells: TerrainCell[]): TerrainCell[] {
+  touch(roomId);
   const submerged: TerrainCell[] = [];
   db.exec("BEGIN");
   try {
@@ -154,6 +166,7 @@ const upsertTypeStmt = db.prepare(`
 // handler) - painting a terrain type onto sea is a silent no-op, not an
 // error, since a brush stroke straddling a coastline is the normal case.
 export function applyTerrainTypes(roomId: string, cells: TerrainTypeCell[]): void {
+  touch(roomId);
   db.exec("BEGIN");
   try {
     for (const cell of cells) upsertTypeStmt.run(roomId, cell.x, cell.y, cell.terrain);
@@ -167,6 +180,7 @@ export function applyTerrainTypes(roomId: string, cells: TerrainTypeCell[]): voi
 // src/undo.ts's path back to "no type": a snapshot may record a cell as
 // untyped (terrain: null), which upsertTypeStmt can't write (NOT NULL).
 export function clearTerrainTypes(roomId: string, cells: { x: number; y: number }[]): void {
+  touch(roomId);
   db.exec("BEGIN");
   try {
     for (const cell of cells) deleteTypeStmt.run(roomId, cell.x, cell.y);

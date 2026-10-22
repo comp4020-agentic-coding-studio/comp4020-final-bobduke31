@@ -72,6 +72,18 @@ const PEOPLE_DDL = `
   ) WITHOUT ROWID
 `;
 
+// The gallery (Atlas Table stage A): a map is listed only while a row here
+// says so. Additive, like people: a new table, no existing row touched, and
+// older code simply never reads it.
+const LISTINGS_DDL = `
+  CREATE TABLE IF NOT EXISTS room_listings (
+    room_id TEXT PRIMARY KEY REFERENCES rooms(id),
+    listed_by TEXT NOT NULL,
+    listed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    hidden INTEGER NOT NULL DEFAULT 0
+  ) WITHOUT ROWID
+`;
+
 const ACTIVITY_DDL = `
   CREATE TABLE IF NOT EXISTS activity_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,6 +133,7 @@ export function ensureRoomsSchema(db: DatabaseSync, opts: { failBeforeCommit?: b
   if (version === ROOMS_VERSION) {
     db.exec(MEMBERS_DDL);
     db.exec(PEOPLE_DDL);
+    db.exec(LISTINGS_DDL);
     return { status: "current" };
   }
   if (version !== undefined) throw new Error(`unexpected schema_meta.rooms_version=${version} - refusing to guess`);
@@ -138,6 +151,7 @@ export function ensureRoomsSchema(db: DatabaseSync, opts: { failBeforeCommit?: b
       db.exec(TYPE_DDL("terrain_type_cells"));
       db.exec(MEMBERS_DDL);
       db.exec(PEOPLE_DDL);
+      db.exec(LISTINGS_DDL);
       db.exec(ACTIVITY_DDL);
       if (!columns(db, "activity_log").includes("room_id")) db.exec(ADD_ACTIVITY_ROOM);
       db.prepare("INSERT INTO rooms (id, name) VALUES (?, ?)").run(PUBLIC_ROOM_ID, PUBLIC_ROOM_NAME);
@@ -182,6 +196,7 @@ export function ensureRoomsSchema(db: DatabaseSync, opts: { failBeforeCommit?: b
     if (!columns(db, "activity_log").includes("room_id")) db.exec(ADD_ACTIVITY_ROOM);
     db.exec(MEMBERS_DDL);
     db.exec(PEOPLE_DDL);
+    db.exec(LISTINGS_DDL);
 
     const pub = `WHERE room_id = '${PUBLIC_ROOM_ID}'`;
     const after = {
