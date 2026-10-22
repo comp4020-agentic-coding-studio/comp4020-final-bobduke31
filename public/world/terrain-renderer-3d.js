@@ -29,6 +29,11 @@ import {
   buildTypeWeights,
   paintedMaterialAt,
   computeCoastSDF,
+  footprintWeight,
+  footprintBounds,
+  setFoundationLevels,
+  levelFootprints,
+  SURFACE_STEP,
 } from "./terrain-fields.js";
 
 export { HEIGHT_SCALE };
@@ -443,6 +448,9 @@ const TREE_MODEL_PATHS = [
 ];
 
 const TREE_CHUNK = 16;
+// Cells kept clear of trees around a place's footprint (a crown is ~1 cell
+// in radius, so this keeps crowns off walls and roofs).
+const TREE_CLEARANCE = 0.9;
 const TREE_CHUNKS = GRID_SIZE / TREE_CHUNK;
 
 function hashCell(x, y, salt) {
@@ -459,8 +467,15 @@ function sampleCoast(sdf, x, y) {
 }
 
 function placeTreesInChunk(cx, cy, fields) {
-  const { elevationGrid, typeWeights, coastSDF, surface } = fields;
+  const { elevationGrid, typeWeights, coastSDF, surface, footprints = [] } = fields;
   const placements = [];
+  // Places standing in or near this chunk: no tree grows through a house.
+  const x0 = cx * TREE_CHUNK - 1;
+  const y0 = cy * TREE_CHUNK - 1;
+  const near = footprints.filter((f) => {
+    const b = footprintBounds(f, TREE_CLEARANCE);
+    return b.maxX >= x0 && b.minX <= x0 + TREE_CHUNK + 1 && b.maxY >= y0 && b.minY <= y0 + TREE_CHUNK + 1;
+  });
   for (let y = cy * TREE_CHUNK; y < (cy + 1) * TREE_CHUNK; y++) {
     for (let x = cx * TREE_CHUNK; x < (cx + 1) * TREE_CHUNK; x++) {
       for (let k = 0; k < 2; k++) {
@@ -472,6 +487,7 @@ function placeTreesInChunk(cx, cy, fields) {
         if (coast < 1.2) continue;
         const m = mountainMask(e);
         if (m > 0.55) continue;
+        if (near.some((f) => footprintWeight(f, px, py, TREE_CLEARANCE) >= 1)) continue;
         // The hash roll is fixed per candidate, so test it against the best
         // chance this spot could possibly get before paying for the (much
         // costlier) material-field sample - most candidates stop here.
@@ -595,33 +611,99 @@ function buildTreeLayer(scene, onLoaded) {
 
 // --- Places (map objects, stage B) ----------------------------------------
 // Cottages, castles and the rest, from the CC0 KayKit Medieval Hexagon Pack
-// (CREDITS.md) - the same family and lighting as the trees. Each object
-// sits on the displayed surface at its fractional cell position. Models
-// load on first use, so a map with no places costs nothing and draws
-// exactly as before.
+// (CREDITS.md) - the same family and lighting as the trees. Each place
+// stands on a levelled foundation (terrain-fields.js levelFootprints): the
+// ground under its footprint is flattened into the displayed surface, so it
+// never floats on a slope or sinks into a hillside, and trees grow around
+// it, not through it. Models load on first use, so a map with no places
+// costs nothing and draws exactly as before.
 export const OBJECT_MODELS = {
-  // Sizes in cells, chosen against the trees (a tree crown is ~2 cells): a
-  // cottage is clearly bigger than a tree, a castle dominates a village.
-  cottage: { file: "building_home_A_yellow", size: 3.0 },
-  house: { file: "building_home_B_red", size: 3.6 },
-  church: { file: "building_church_red", size: 4.2 },
-  windmill: { file: "building_windmill_red", size: 4.0 },
-  well: { file: "building_well_red", size: 1.8 },
-  farm: { file: "building_grain", size: 4.5 },
-  tower: { file: "building_tower_A_red", size: 4.0 },
-  castle: { file: "building_castle_red", size: 8.0 },
-  wall: { file: "wall_straight", size: 4.0 },
-  bridge: { file: "building_bridge_A", size: 4.5 },
-  ruins: { file: "building_destroyed", size: 3.6 },
+  // `size` is the model's widest footprint in cells, set against the trees
+  // (a crown is ~2 cells): a cottage a little over a tree, a castle the
+  // heart of a village rather than a district of its own. `foot` is the
+  // half-extent of the ground it stands on, [across, along] at rotation 0,
+  // measured from the model. `pad: false` places (a bridge) span water or a
+  // gap and don't level the ground. `flat` places (a field, a bridge) lie
+  // on the ground in Chart view rather than standing up as a symbol.
+  cottage: { file: "building_home_A_yellow", size: 2.6, foot: [1.21, 1.3] },
+  house: { file: "building_home_B_red", size: 3.0, foot: [1.2, 1.5] },
+  church: { file: "building_church_red", size: 3.6, foot: [1.58, 1.8] },
+  windmill: { file: "building_windmill_red", size: 3.4, foot: [1.7, 1.19] },
+  well: { file: "building_well_red", size: 1.5, foot: [0.64, 0.75] },
+  farm: { field: true, size: 5.0, foot: [2.5, 1.75], flat: true },
+  tower: { file: "building_tower_A_red", size: 3.0, foot: [1.24, 1.5] },
+  castle: { file: "building_castle_red", size: 6.0, foot: [2.63, 3.0] },
+  wall: { file: "wall_straight", size: 4.0, foot: [2.0, 0.6] },
+  // The bridge's piers reach 1 model unit below its deck (to stand in a
+  // hex river tile): sink them, so the deck sits at the ground it spans.
+  bridge: { file: "building_bridge_A", size: 4.5, foot: [1.57, 2.25], pad: false, sink: 0.9, flat: true },
+  ruins: { file: "building_destroyed", size: 3.0, foot: [1.5, 1.27] },
 };
 const OBJECT_DIR = "/world/assets/kaykit-medieval/";
 
-function buildObjectLayer(scene, onChange) {
+// The farm field. The pack's only field (building_grain) is a hexagonal
+// board-game tile, which read as a hex grid pasted on the map - the look
+// this project steers away from. No CC0 square field in a matching style
+// was found (Kenney's Nature Kit crops are single plants on dirt strips at
+// a different scale), so this is built from the pack's own palette: tilled
+// earth with rows of ripe wheat, in the same flat-shaded low-poly register,
+// sampled from hexagons_medieval.png (#e2b052 wheat; the earth, #9a6a3a,
+// is darkened from its #af692d).
+function buildFieldModel(size, foot) {
+  const group = new THREE.Group();
+  const w = foot[0] * 2;
+  const d = foot[1] * 2;
+  const flat = (color) => new THREE.MeshStandardMaterial({ color, roughness: 1, metalness: 0, flatShading: true });
+  const earth = new THREE.Mesh(new THREE.BoxGeometry(w, 0.12, d), flat("#9a6a3a"));
+  earth.position.y = 0.06;
+  group.add(earth);
+  const rows = Math.max(3, Math.round(d / 0.55));
+  const rowDepth = (d / rows) * 0.62;
+  const wheat = [flat("#e2b052"), flat("#d9a44a"), flat("#eabb58")];
+  for (let r = 0; r < rows; r++) {
+    // Slightly uneven ridges, so the field isn't a ruled pattern.
+    const h = 0.26 + 0.06 * Math.sin(r * 2.3 + 1.1);
+    const ridge = new THREE.Mesh(new THREE.BoxGeometry(w * 0.92, h, rowDepth), wheat[r % wheat.length]);
+    ridge.position.set(0, 0.12 + h / 2, -d / 2 + (r + 0.5) * (d / rows));
+    group.add(ridge);
+  }
+  group.traverse((o) => {
+    if (o.isMesh) {
+      o.castShadow = true;
+      o.receiveShadow = true;
+    }
+  });
+  return group;
+}
+
+// The ground a place stands on, in the shape levelFootprints() reads.
+function footprintOf(data) {
+  const model = OBJECT_MODELS[data.kind];
+  if (!model || model.pad === false) return null;
+  return {
+    x: data.x,
+    y: data.y,
+    hx: model.foot[0] * data.scale,
+    hz: model.foot[1] * data.scale,
+    // Three.js turns the node by -rotation about +y; in map (x, y) that is
+    // a turn by +rotation.
+    rot: data.rotation,
+    level: 0,
+  };
+}
+
+function buildObjectLayer(scene, onChange, onFootprints) {
   const loader = new GLTFLoader();
-  const templates = new Map(); // kind -> Promise<{ object, footprint }>
-  const live = new Map(); // id -> { data, node }
-  let surface = null;
+  const templates = new Map(); // kind -> Promise<{ object, radius }>
+  const live = new Map(); // id -> { data, node, footprint }
+  let surface = null; // the levelled surface the scene draws
   let selected = null;
+  // Chart view looks straight down, where a building is only its roof.
+  // Hand-drawn maps solve this with elevation symbols: each building is
+  // drawn standing up, seen from the front, on its ground position. Chart
+  // view does the same - every place leans back towards the viewer about
+  // its own base - while Relief shows true 3D.
+  let lean = 0;
   const selectRing = new THREE.Mesh(
     new THREE.RingGeometry(0.9, 1.05, 48),
     new THREE.MeshBasicMaterial({ color: 0xe0b55a, transparent: true, opacity: 0.9, depthTest: false }),
@@ -631,12 +713,29 @@ function buildObjectLayer(scene, onChange) {
   selectRing.visible = false;
   scene.add(selectRing);
 
+  function finish(object, model, resolve) {
+    // Normalise: the model's widest footprint becomes `size` cells; its
+    // base sits at y = 0, less `sink` (model units) for a model whose feet
+    // belong below the ground it's seated on.
+    const box = new THREE.Box3().setFromObject(object);
+    const width = Math.max(box.max.x - box.min.x, box.max.z - box.min.z) || 1;
+    const holder = new THREE.Group();
+    object.position.set(-(box.min.x + box.max.x) / 2, -box.min.y - (model.sink ?? 0), -(box.min.z + box.max.z) / 2);
+    holder.add(object);
+    holder.scale.setScalar(model.size / width);
+    resolve({ object: holder, radius: Math.hypot(model.foot[0], model.foot[1]) });
+  }
+
   function template(kind) {
     if (!templates.has(kind)) {
       templates.set(
         kind,
         new Promise((resolve) => {
           const model = OBJECT_MODELS[kind];
+          if (model.field) {
+            finish(buildFieldModel(model.size, model.foot), model, resolve);
+            return;
+          }
           loader.load(OBJECT_DIR + model.file + ".gltf", (gltf) => {
             gltf.scene.traverse((o) => {
               if (o.isMesh) {
@@ -646,16 +745,7 @@ function buildObjectLayer(scene, onChange) {
                 o.material.roughness = 1;
               }
             });
-            // Normalise: the model's widest footprint becomes 1 cell, then
-            // `size` cells; its base sits at y = 0.
-            const box = new THREE.Box3().setFromObject(gltf.scene);
-            const width = Math.max(box.max.x - box.min.x, box.max.z - box.min.z) || 1;
-            const k = model.size / width;
-            const holder = new THREE.Group();
-            gltf.scene.position.set(-(box.min.x + box.max.x) / 2, -box.min.y, -(box.min.z + box.max.z) / 2);
-            holder.add(gltf.scene);
-            holder.scale.setScalar(k);
-            resolve({ object: holder, radius: model.size / 2 });
+            finish(gltf.scene, model, resolve);
           }, undefined, () => resolve(null));
         }),
       );
@@ -665,27 +755,49 @@ function buildObjectLayer(scene, onChange) {
 
   function seat(entry) {
     const { data, node } = entry;
+    // On a levelled pad this is the pad's own height; a bridge reads the
+    // ground (or the water surface) at its centre.
     const h = surface ? sampleSurface(surface, data.x, data.y) * HEIGHT_SCALE : 0;
-    // Built ground never sits below the waterline (a bridge or a jetty
-    // still reads as standing on the water).
     node.position.set(data.x, Math.max(h, 0), data.y);
-    node.rotation.y = -data.rotation;
-    node.scale.setScalar(data.scale);
+    node.rotation.x = OBJECT_MODELS[data.kind].flat ? 0 : -lean;
+    entry.yaw.rotation.y = -data.rotation;
+    entry.yaw.scale.setScalar(data.scale);
     if (selected === data.id) placeRing(entry);
   }
 
   function placeRing(entry) {
-    const r = (entry.radius ?? 1.5) * entry.data.scale * 1.1;
+    const r = (entry.radius ?? 1.5) * entry.data.scale * 1.05;
     selectRing.scale.set(r, r, r);
     selectRing.position.set(entry.node.position.x, entry.node.position.y + 0.05, entry.node.position.z);
     selectRing.visible = true;
   }
 
+  // The footprint list changed: the scene re-levels the ground (old and
+  // new footprint areas), then calls setSurface, which re-seats everything.
+  function footprintsChanged(...regions) {
+    onFootprints(regions.filter(Boolean));
+  }
+
+  function setData(entry, data) {
+    const before = entry.footprint;
+    entry.data = { ...data };
+    entry.footprint = footprintOf(entry.data);
+    const same =
+      before && entry.footprint &&
+      before.x === entry.footprint.x && before.y === entry.footprint.y &&
+      before.hx === entry.footprint.hx && before.hz === entry.footprint.hz && before.rot === entry.footprint.rot;
+    if (same || (!before && !entry.footprint)) {
+      entry.footprint && (entry.footprint.level = before.level);
+      seat(entry);
+      return;
+    }
+    footprintsChanged(before && footprintBounds(before), entry.footprint && footprintBounds(entry.footprint));
+  }
+
   async function upsert(data) {
     let entry = live.get(data.id);
     if (entry && entry.kind === data.kind) {
-      entry.data = { ...data };
-      seat(entry);
+      setData(entry, data);
       onChange();
       return;
     }
@@ -693,13 +805,17 @@ function buildObjectLayer(scene, onChange) {
     const t = await template(data.kind);
     if (!t) return;
     if (live.has(data.id)) return; // a newer upsert raced ahead
-    const node = t.object.clone(true);
+    // wrapper: position and the Chart-view lean (world axes); yaw: the
+    // place's own turn and size.
+    const yaw = new THREE.Group();
+    yaw.add(t.object.clone(true));
     const wrapper = new THREE.Group();
-    wrapper.add(node);
+    wrapper.add(yaw);
     wrapper.userData.objectId = data.id;
     scene.add(wrapper);
-    entry = { data: { ...data }, node: wrapper, kind: data.kind, radius: t.radius };
+    entry = { data: null, node: wrapper, yaw, kind: data.kind, radius: t.radius, footprint: null };
     live.set(data.id, entry);
+    setData(entry, data);
     seat(entry);
     onChange();
   }
@@ -710,6 +826,7 @@ function buildObjectLayer(scene, onChange) {
     scene.remove(entry.node);
     live.delete(id);
     if (selected === id) select(null);
+    if (entry.footprint) footprintsChanged(footprintBounds(entry.footprint));
     onChange();
   }
 
@@ -726,8 +843,23 @@ function buildObjectLayer(scene, onChange) {
     onChange();
   }
 
-  // Re-seat on the new surface after terrain changes; a few hundred
-  // objects at most, so a full pass is cheap.
+  function setLean(radians) {
+    lean = radians;
+    for (const entry of live.values()) seat(entry);
+    onChange();
+  }
+
+  // Pad levels are measured on the *natural* (unlevelled) surface; places
+  // whose pads touch share one terrace (terrain-fields.js).
+  function footprints(raw) {
+    const list = [];
+    for (const entry of live.values()) if (entry.footprint) list.push(entry.footprint);
+    setFoundationLevels(raw, list);
+    return list;
+  }
+
+  // Re-seat on the new (levelled) surface; a few hundred objects at most,
+  // so a full pass is cheap.
   function setSurface(s) {
     surface = s;
     for (const entry of live.values()) seat(entry);
@@ -746,7 +878,7 @@ function buildObjectLayer(scene, onChange) {
     return null;
   }
 
-  return { upsert, remove, setAll, select, setSurface, pickObject, count: () => live.size };
+  return { upsert, remove, setAll, select, setSurface, setLean, footprints, pickObject, count: () => live.size };
 }
 
 // --- Picking --------------------------------------------------------------
@@ -814,6 +946,10 @@ function pickAgainstHeightfield(origin, direction, surface, exact = false) {
   return null;
 }
 
+// How far places lean back in Chart view (see buildObjectLayer): enough to
+// show a front and a roof, as a hand-drawn map symbol does.
+const CHART_LEAN = (52 * Math.PI) / 180;
+
 // Capped device-pixel-ratio rendering (ROADMAP.md task 4).
 export const MAX_DEVICE_PIXEL_RATIO = 2;
 
@@ -856,8 +992,13 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
   // the coast/surface updates below.
   const coastData = new Float32Array(COAST_SDF_RES * COAST_SDF_RES);
   const coastTexture = createCoastTexture();
-  const surfaceData = new Float32Array(SURFACE_RES * SURFACE_RES);
-  bakeSurface(elevationGrid, surfaceData);
+  // The natural surface baked from the grid, and the one actually drawn:
+  // the same, with each place's foundation levelled in. Everything that
+  // must agree with the drawn mesh (picking, trees, seats) reads
+  // surfaceData; pad heights are measured on rawSurface.
+  const rawSurface = new Float32Array(SURFACE_RES * SURFACE_RES);
+  bakeSurface(elevationGrid, rawSurface);
+  const surfaceData = Float32Array.from(rawSurface);
   const surfaceTexture = createSurfaceTexture();
   floatToHalf(surfaceData, surfaceTexture.image.data);
   let typeWeights = buildTypeWeights(elevationGrid, typeGrid);
@@ -926,13 +1067,46 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     onAsyncChange();
   });
 
-  const objects = buildObjectLayer(scene, () => {
-    invalidateShadows();
-    onAsyncChange();
-  });
+  const objects = buildObjectLayer(
+    scene,
+    () => {
+      invalidateShadows();
+      onAsyncChange();
+    },
+    (regions) => {
+      for (const r of regions) relevel(r);
+      objects.setSurface(surfaceData);
+      for (const r of regions) scheduleTrees(r);
+      invalidateShadows();
+      onAsyncChange();
+    },
+  );
+  let footprintList = [];
+
+  // Re-apply foundations over a cell region (or everything) and upload
+  // just the texels that changed.
+  function relevel(region) {
+    footprintList = objects.footprints(rawSurface);
+    const toTexel = (c) => c / SURFACE_STEP;
+    const range = region
+      ? {
+          i0: Math.max(0, Math.floor(toTexel(region.minX))),
+          i1: Math.min(SURFACE_RES - 1, Math.ceil(toTexel(region.maxX))),
+          j0: Math.max(0, Math.floor(toTexel(region.minY))),
+          j1: Math.min(SURFACE_RES - 1, Math.ceil(toTexel(region.maxY))),
+        }
+      : { i0: 0, i1: SURFACE_RES - 1, j0: 0, j1: SURFACE_RES - 1 };
+    levelFootprints(rawSurface, surfaceData, footprintList, range);
+    const halfData = surfaceTexture.image.data;
+    for (let j = range.j0; j <= range.j1; j++) {
+      const row = j * SURFACE_RES;
+      for (let i = range.i0; i <= range.i1; i++) halfData[row + i] = THREE.DataUtils.toHalfFloat(surfaceData[row + i]);
+    }
+    surfaceTexture.needsUpdate = true;
+  }
 
   function currentFields() {
-    return { elevationGrid: currentElevationGridRef, typeWeights, coastSDF: coastData, surface: surfaceData };
+    return { elevationGrid: currentElevationGridRef, typeWeights, coastSDF: coastData, surface: surfaceData, footprints: footprintList };
   }
 
   let currentElevationGridRef = elevationGrid;
@@ -1130,6 +1304,7 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
   function setMode(next) {
     mode = next === "top" ? "top" : "oblique";
     camView = views[mode];
+    objects.setLean(mode === "top" ? CHART_LEAN : 0);
     applyCameraState();
   }
 
@@ -1223,13 +1398,18 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     currentTypeGridRef = currentTypeGrid;
     if (elevationChanged) {
       fillHeightTexture(heightTexture, currentElevationGrid);
-      const baked = bakeSurface(currentElevationGrid, surfaceData, region);
-      const halfData = surfaceTexture.image.data;
-      for (let j = baked.j0; j <= baked.j1; j++) {
-        const row = j * SURFACE_RES;
-        for (let i = baked.i0; i <= baked.i1; i++) halfData[row + i] = THREE.DataUtils.toHalfFloat(surfaceData[row + i]);
-      }
-      surfaceTexture.needsUpdate = true;
+      const baked = bakeSurface(currentElevationGrid, rawSurface, region);
+      // A pad's level depends on the ground under its whole footprint, so
+      // re-level the baked range widened by the largest place's reach.
+      const reach = 8 / SURFACE_STEP;
+      relevel(
+        region && {
+          minX: (baked.i0 - reach) * SURFACE_STEP,
+          maxX: (baked.i1 + reach) * SURFACE_STEP,
+          minY: (baked.j0 - reach) * SURFACE_STEP,
+          maxY: (baked.j1 + reach) * SURFACE_STEP,
+        },
+      );
       invalidateShadows();
       objects.setSurface(surfaceData);
     }

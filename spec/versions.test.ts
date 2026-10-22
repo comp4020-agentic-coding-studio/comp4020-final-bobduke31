@@ -148,10 +148,17 @@ describe("withdrawing a link", () => {
 
 describe("places on the map", () => {
   const objects = async (token: string) => (await (await fetch(url(`/api/r/${token}/objects`))).json()) as { id: number; kind: string; x: number; y: number; rotation: number; scale: number }[];
+  // A blank map is all sea; raise an island for places to stand on.
+  async function island(cookie: string, token: string, x0: number, y0: number, size = 6) {
+    const cells = [];
+    for (let y = y0; y < y0 + size; y++) for (let x = x0; x < x0 + size; x++) cells.push({ x, y, elevation: 0.2 });
+    expect((await post(`/api/r/${token}/terrain/cells`, cookie, { cells })).status).toBe(204);
+  }
 
   it("places, moves, turns and removes a place, edit link only", async () => {
     const cookie = await newVisitor();
     const map = await createMap(cookie, "Village", { forge: { seed: "V", template: "blank", settings: {} } });
+    await island(cookie, map.editToken, 38, 58);
     const res = await post(`/api/r/${map.editToken}/objects`, cookie, { kind: "castle", x: 40.5, y: 60.25 });
     expect(res.status).toBe(201);
     const castle = await res.json();
@@ -173,6 +180,7 @@ describe("places on the map", () => {
   it("refuses unknown kinds, positions off the map and silly sizes", async () => {
     const cookie = await newVisitor();
     const map = await createMap(cookie, "Strict", { forge: { seed: "V", template: "blank", settings: {} } });
+    await island(cookie, map.editToken, 0, 0);
     for (const bad of [
       { kind: "dragon", x: 1, y: 1 },
       { kind: "house", x: -1, y: 1 },
@@ -184,9 +192,24 @@ describe("places on the map", () => {
     }
   });
 
+  it("keeps places on land, except a bridge, which may cross water", async () => {
+    const cookie = await newVisitor();
+    const map = await createMap(cookie, "Shore", { forge: { seed: "V", template: "blank", settings: {} } });
+    await island(cookie, map.editToken, 10, 10);
+    expect((await post(`/api/r/${map.editToken}/objects`, cookie, { kind: "house", x: 30, y: 30 })).status).toBe(400);
+    expect((await post(`/api/r/${map.editToken}/objects`, cookie, { kind: "bridge", x: 30, y: 30 })).status).toBe(201);
+    const house = await (await post(`/api/r/${map.editToken}/objects`, cookie, { kind: "house", x: 12, y: 12 })).json();
+    // Dragging it into the sea is refused too; it stays where it was.
+    expect((await post(`/api/r/${map.editToken}/objects/update`, cookie, { id: house.id, x: 40, y: 40 })).status).toBe(400);
+    expect((await objects(map.editToken)).find((o) => o.id === house.id)).toMatchObject({ x: 12, y: 12 });
+    // Turning it needs no position check.
+    expect((await post(`/api/r/${map.editToken}/objects/update`, cookie, { id: house.id, rotation: 1 })).status).toBe(200);
+  });
+
   it("keeps places with each version and in exported files", async () => {
     const cookie = await newVisitor();
     const map = await createMap(cookie, "Kept places", { forge: { seed: "V", template: "blank", settings: {} } });
+    await island(cookie, map.editToken, 8, 8, 14);
     await post(`/api/r/${map.editToken}/objects`, cookie, { kind: "house", x: 10, y: 10 });
     const { id } = await (await post(`/api/r/${map.editToken}/room/versions`, cookie, { name: "One house" })).json();
     await post(`/api/r/${map.editToken}/objects`, cookie, { kind: "tower", x: 20, y: 20 });

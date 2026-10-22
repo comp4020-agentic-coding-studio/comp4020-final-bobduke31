@@ -37,7 +37,7 @@ import {
   applySnapshot,
   type Snapshot,
 } from "./versions.ts";
-import { createObject, deleteObject, listObjects, parsePlacement, updateObject } from "./objects.ts";
+import { createObject, deleteObject, listObjects, parsePlacement, standsOnLand, updateObject } from "./objects.ts";
 import {
   PUBLIC_ACCESS,
   PUBLIC_ROOM_ID,
@@ -511,6 +511,10 @@ async function handleRoomApi(
         sendJson(res, 400, { error: "a place needs a known kind and a position on the map" });
         return true;
       }
+      if (!standsOnLand(roomId, placement)) {
+        sendJson(res, 400, { error: "that's water - places stand on land (a bridge can cross water)" });
+        return true;
+      }
       const result = createObject(roomId, sessionId, placement);
       if (!result.ok) {
         sendJson(res, result.status, { error: result.error });
@@ -540,6 +544,11 @@ async function handleRoomApi(
     const changes = parsePlacement(payload, true);
     if (!changes || changes.kind !== undefined) {
       sendJson(res, 400, { error: "a move needs a position on the map, a rotation or a scale" });
+      return true;
+    }
+    const kind = listObjects(roomId).find((o) => o.id === id)?.kind;
+    if (kind && changes.x !== undefined && !standsOnLand(roomId, { ...changes, kind })) {
+      sendJson(res, 400, { error: "that's water - places stand on land (a bridge can cross water)" });
       return true;
     }
     const result = updateObject(roomId, id, changes);

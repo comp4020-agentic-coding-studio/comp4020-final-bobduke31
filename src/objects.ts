@@ -7,6 +7,7 @@
 // change any object, and the last write wins (ADR.md). Position is in cell
 // units, fractional, so an object isn't snapped to the grid.
 import { db, GRID_SIZE } from "./db.ts";
+import { isLand } from "./terrain.ts";
 
 export const OBJECT_KINDS = [
   "cottage",
@@ -97,6 +98,15 @@ export function parsePlacement(value: unknown, partial = false): Partial<Omit<Ma
     out.scale = v.scale;
   }
   return out;
+}
+
+// A place stands on land: its nearest cell must be above the sea. A bridge
+// is the exception - spanning water is its job. (The renderer levels a
+// foundation under each place, so on land nothing ever floats; on water
+// there is nothing to level.)
+export function standsOnLand(roomId: string, p: { kind?: string; x?: number; y?: number }): boolean {
+  if (p.kind === "bridge" || p.x === undefined || p.y === undefined) return true;
+  return isLand(roomId, Math.round(p.x), Math.round(p.y));
 }
 
 export type ObjResult = { ok: true; object: MapObject } | { ok: false; status: number; error: string };

@@ -256,6 +256,114 @@ export function sampleSurface(surface, x, y) {
   return a + (b - a) * tx + (c - a) * ty + (a - b - c + d) * tx * ty;
 }
 
+// --- Building foundations ----------------------------------------------
+// A building can't stand on a slope: anywhere it sits, the displayed
+// surface is levelled to a flat pad under its footprint and eased back into
+// the natural ground over FOUNDATION_MARGIN cells, the way a cut-and-fill
+// terrace looks. Applied to the baked surface itself, so the mesh, picking,
+// tree placement and the building's own seat all read one height - fixing
+// "floating on the downhill side, buried on the uphill side" at the data
+// layer rather than by hiding it. Footprints are rotated rectangles in cell
+// units: { x, y, hx, hz, rot, level }.
+export const FOUNDATION_MARGIN = 1.6;
+
+// 1 inside the footprint, easing to 0 at FOUNDATION_MARGIN outside it;
+// `grow` widens the footprint (tree clearance uses it).
+export function footprintWeight(f, x, y, grow = 0) {
+  const dx = x - f.x;
+  const dy = y - f.y;
+  const c = Math.cos(f.rot);
+  const s = Math.sin(f.rot);
+  const ex = Math.max(0, Math.abs(dx * c + dy * s) - f.hx - grow);
+  const ez = Math.max(0, Math.abs(-dx * s + dy * c) - f.hz - grow);
+  const d = Math.hypot(ex, ez);
+  return 1 - smoothstep(0, FOUNDATION_MARGIN, d);
+}
+
+// Axis-aligned cell bounds a footprint (and its easing) can touch.
+export function footprintBounds(f, pad = FOUNDATION_MARGIN) {
+  const r = Math.hypot(f.hx, f.hz) + pad;
+  return { minX: f.x - r, minY: f.y - r, maxX: f.x + r, maxY: f.y + r };
+}
+
+// The pad's height: the mean of the natural surface under the footprint,
+// never below the sea (a quay or a bridgehead still sits at the waterline).
+export function foundationLevel(raw, f) {
+  let sum = 0;
+  let n = 0;
+  const c = Math.cos(f.rot);
+  const s = Math.sin(f.rot);
+  for (let a = -2; a <= 2; a++) {
+    for (let b = -2; b <= 2; b++) {
+      const lx = (a / 2) * f.hx;
+      const lz = (b / 2) * f.hz;
+      sum += sampleSurface(raw, f.x + lx * c - lz * s, f.y + lx * s + lz * c);
+      n++;
+    }
+  }
+  return Math.max(SEA_LEVEL, sum / n);
+}
+
+// Sets every footprint's `level`. Places whose pads touch share one level,
+// a single terrace, or the later pad would cut into its neighbour where
+// their easings overlap (a windmill beside its field, a wall against a
+// castle). Area-weighted: a castle sets the terrace more than its well.
+export function setFoundationLevels(raw, list) {
+  for (const f of list) f.level = foundationLevel(raw, f);
+  const parent = list.map((_, i) => i);
+  const root = (i) => (parent[i] === i ? i : (parent[i] = root(parent[i])));
+  const touches = (a, b) => {
+    const c = Math.cos(b.rot);
+    const s = Math.sin(b.rot);
+    for (const [u, v] of [[0, 0], [1, 1], [1, -1], [-1, 1], [-1, -1], [1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const lx = u * b.hx;
+      const lz = v * b.hz;
+      if (footprintWeight(a, b.x + lx * c - lz * s, b.y + lx * s + lz * c) > 0) return true;
+    }
+    return false;
+  };
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      if (Math.hypot(list[i].x - list[j].x, list[i].y - list[j].y) > 14) continue;
+      if (touches(list[i], list[j]) || touches(list[j], list[i])) parent[root(i)] = root(j);
+    }
+  }
+  const sums = new Map();
+  list.forEach((f, i) => {
+    const acc = sums.get(root(i)) ?? { level: 0, area: 0 };
+    acc.level += f.level * f.hx * f.hz;
+    acc.area += f.hx * f.hz;
+    sums.set(root(i), acc);
+  });
+  list.forEach((f, i) => {
+    const acc = sums.get(root(i));
+    f.level = acc.level / acc.area;
+  });
+}
+
+// out = raw with every footprint's pad blended in, over the texel range
+// given (inclusive), so an edit only redoes what it touched.
+export function levelFootprints(raw, out, footprints, { i0, i1, j0, j1 }) {
+  for (let j = j0; j <= j1; j++) {
+    for (let i = i0; i <= i1; i++) out[j * SURFACE_RES + i] = raw[j * SURFACE_RES + i];
+  }
+  for (const f of footprints) {
+    const b = footprintBounds(f);
+    const fi0 = Math.max(i0, Math.floor(b.minX / SURFACE_STEP));
+    const fi1 = Math.min(i1, Math.ceil(b.maxX / SURFACE_STEP));
+    const fj0 = Math.max(j0, Math.floor(b.minY / SURFACE_STEP));
+    const fj1 = Math.min(j1, Math.ceil(b.maxY / SURFACE_STEP));
+    for (let j = fj0; j <= fj1; j++) {
+      for (let i = fi0; i <= fi1; i++) {
+        const w = footprintWeight(f, i * SURFACE_STEP, j * SURFACE_STEP);
+        if (w <= 0) continue;
+        const k = j * SURFACE_RES + i;
+        out[k] += (f.level - out[k]) * w;
+      }
+    }
+  }
+}
+
 // --- Material boundaries -------------------------------------------------
 // Painted terrain type is a per-cell category. To draw it as organic
 // regions rather than cell-shaped blocks: (1) each type becomes its own

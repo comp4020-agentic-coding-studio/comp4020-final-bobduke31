@@ -104,7 +104,7 @@ Sebastian Lague's hydraulic erosion (MIT) as too slow to run per preview at
 
 ### Places: buildings and map objects (Atlas Table stage B)
 
-- **Asset**: `public/world/assets/kaykit-medieval/` (11 models as glTF +
+- **Asset**: `public/world/assets/kaykit-medieval/` (10 models as glTF +
   .bin, one shared 15 KB colour atlas `hexagons_medieval.png`, and the
   pack's own `LICENSE.txt`)
 - **Pack**: [KayKit Medieval Hexagon Pack 1.0](https://github.com/KayKit-Game-Assets/KayKit-Medieval-Hexagon-Pack-1.0)
@@ -127,9 +127,17 @@ Sebastian Lague's hydraulic erosion (MIT) as too slow to run per preview at
     painted-path tool instead. That is not built yet.
   - Kenney's Castle Kit and Fantasy Town Kit (CC0) were the runners-up. They
     were not used because KayKit already matched the trees in the scene.
-- **Known limit**: in the overhead Chart view, 3D buildings show mostly as
-  roofs. Relief shows them best. Painted top-down symbols, as Inkarnate
-  uses, would be the fix if Chart needs to show places better.
+  - The pack's grain field (`building_grain`), used for farms at first. It
+    is a hexagonal board-game tile, so it read as a hex grid pasted on the
+    map. It was removed from the repo once nothing used it.
+- **Farm fields are not sourced art.** No CC0 square field in a matching
+  style was found. Kenney's Nature Kit crops (CC0) were downloaded and
+  rendered, but they are single plants on dirt strips at a different scale.
+  The field is built in code (`buildFieldModel`) from colours sampled from
+  the pack's own atlas: tilled earth with rows of wheat.
+- **Chart view.** Buildings tilt back towards the overhead camera, so they
+  read as upright map symbols, not just roofs. Flat things (fields,
+  bridges) don't tilt.
 
 ### The Atlas home and gallery (Atlas Table stage A)
 

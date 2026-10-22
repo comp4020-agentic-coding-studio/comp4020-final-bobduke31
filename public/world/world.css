@@ -1548,6 +1548,19 @@ body.read-only .edit-only {
   .options-section .btn-grid { display: contents; }
   .btn-grid button { min-height: var(--tap); flex: 1 0 auto; padding: 0 0.95rem; border-radius: 22px; white-space: nowrap; }
   .options-footer { margin-top: 0.6rem; padding-top: 0.5rem; flex-direction: row; gap: 1rem; }
+
+  /* Places: the palette is the one sideways-scrolling row; the selected
+     place's controls get their own compact row under it, and the credit a
+     single line, so nothing in the section stretches the chips. */
+  .options-section[data-panel="places"]:not(.hidden) { display: grid; gap: 0.45rem; overflow: visible; }
+  .place-grid { display: flex !important; gap: 0.4rem; overflow-x: auto; scrollbar-width: none; padding: 2px; margin: 0 -2px; }
+  .place-grid button { flex: none; }
+  .place-selected { margin-top: 0; padding-top: 0.45rem; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 0.4rem 0.6rem; }
+  .place-selected h3 { display: block; font-size: 0.8rem; white-space: nowrap; }
+  .place-selected .btn-grid { display: flex; gap: 0.35rem; overflow-x: auto; scrollbar-width: none; }
+  .place-selected .btn-grid button { flex: none; padding: 0 0.75rem; }
+  .place-selected #place-remove { grid-column: 1 / -1; min-height: var(--tap); }
+  .places-credit { margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .slider-label { flex: 1; }
   input[type="range"] { height: var(--tap); }
 
