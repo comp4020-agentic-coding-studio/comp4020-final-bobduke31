@@ -953,6 +953,37 @@ body.read-only #stage-3d {
   min-height: 40px;
 }
 
+/* Sharing (stage B) */
+.share-preview {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 10;
+  max-height: 9.5rem;
+  margin: 0 0 0.8rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--rule);
+  background: var(--shelf-2);
+  object-fit: cover;
+}
+
+.text-button {
+  grid-column: 1 / -1;
+  justify-self: start;
+  padding: 0.2rem 0;
+  border: 0;
+  background: none;
+  color: var(--ink-faint);
+  font: inherit;
+  font-size: 0.8rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.text-button:hover {
+  color: var(--danger);
+}
+
 /* Versions (stage B) */
 .version-list {
   list-style: none;

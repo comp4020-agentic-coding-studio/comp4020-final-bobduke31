@@ -180,17 +180,21 @@
         <h2 id="share-title">Share <span id="share-map-name" class="place-name"></span></h2>
         <button class="icon-button" value="close" aria-label="Close">&times;</button>
       </form>
+      <img id="share-preview" class="share-preview" alt="" width="480" height="300" />
       <p class="sheet-sub">Links are the key: anyone holding one gets that access. There are no accounts.</p>
       <div class="link-row">
         <div class="link-text"><b>Invite to edit</b><span>They paint alongside you, live.</span></div>
         <button type="button" class="primary-button" data-copy="share-edit">Copy link</button>
         <input id="share-edit" class="link-field" type="text" readonly aria-label="Edit link" />
+        <button type="button" class="text-button" data-withdraw="edit">Withdraw this link and make a new one</button>
       </div>
       <div class="link-row">
         <div class="link-text"><b>Invite to watch</b><span>They see every change, but can't edit.</span></div>
         <button type="button" class="ghost-button" data-copy="share-view">Copy link</button>
         <input id="share-view" class="link-field" type="text" readonly aria-label="View-only link" />
+        <button type="button" class="text-button" data-withdraw="view">Withdraw this link and make a new one</button>
       </div>
+      <p id="share-error" class="form-error hidden" role="alert"></p>
       <div class="link-row gallery-row">
         <label class="link-text" for="share-gallery"><b>Show in the gallery</b><span id="share-gallery-help">Anyone can find it on the Atlas home and watch. Only edit links can change it.</span></label>
         <input id="share-gallery" type="checkbox" class="switch" role="switch" />

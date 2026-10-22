@@ -151,3 +151,17 @@ export function roomsForSession(sessionId: string): MyRoom[] {
     cells: r.cells,
   }));
 }
+
+// Withdrawing a link (stage B): issue a fresh token for one role. The old
+// token stops resolving immediately, so whoever held it is cut off; the
+// other role's link keeps working. The caller must hold the edit link, and
+// reissuing the edit link hands its new value back only to that caller.
+// Like renaming, this updates the one column in place.
+const reissueEditStmt = db.prepare("UPDATE rooms SET edit_token = ? WHERE id = ?");
+const reissueViewStmt = db.prepare("UPDATE rooms SET view_token = ? WHERE id = ?");
+
+export function reissueToken(access: RoomAccess, role: Role): { editToken: string; viewToken: string } | null {
+  if (access.role !== "edit" || access.isPublic) return null;
+  (role === "edit" ? reissueEditStmt : reissueViewStmt).run(newToken(), access.roomId);
+  return shareTokensFor(access);
+}

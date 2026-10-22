@@ -152,6 +152,64 @@ export function wireRoomEvents(source) {
   });
   source.addEventListener("presence", (event) => renderPresence(JSON.parse(event.data)));
   source.addEventListener("room:update", (event) => setName(JSON.parse(event.data).name));
+  // The link this page was opened with has been withdrawn (stage B). Stop
+  // the stream's automatic reconnect and say so plainly, rather than
+  // letting it retry into a 404 in the background.
+  source.addEventListener("link:withdrawn", () => {
+    if (reissuing) return; // our own reissue: the page is moving to the new link
+    source.close();
+    renderPresence([]); // they're no longer "here" with anyone
+    els.error.querySelector("h2").textContent = "This link was withdrawn";
+    els.error.querySelector("p").textContent =
+      "Whoever shares this map made a new link, so this one no longer opens it. Ask them for the new link.";
+    els.error.classList.remove("hidden");
+    document.body.classList.add("read-only");
+  });
+}
+
+// Set while this tab reissues a link, so its own stream closing isn't
+// mistaken for someone else withdrawing it.
+let reissuing = false;
+
+async function withdrawLink(role, button) {
+  const error = $("share-error");
+  error.classList.add("hidden");
+  const label = role === "edit" ? "edit" : "view";
+  const sure = button.dataset.armed === "1";
+  if (!sure) {
+    // Two clicks, not a dialog over a dialog: the first says what happens.
+    button.dataset.armed = "1";
+    button.textContent = `Click again: everyone using the current ${label} link loses access now`;
+    setTimeout(() => {
+      button.dataset.armed = "";
+      button.textContent = "Withdraw this link and make a new one";
+    }, 6000);
+    return;
+  }
+  reissuing = true;
+  try {
+    const res = await fetch(apiPath("/api/room/links/reissue"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ role }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error ?? "Couldn't make a new link.");
+    if (role === "edit") {
+      // This page's own address was the old edit link: move to the new one.
+      location.replace(`/m/${body.editToken}#share`);
+      return;
+    }
+    $("share-view").value = linkFor(body.viewToken);
+    button.dataset.armed = "";
+    button.textContent = "Withdraw this link and make a new one";
+    toast("New view link made. The old one no longer works.");
+  } catch (err) {
+    error.textContent = err instanceof Error ? err.message : String(err);
+    error.classList.remove("hidden");
+  } finally {
+    if (role !== "edit") reissuing = false;
+  }
 }
 
 async function copyField(id, button) {
@@ -395,7 +453,14 @@ export function wireRoomUi() {
     }
   });
 
-  els.share.addEventListener("click", () => els.shareDialog.showModal());
+  els.share.addEventListener("click", () => {
+    // The map as it is now, so the person sharing sees what they send.
+    $("share-preview").src = `${apiPath("/api/room/thumbnail.png")}?t=${Date.now()}`;
+    els.shareDialog.showModal();
+  });
+  for (const button of document.querySelectorAll("[data-withdraw]")) {
+    button.addEventListener("click", () => withdrawLink(button.dataset.withdraw, button));
+  }
   wireGalleryToggle();
   for (const button of document.querySelectorAll("[data-copy]")) {
     button.addEventListener("click", () => copyField(button.dataset.copy, button));
@@ -478,6 +543,7 @@ function wireGalleryToggle() {
 export function openShareIfRequested() {
   if (location.hash === "#share" && !els.share.classList.contains("hidden")) {
     history.replaceState(null, "", location.pathname);
+    $("share-preview").src = apiPath("/api/room/thumbnail.png");
     els.shareDialog.showModal();
     // #share only arrives from creating a map: once the sheet is closed,
     // say what to do first (stage A's first-time hint).

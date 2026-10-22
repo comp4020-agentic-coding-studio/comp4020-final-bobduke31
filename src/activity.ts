@@ -35,6 +35,7 @@ export const ACTIONS = [
   "room:version-delete",
   "room:copy",
   "room:import",
+  "room:link-reissue",
   "person:rename",
 ] as const;
 export type ActivityAction = (typeof ACTIONS)[number];

@@ -111,3 +111,37 @@ describe("export, import and copy", () => {
     expect((await post("/api/rooms", copier, { name: "Nothing", copyFrom: "A".repeat(22) })).status).toBe(404);
   });
 });
+
+describe("withdrawing a link", () => {
+  it("makes a new view link and the old one stops working at once", async () => {
+    const cookie = await newVisitor();
+    const map = await createMap(cookie, "Withdraw view", { forge: { seed: "W", template: "blank", settings: {} } });
+    const res = await post(`/api/r/${map.editToken}/room/links/reissue`, cookie, { role: "view" });
+    expect(res.status).toBe(200);
+    const fresh = (await res.json()) as { editToken: string; viewToken: string };
+    expect(fresh.viewToken).not.toBe(map.viewToken);
+    expect(fresh.editToken).toBe(map.editToken);
+    expect((await fetch(url(`/api/r/${map.viewToken}/room`))).status).toBe(404);
+    expect((await fetch(url(`/api/r/${fresh.viewToken}/room`))).status).toBe(200);
+  });
+
+  it("makes a new edit link that only its issuer receives", async () => {
+    const cookie = await newVisitor();
+    const map = await createMap(cookie, "Withdraw edit", { forge: { seed: "W", template: "blank", settings: {} } });
+    const fresh = (await (await post(`/api/r/${map.editToken}/room/links/reissue`, cookie, { role: "edit" })).json()) as { editToken: string };
+    expect((await post(`/api/r/${map.editToken}/terrain/cells`, cookie, { cells: [{ x: 1, y: 1, elevation: 0.5 }] })).status).toBe(404);
+    expect((await post(`/api/r/${fresh.editToken}/terrain/cells`, cookie, { cells: [{ x: 1, y: 1, elevation: 0.5 }] })).status).toBe(204);
+    // The view link is untouched and still never reveals the edit link.
+    const asViewer = await (await fetch(url(`/api/r/${map.viewToken}/room`))).json();
+    expect(asViewer.role).toBe("view");
+    expect(JSON.stringify(asViewer)).not.toContain(fresh.editToken);
+  });
+
+  it("refuses a view link and the shared world", async () => {
+    const cookie = await newVisitor();
+    const map = await createMap(cookie, "No withdraw", { forge: { seed: "W", template: "blank", settings: {} } });
+    expect((await post(`/api/r/${map.viewToken}/room/links/reissue`, cookie, { role: "view" })).status).toBe(403);
+    expect((await post("/api/room/links/reissue", cookie, { role: "view" })).status).toBe(404);
+    expect((await post(`/api/r/${map.editToken}/room/links/reissue`, cookie, { role: "owner" })).status).toBe(400);
+  });
+});

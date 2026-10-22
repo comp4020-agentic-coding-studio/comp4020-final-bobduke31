@@ -17,7 +17,7 @@ import {
   replaceTerrain,
 } from "./terrain.ts";
 import type { TerrainCell, TerrainTypeCell } from "./terrain.ts";
-import { subscribe, broadcast } from "./realtime.ts";
+import { subscribe, broadcast, closeTagged } from "./realtime.ts";
 import { log as logActivity, recentActivity, roomsWithActivityBy } from "./activity.ts";
 import type { ActivityAction } from "./activity.ts";
 import { captureStroke, undoLastStroke } from "./undo.ts";
@@ -44,6 +44,7 @@ import {
   createRoom,
   rememberRoom,
   renameRoom,
+  reissueToken,
   resolveToken,
   roomsForSession,
   shareTokensFor,
@@ -171,6 +172,7 @@ const DENIED_ACTION = {
   "/api/room/versions": "room:version-save",
   "/api/room/versions/restore": "room:version-restore",
   "/api/room/versions/delete": "room:version-delete",
+  "/api/room/links/reissue": "room:link-reissue",
 } as const satisfies Record<string, ActivityAction>;
 const WRITE_PATHS = new Set(Object.keys(DENIED_ACTION));
 
@@ -370,6 +372,34 @@ async function handleRoomApi(
     return true;
   }
 
+  // Withdraw a link (stage B): a fresh token for one role; streams on the
+  // old one are closed and their holders lose access at once.
+  if (path === "/api/room/links/reissue" && req.method === "POST") {
+    const payload = await readJsonOr400(req, res);
+    if (!payload) return true;
+    if (payload.role !== "edit" && payload.role !== "view") {
+      sendJson(res, 400, { error: "role must be edit or view" });
+      return true;
+    }
+    if (access.isPublic) {
+      sendJson(res, 400, { error: "the shared world has no links to withdraw" });
+      return true;
+    }
+    if (rateLimited(sessionId)) {
+      sendJson(res, 429, { error: "too many changes just now - try again in a minute" });
+      return true;
+    }
+    const tokens = reissueToken(access, payload.role);
+    if (!tokens) {
+      sendJson(res, 403, { error: "only the edit link can withdraw links" });
+      return true;
+    }
+    logActivity(roomId, sessionId, "room:link-reissue", `new ${payload.role} link; the old one no longer works`);
+    closeTagged(roomId, payload.role, "link:withdrawn", { role: payload.role });
+    sendJson(res, 200, tokens);
+    return true;
+  }
+
   if (path === "/api/room/versions" && req.method === "GET") {
     sendJson(res, 200, access.isPublic ? [] : listVersions(roomId));
     return true;
@@ -528,7 +558,7 @@ async function handleRoomApi(
 
   if (path === "/api/events" && req.method === "GET") {
     let leave: (() => void) | undefined;
-    const ok = subscribe(roomId, res, () => leave?.());
+    const ok = subscribe(roomId, res, () => leave?.(), access.role);
     if (!ok) {
       sendJson(res, 503, { error: "too many open connections - try again shortly" });
       return true;

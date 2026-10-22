@@ -25,7 +25,11 @@ function ensurePing(): void {
   pingTimer.unref();
 }
 
-export function subscribe(topic: string, res: ServerResponse, onClose?: () => void): boolean {
+// Which link each stream came in on, so withdrawing a link can cut off
+// exactly the streams opened with it (stage B).
+const tags = new WeakMap<ServerResponse, string>();
+
+export function subscribe(topic: string, res: ServerResponse, onClose?: () => void, tag?: string): boolean {
   if (subscriberCount >= MAX_SUBSCRIBERS) return false;
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -36,6 +40,7 @@ export function subscribe(topic: string, res: ServerResponse, onClose?: () => vo
   let set = topics.get(topic);
   if (!set) topics.set(topic, (set = new Set()));
   set.add(res);
+  if (tag) tags.set(res, tag);
   subscriberCount++;
   ensurePing();
   res.on("close", () => {
@@ -56,4 +61,18 @@ export function broadcast(topic: string, type: string, data: unknown): void {
   if (!set) return;
   const frame = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const res of set) res.write(frame);
+}
+
+// Ends every stream on `topic` that was opened with `tag`, after telling it
+// why. EventSource reconnects on its own; with a withdrawn token that
+// reconnect gets a 404, which the editor shows as "no map at this link".
+export function closeTagged(topic: string, tag: string, type: string, data: unknown): void {
+  const set = topics.get(topic);
+  if (!set) return;
+  const frame = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const res of [...set]) {
+    if (tags.get(res) !== tag) continue;
+    res.write(frame);
+    res.end();
+  }
 }
