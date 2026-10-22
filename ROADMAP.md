@@ -2457,8 +2457,8 @@ both viewports, nothing merged or deployed without the user's approval.
 
 #### Stage B progress (22 Oct, branch `atlas-keep`, not merged or deployed)
 
-Built in f96a53a (versions and export), 17b8262 (withdrawing links) and
-5492e02 (places).
+Built in 2f838aa (versions and export), 626d80a (withdrawing links) and
+ab8593a (places). Fixes after the first review are in 12b13f3.
 
 - **Versions.**
   - Named saves, plus an automatic checkpoint before every restore. A
@@ -2495,10 +2495,33 @@ Built in f96a53a (versions and export), 17b8262 (withdrawing links) and
 - **Not done, and known limits.**
   - Roads: the pack's road pieces are hex tiles, so roads need a
     painted-path tool.
-  - Trees still grow through places.
-  - In Chart view, places show mostly as roofs.
   - The "Gate" arrival card was not built.
   - No real-phone run yet.
+- **Fixes after review (12b13f3).**
+  - Places sit on the land. Each building levels its own pad into the
+    displayed surface, and pads that touch share one level. Measured gap
+    between a building's base and the ground, in world units (a cottage is
+    about 2.8 tall):
+
+    | Map | Worst before | Worst after |
+    |---|---|---|
+    | Demo village | 0.66 | 0.03 |
+    | Hillside | 1.99 | 0.18 (a tower) |
+    | Open steep slope | 0.52 | 0.02 |
+    | Forested steep slope | 0.52 | 0.02 |
+
+  - Trees no longer grow inside buildings.
+  - Farms are square, rowed fields, not the pack's hex tile. Buildings
+    are smaller, to scale with each other.
+  - In Chart view, buildings tilt back as map symbols. Fields and bridges
+    stay flat.
+  - The server refuses places on water, except bridges.
+  - On a phone, the Places panel is one sideways-scrolling row.
+  - Checks: 87/87 tests on a fresh database, typecheck clean.
+  - Browser runs: placing, refusing water, terrain painting, and
+    save/restore through the History panel all worked. A second browser
+    saw a raised hill re-level a house pad live.
+  - Known limit: a building right on a cliff edge sits half on its cut.
 
 ### Writing track (runs alongside the phases, not only at the end)
 
