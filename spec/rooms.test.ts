@@ -215,7 +215,7 @@ describe("isolation between maps", () => {
     // Nothing painted in B yet, so undo there has nothing to do...
     expect((await post(`/api/r/${b.editToken}/terrain/undo`, painter)).status).toBe(409);
     // ...and A's stroke is still there to undo.
-    expect((await post(`/api/r/${a.editToken}/terrain/undo`, painter)).status).toBe(204);
+    expect((await post(`/api/r/${a.editToken}/terrain/undo`, painter)).status).toBe(200);
     expect(await getJson(`/api/r/${a.editToken}/terrain`)).toEqual([{ x: 5, y: 5, elevation: 0 }]);
   });
 });

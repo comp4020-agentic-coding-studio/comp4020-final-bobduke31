@@ -64,7 +64,7 @@ it("lets a visitor undo their own last terrain stroke", async () => {
   const cookie = sessionCookie(paint);
 
   const undo = await undoAs(cookie);
-  expect(undo.status).toBe(204);
+  expect(undo.status).toBe(200);
 
   const after = await fetch(new URL("/api/terrain", baseUrl));
   const afterCells = (await after.json()) as { x: number; y: number; elevation: number }[];
@@ -94,7 +94,7 @@ it("never lets one session's undo touch a different session's stroke (the C10 se
   // Session A can still undo its own stroke afterwards - B's failed attempt
   // didn't consume or corrupt A's snapshot.
   const undoA = await undoAs(cookieA);
-  expect(undoA.status).toBe(204);
+  expect(undoA.status).toBe(200);
 });
 
 it("publishes the live activity log page", async () => {

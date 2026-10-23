@@ -27,6 +27,7 @@ import { strengthFromSlider, sliderFromStrength, formatStrength, brushFalloff, s
 import { apiPath, room, loadRoom, loadMe, wireRoomUi, wireRoomEvents, openShareIfRequested, toast } from "./room-ui.js";
 import { wireHistory, wireHistoryEvents, showHistoryEntry } from "./history-ui.js";
 import { createPlaces } from "./places-ui.js";
+import { startEditorTour } from "/atlas/guide.js";
 
 const canvasArea = document.getElementById("canvas-area");
 
@@ -157,6 +158,12 @@ let strokeTool = null;
 
 const pendingElevation = new Map();
 const pendingTypes = new Map();
+// Names the current gesture (pointer down to up). Every batch it sends
+// carries it, so the server undoes the whole gesture as one step however
+// long the pauses inside it (src/undo.ts). Batches are keyed by it too, so
+// one flush never mixes two strokes.
+let strokeId = null;
+let pendingStroke = null;
 let flushHandle = null;
 let painting = false;
 let lastStampPos = null;
@@ -241,12 +248,30 @@ function redrawAll() {
   else renderTerrain(ctx, elevationGrid, typeGrid, PIXEL_SCALE);
 }
 
+// Batches sealed when a new gesture started while the previous one still
+// had cells queued; sent in order before the current queue.
+const sealedBatches = [];
+
+// A new gesture's first cell seals whatever the previous gesture left
+// queued, so each request belongs to exactly one stroke.
+function claimStroke() {
+  if (pendingStroke !== strokeId && (pendingElevation.size > 0 || pendingTypes.size > 0)) {
+    sealedBatches.push({ stroke: pendingStroke, elevation: [...pendingElevation.values()], types: [...pendingTypes.values()] });
+    pendingElevation.clear();
+    pendingTypes.clear();
+    scheduleFlush();
+  }
+  pendingStroke = strokeId;
+}
+
 function queueElevation(x, y, elevation) {
+  claimStroke();
   dirtyElevation = true;
   pendingElevation.set(`${x},${y}`, { x, y, elevation });
 }
 
 function queueType(x, y, terrain) {
+  claimStroke();
   dirtyType = true;
   pendingTypes.set(`${x},${y}`, { x, y, terrain });
 }
@@ -263,11 +288,11 @@ function scheduleFlush() {
 
 // A 403 means this link lost edit rights (or never had them); stop
 // pretending the stroke landed and re-sync from the server.
-async function postBatch(path, cells) {
+async function postBatch(path, cells, stroke) {
   const res = await fetch(apiPath(path), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ cells }),
+    body: JSON.stringify({ cells, strokeId: stroke ?? undefined }),
   });
   if (res.status === 403) {
     toast("This is a view-only link - changes aren't saved.");
@@ -284,29 +309,31 @@ async function flush() {
   // send-order, which would silently undo the newer edit. `flush()` is
   // called again once the in-flight one finishes if anything is still
   // pending (see below), so nothing queued here is lost.
-  if (flushing) return;
-  if (pendingElevation.size === 0 && pendingTypes.size === 0) return;
-  flushing = true;
-  const elevationCells = [...pendingElevation.values()];
-  const typeCells = [...pendingTypes.values()];
-  pendingElevation.clear();
-  pendingTypes.clear();
-  try {
-    if (elevationCells.length > 0) {
-      await postBatch("/api/terrain/cells", elevationCells);
-    }
-    if (typeCells.length > 0) {
-      await postBatch("/api/terrain/types", typeCells);
-    }
-  } catch {
-    // Best-effort for this pass: a dropped batch is visible again next
-    // time someone repaints the same spot - see ADR.md.
+  if (flushing) return flushing;
+  if (sealedBatches.length === 0 && pendingElevation.size === 0 && pendingTypes.size === 0) return;
+  const batches = sealedBatches.splice(0);
+  if (pendingElevation.size > 0 || pendingTypes.size > 0) {
+    batches.push({ stroke: pendingStroke, elevation: [...pendingElevation.values()], types: [...pendingTypes.values()] });
+    pendingElevation.clear();
+    pendingTypes.clear();
   }
+  flushing = (async () => {
+    for (const { stroke, elevation, types } of batches) {
+      try {
+        if (elevation.length > 0) await postBatch("/api/terrain/cells", elevation, stroke);
+        if (types.length > 0) await postBatch("/api/terrain/types", types, stroke);
+      } catch {
+        // Best-effort for this pass: a dropped batch is visible again next
+        // time someone repaints the same spot - see ADR.md.
+      }
+    }
+  })();
+  await flushing;
   flushing = false;
   // Anything painted while that request was in flight needs its own
   // flush - this is what makes the early return above safe rather than
   // silently losing a batch.
-  if (pendingElevation.size > 0 || pendingTypes.size > 0) scheduleFlush();
+  if (sealedBatches.length > 0 || pendingElevation.size > 0 || pendingTypes.size > 0) scheduleFlush();
 }
 
 // Visits every cell within brushRadius of (cx, cy), with a smooth
@@ -789,6 +816,7 @@ function handlePointerDown(event) {
   // pan and zoom are wired separately and still work.
   if (!room.canEdit || event.button !== 0) return;
   painting = true;
+  strokeId = `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   beginStroke();
   strokeTool = strokeToolFor(event);
   scene3d?.setStrokeActive(true);
@@ -896,6 +924,15 @@ function wireToolbar() {
   // [ ] size, - = strength: the shortcuts Photoshop, Krita and most map
   // tools share. Ignored while typing in a field or with a dialog open.
   document.addEventListener("keydown", (event) => {
+    // Ctrl+Z / Cmd+Z: undo, as in every editor. Not while typing in a field.
+    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "z") {
+      const t = event.target;
+      if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) && t.type !== "range") return;
+      if (document.querySelector("dialog[open]")) return;
+      event.preventDefault();
+      undoLastStroke();
+      return;
+    }
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     const target = event.target;
     if (target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) && target.type !== "range") return;
@@ -980,23 +1017,38 @@ function wireCategoryRail() {
   }
 }
 
-// Server-checked by construction (src/undo.ts): the server restores whatever
-// it snapshotted for *this request's own session cookie*, so there is no
-// field here to set that could undo someone else's stroke. Flushes any
-// still-pending local edits first - otherwise "undo" could race a paint that
-// hasn't even reached the server yet, undoing a stale snapshot instead of
-// what the user actually just drew.
+// Server-checked by construction (src/undo.ts): the server undoes this
+// request's own session's latest change - a stroke or a place - so there is
+// no field here that could reach someone else's work. Everything this tab
+// has painted is sent, and any request still in flight finishes, before
+// asking: otherwise undo could race the stroke the person just drew and
+// reverse the one before it.
+let undoing = false;
 async function undoLastStroke() {
+  if (undoing || !room.canEdit) return;
+  undoing = true;
+  try {
+    await flushNow();
+    while (flushing) await flushing;
+    await places?.settle();
+    const res = await fetch(apiPath("/api/terrain/undo"), { method: "POST" });
+    if (res.status === 409) return toast("Nothing more to undo.");
+    if (!res.ok) return toast("Couldn't undo just now. Try again.");
+    const { what, skipped, remaining } = await res.json();
+    // The change itself arrives over SSE like anyone else's edit.
+    const thing = what === "place" ? "place" : "stroke";
+    const kept = skipped ? (what === "place" ? " Someone has changed it since, so theirs stays." : ` ${skipped} cell${skipped === 1 ? "" : "s"} someone else has painted since were left as they are.`) : "";
+    toast(`Undid your last ${thing}.${kept}${remaining ? "" : " That was the last one."}`);
+  } finally {
+    undoing = false;
+  }
+}
+
+// Sends whatever is queued right away instead of on the next timer tick.
+function flushNow() {
   if (flushHandle) clearTimeout(flushHandle);
   flushHandle = null;
-  await flush();
-  const res = await fetch(apiPath("/api/terrain/undo"), { method: "POST" });
-  if (!res.ok) return; // 409 "nothing to undo" - nothing to show for it locally
-  // The server already broadcasts the restored cells over SSE, which this
-  // same tab also receives - rather than apply the change twice (once from
-  // the fetch, once from our own echoed broadcast), just let loadTerrain's
-  // connectEvents path pick it up the normal way, same as any other
-  // client's edit would arrive here.
+  return flush();
 }
 
 function wireViewToggle() {
@@ -1315,6 +1367,10 @@ async function loadTerrain() {
   setTypesFromList(typeGrid, await typesRes.json());
   // The snapshot can predate local edits still waiting to flush (e.g. an
   // SSE reconnect mid-stroke) - re-apply them so they don't snap back.
+  for (const b of sealedBatches) {
+    applyElevationCells(elevationGrid, b.elevation);
+    applyTypeCells(typeGrid, b.types);
+  }
   applyElevationCells(elevationGrid, [...pendingElevation.values()]);
   applyTypeCells(typeGrid, [...pendingTypes.values()]);
   dirtyElevation = dirtyType = true;
@@ -1382,6 +1438,7 @@ wireCategoryRail();
 wireViewToggle();
 wireCameraControls();
 wireRoomUi();
+wireHelp();
 wireHistory();
 loadMe();
 if (await loadRoom()) {
@@ -1389,4 +1446,15 @@ if (await loadRoom()) {
   openShareIfRequested();
   loadTerrain();
   connectEvents();
+}
+
+// Help: a sheet with the editor's own tour, the full tour on the Atlas home
+// (worlds, sharing, links) and the keys. The tour is /atlas/guide.js.
+function wireHelp() {
+  const dialog = document.getElementById("help-dialog");
+  document.getElementById("help-button").addEventListener("click", () => dialog.showModal());
+  document.getElementById("help-editor-tour").addEventListener("click", () => {
+    dialog.close();
+    startEditorTour();
+  });
 }

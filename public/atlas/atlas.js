@@ -5,6 +5,7 @@
 //  - A returning visitor sees their own maps first, with pictures.
 //  - The gallery: the shared world plus maps their makers chose to show.
 import { forgeWorld, previewPixels } from "/world/forge.js";
+import { offerWelcome, startHomeTour } from "/atlas/guide.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -298,3 +299,13 @@ wireOpenLink();
 loadMe();
 loadYours();
 loadGallery();
+
+// Help, and the first-visit welcome. "#tour" (the editor's Help links
+// here) starts the tour straight away.
+for (const b of document.querySelectorAll("[data-guide-open]")) b.addEventListener("click", startHomeTour);
+if (location.hash === "#tour") {
+  history.replaceState(null, "", location.pathname);
+  requestAnimationFrame(() => startHomeTour());
+} else {
+  offerWelcome($("welcome-dialog"), startHomeTour);
+}

@@ -127,6 +127,10 @@ export function updateObject(roomId: string, id: number, p: Partial<Omit<MapObje
   return { ok: true, object: next };
 }
 
+export function getObject(roomId: string, id: number): MapObject | undefined {
+  return getStmt.get(roomId, id) as unknown as MapObject | undefined;
+}
+
 export function deleteObject(roomId: string, id: number): boolean {
   return deleteStmt.run(roomId, id).changes > 0;
 }

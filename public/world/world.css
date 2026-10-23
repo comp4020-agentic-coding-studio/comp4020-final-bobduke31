@@ -1605,3 +1605,62 @@ body.read-only .edit-only {
   clip-path: inset(50%);
   white-space: nowrap;
 }
+
+/* Help: the top-bar button and its sheet (tours, the two kinds of world
+   and link, keys). The tour popovers are styled in /atlas/guide.css. */
+.help-button {
+  color: var(--ink-dim);
+}
+.help-button:hover {
+  color: var(--ink);
+}
+.help-actions {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0.6rem 0 0.2rem;
+}
+.help-actions .ghost-button {
+  white-space: normal;
+  text-align: center;
+  text-decoration: none;
+}
+.help-sheet a {
+  color: var(--brass-hi);
+}
+.help-sheet .help-actions a.ghost-button {
+  color: var(--ink);
+}
+.help-keys {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.45rem 0.9rem;
+  margin: 0;
+  font-size: 0.86rem;
+}
+.help-keys dt {
+  white-space: nowrap;
+}
+.help-keys dd {
+  margin: 0;
+  color: var(--ink-dim);
+}
+kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 0.05em 0.4em;
+  border: 1px solid var(--rule-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--sea-deep, #0a131b);
+  font: 600 0.8rem/1.4 var(--body);
+  text-align: center;
+  color: var(--ink);
+}
+@media (max-width: 34rem) {
+  .help-keys {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .help-keys dd {
+    margin-bottom: 0.35rem;
+  }
+}

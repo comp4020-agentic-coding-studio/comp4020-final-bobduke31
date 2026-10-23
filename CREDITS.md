@@ -45,6 +45,7 @@ the browser with no build step, no attribution required by either licence.
 | [d3-contour](https://github.com/d3/d3-contour) | 4.x | ISC | marching-squares coastline extraction from the elevation grid |
 | [simplex-noise](https://github.com/jwagner/simplex-noise.js) by Jonas Wagner | 4.0.3 | MIT | deterministic ridged-noise mountain folds in the terrain shading (see `terrain-renderer.js`) |
 | [three.js](https://github.com/mrdoob/three.js) | r169 (`three.module.js`) | MIT | the WebGL2 heightfield mesh renderer behind the Oblique view (see `terrain-renderer-3d.js`); vendored unminified (current three.js releases ship no minified build) |
+| [driver.js](https://github.com/kamranahmedse/driver.js) by Kamran Ahmed | 1.8.0 (`dist/driver.js.mjs`, `driver.css`, `LICENSE`) | MIT | the first-use tour on the Atlas home and in the editor (`public/atlas/guide.js`). Chosen over Shepherd.js and Intro.js, both AGPL-3.0, which would put licence terms on this public repo. 1.8.0 rather than the newest 1.10.x, which was days old. Unmodified; restyled through `public/atlas/guide.css`. |
 
 ### Fonts and identity (Atlas Table)
 

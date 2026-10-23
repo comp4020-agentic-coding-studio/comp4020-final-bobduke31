@@ -35,7 +35,18 @@ export function createPlaces(scene3d, canvas3d) {
     return [((event.clientX - rect.left) / rect.width) * canvas3d.width, ((event.clientY - rect.top) / rect.height) * canvas3d.height];
   };
 
-  async function send(path, body) {
+  // Requests still on their way; undo waits for them (world-client.js),
+  // so it never reverses the change before the one just made.
+  const inFlight = new Set();
+  function send(path, body) {
+    const p = post(path, body);
+    inFlight.add(p);
+    p.finally(() => inFlight.delete(p)).catch(() => {});
+    return p;
+  }
+  const settle = () => Promise.allSettled([...inFlight]);
+
+  async function post(path, body) {
     const res = await fetch(apiPath(path), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -215,5 +226,5 @@ export function createPlaces(scene3d, canvas3d) {
   }
 
   wire();
-  return { pointerDown, pointerMove, pointerUp, setActive, wireEvents, load };
+  return { pointerDown, pointerMove, pointerUp, setActive, wireEvents, load, settle };
 }

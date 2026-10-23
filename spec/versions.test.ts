@@ -224,3 +224,95 @@ describe("places on the map", () => {
     expect((await objects(copy.editToken)).map((o) => o.kind)).toEqual(["house"]);
   });
 });
+
+// Undo (src/undo.ts): per person, several steps deep, covering terrain
+// strokes and places, and never overwriting a collaborator's newer work.
+// Runs on private maps, so like the rest of this file it needs a throwaway
+// database.
+describe("undo", () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  async function setup() {
+    const cookie = await newVisitor();
+    const map = await createMap(cookie, "Undo", { forge: { seed: "U", template: "blank", settings: {} } });
+    const T = `/api/r/${map.editToken}`;
+    const paint = (who: string, cells: { x: number; y: number; elevation: number }[], strokeId?: string) =>
+      post(`${T}/terrain/cells`, who, { cells, strokeId });
+    const undo = (who: string) => post(`${T}/terrain/undo`, who, {});
+    const elev = async (x: number, y: number) =>
+      ((await (await fetch(url(`${T}/terrain`))).json()) as { x: number; y: number; elevation: number }[]).find((c) => c.x === x && c.y === y)?.elevation ?? 0;
+    const objects = async () => (await (await fetch(url(`${T}/objects`))).json()) as { id: number; x: number; y: number; rotation: number }[];
+    return { cookie, map, T, paint, undo, elev, objects };
+  }
+
+  it("undoes several strokes in turn, newest first, then says there is nothing left", async () => {
+    const { cookie, paint, undo, elev } = await setup();
+    await paint(cookie, [{ x: 5, y: 5, elevation: 0.3 }], "a");
+    await paint(cookie, [{ x: 6, y: 5, elevation: 0.3 }], "b");
+    await paint(cookie, [{ x: 7, y: 5, elevation: 0.3 }], "c");
+    const first = await undo(cookie);
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ what: "stroke", remaining: 2 });
+    expect(await elev(7, 5)).toBeLessThan(0.2);
+    expect(await elev(6, 5)).toBeCloseTo(0.3);
+    expect((await undo(cookie)).status).toBe(200);
+    expect((await undo(cookie)).status).toBe(200);
+    expect(await elev(5, 5)).toBeLessThan(0.2);
+    expect((await undo(cookie)).status).toBe(409);
+  });
+
+  it("undoes a whole stroke as one step, however long the pause inside it", async () => {
+    const { cookie, paint, undo, elev } = await setup();
+    await paint(cookie, [{ x: 10, y: 10, elevation: 0.3 }], "slow");
+    await sleep(600);
+    await paint(cookie, [{ x: 11, y: 10, elevation: 0.3 }], "slow");
+    await undo(cookie);
+    expect(await elev(10, 10)).toBeLessThan(0.2);
+    expect(await elev(11, 10)).toBeLessThan(0.2);
+  });
+
+  it("undoes placing, moving and removing a place, in order", async () => {
+    const { cookie, T, paint, undo, objects } = await setup();
+    const cells = [];
+    for (let y = 18; y < 24; y++) for (let x = 18; x < 24; x++) cells.push({ x, y, elevation: 0.2 });
+    await paint(cookie, cells, "island");
+    const house = await (await post(`${T}/objects`, cookie, { kind: "house", x: 20, y: 20 })).json();
+    await post(`${T}/objects/update`, cookie, { id: house.id, x: 21, y: 21 });
+    await post(`${T}/objects/delete`, cookie, { id: house.id });
+    expect(await objects()).toEqual([]);
+
+    expect(await (await undo(cookie)).json()).toMatchObject({ what: "place" }); // back, at 21,21
+    expect(await objects()).toMatchObject([{ x: 21, y: 21 }]);
+    await undo(cookie); // the move: back to 20,20
+    expect(await objects()).toMatchObject([{ x: 20, y: 20 }]);
+    await undo(cookie); // the placement: gone
+    expect(await objects()).toEqual([]);
+  });
+
+  it("never overwrites a collaborator's newer edit when undoing", async () => {
+    const { cookie, T, paint, undo, elev, objects } = await setup();
+    const other = await newVisitor();
+    await paint(cookie, [{ x: 30, y: 30, elevation: 0.3 }, { x: 31, y: 30, elevation: 0.3 }], "mine");
+    await paint(other, [{ x: 30, y: 30, elevation: 0.7 }], "theirs");
+    const res = await undo(cookie);
+    expect(await res.json()).toMatchObject({ what: "stroke", skipped: 1 });
+    expect(await elev(30, 30)).toBeCloseTo(0.7); // theirs stands
+    expect(await elev(31, 30)).toBeLessThan(0.2); // mine is undone
+
+    const cells = [];
+    for (let y = 38; y < 44; y++) for (let x = 38; x < 44; x++) cells.push({ x, y, elevation: 0.2 });
+    await paint(cookie, cells, "island");
+    const house = await (await post(`${T}/objects`, cookie, { kind: "house", x: 40, y: 40 })).json();
+    await post(`${T}/objects/update`, other, { id: house.id, x: 41, y: 41 });
+    expect(await (await undo(cookie)).json()).toMatchObject({ what: "place", skipped: 1 });
+    expect(await objects()).toMatchObject([{ x: 41, y: 41 }]);
+  });
+
+  it("starts afresh after a version restore", async () => {
+    const { cookie, map, paint, undo } = await setup();
+    await paint(cookie, [{ x: 50, y: 50, elevation: 0.3 }], "before-save");
+    const { id } = await (await post(`/api/r/${map.editToken}/room/versions`, cookie, { name: "Saved" })).json();
+    await paint(cookie, [{ x: 51, y: 50, elevation: 0.3 }], "after-save");
+    await post(`/api/r/${map.editToken}/room/versions/restore`, cookie, { id });
+    expect((await undo(cookie)).status).toBe(409);
+  });
+});

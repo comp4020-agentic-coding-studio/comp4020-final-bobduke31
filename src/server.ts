@@ -20,7 +20,7 @@ import type { TerrainCell, TerrainTypeCell } from "./terrain.ts";
 import { subscribe, broadcast, closeTagged } from "./realtime.ts";
 import { log as logActivity, recentActivity, roomsWithActivityBy } from "./activity.ts";
 import type { ActivityAction } from "./activity.ts";
-import { captureStroke, undoLastStroke } from "./undo.ts";
+import { captureStroke, forgetRoom, recordPlaceChange, recordStrokeResult, undoDepth, undoLast } from "./undo.ts";
 import { parseForge, forgeIntoRoom } from "./forge.ts";
 import { thumbnailFor, type ThumbSize } from "./thumbnail.ts";
 import { isListed, listGallery, listedRoomByViewToken, setListed } from "./gallery.ts";
@@ -37,7 +37,7 @@ import {
   applySnapshot,
   type Snapshot,
 } from "./versions.ts";
-import { createObject, deleteObject, listObjects, parsePlacement, standsOnLand, updateObject } from "./objects.ts";
+import { createObject, deleteObject, getObject, listObjects, parsePlacement, standsOnLand, updateObject } from "./objects.ts";
 import {
   PUBLIC_ACCESS,
   PUBLIC_ROOM_ID,
@@ -126,6 +126,13 @@ function isPercentage(value: unknown): value is number {
 // One grid's worth: a real flush is far smaller, and this bounds the
 // per-request DB transaction, undo snapshot and SSE broadcast size.
 const MAX_CELLS_PER_BATCH = 256 * 256;
+
+// Names one brush gesture so all its batches undo together (src/undo.ts).
+// Optional and free-form: it only groups the caller's own writes.
+function strokeIdOf(payload: Record<string, unknown>): string | undefined {
+  const id = payload.strokeId;
+  return typeof id === "string" && id.length > 0 && id.length <= 64 ? id : undefined;
+}
 
 function cellsSummary(cells: { x: number; y: number }[]): string {
   // A loop, not Math.min(...xs): spreading a large array overflows the stack.
@@ -473,6 +480,7 @@ async function handleRoomApi(
     logActivity(roomId, sessionId, "room:version-restore", `version ${id} (checkpoint ${result.value.checkpoint} saved first)`);
     // Everyone with the map open reloads it; per-cell events would be
     // tens of thousands of cells.
+    forgetRoom(roomId);
     broadcast(roomId, "terrain:reload", {});
     broadcast(roomId, "versions:update", {});
     sendJson(res, 200, { checkpoint: result.value.checkpoint });
@@ -520,6 +528,7 @@ async function handleRoomApi(
         sendJson(res, result.status, { error: result.error });
         return true;
       }
+      recordPlaceChange(roomId, sessionId, null, result.object);
       broadcast(roomId, "objects:upsert", result.object);
       logActivity(roomId, sessionId, "object:place", `${result.object.kind} at ${result.object.x.toFixed(1)},${result.object.y.toFixed(1)}`);
       sendJson(res, 201, result.object);
@@ -531,10 +540,12 @@ async function handleRoomApi(
       return true;
     }
     if (path === "/api/objects/delete") {
-      if (!deleteObject(roomId, id)) {
+      const removed = getObject(roomId, id);
+      if (!removed || !deleteObject(roomId, id)) {
         sendJson(res, 404, { error: "that place is no longer on the map" });
         return true;
       }
+      recordPlaceChange(roomId, sessionId, removed, null);
       broadcast(roomId, "objects:delete", { id });
       logActivity(roomId, sessionId, "object:remove", `place ${id}`);
       res.writeHead(204);
@@ -546,7 +557,8 @@ async function handleRoomApi(
       sendJson(res, 400, { error: "a move needs a position on the map, a rotation or a scale" });
       return true;
     }
-    const kind = listObjects(roomId).find((o) => o.id === id)?.kind;
+    const previous = getObject(roomId, id);
+    const kind = previous?.kind;
     if (kind && changes.x !== undefined && !standsOnLand(roomId, { ...changes, kind })) {
       sendJson(res, 400, { error: "that's water - places stand on land (a bridge can cross water)" });
       return true;
@@ -556,6 +568,7 @@ async function handleRoomApi(
       sendJson(res, result.status, { error: result.error });
       return true;
     }
+    if (previous) recordPlaceChange(roomId, sessionId, previous, result.object);
     broadcast(roomId, "objects:upsert", result.object);
     // Moves are frequent; the log records them without flooding it.
     if (!rateLimited(`objlog:${sessionId}`)) logActivity(roomId, sessionId, "object:move", `${result.object.kind} ${id}`);
@@ -577,6 +590,7 @@ async function handleRoomApi(
     const payload = await readJsonOr400(req, res);
     if (!payload) return true;
     const { cells } = payload;
+    const strokeId = strokeIdOf(payload);
     if (!Array.isArray(cells) || cells.length === 0 || cells.length > MAX_CELLS_PER_BATCH || !cells.every(isValidCell)) {
       sendJson(res, 400, { error: "cells must be a non-empty array of {x, y, elevation} within grid bounds" });
       return true;
@@ -584,8 +598,9 @@ async function handleRoomApi(
     const validCells = cells as TerrainCell[];
     // Snapshotted server-side before the write lands - what undo later
     // restores for this session in this room, and only that (src/undo.ts).
-    captureStroke(roomId, sessionId, validCells, []);
+    captureStroke(roomId, sessionId, strokeId, validCells, []);
     const submerged = applyCells(roomId, validCells);
+    recordStrokeResult(roomId, sessionId, strokeId, validCells);
     broadcast(roomId, "terrain:update", { cells: validCells });
     // Elevation is the one source of truth for land vs sea (ADR.md): any
     // cell pushed underwater loses its terrain type server-side, and every
@@ -603,6 +618,7 @@ async function handleRoomApi(
     const payload = await readJsonOr400(req, res);
     if (!payload) return true;
     const { cells } = payload;
+    const strokeId = strokeIdOf(payload);
     if (!Array.isArray(cells) || cells.length === 0 || cells.length > MAX_CELLS_PER_BATCH || !cells.every(isValidTerrainTypeCell)) {
       sendJson(res, 400, {
         error: "cells must be a non-empty array of {x, y, terrain}, terrain one of grassland/sand/forest/rock",
@@ -613,8 +629,9 @@ async function handleRoomApi(
     // coastline is the normal case, not a malformed request.
     const onLand = (cells as TerrainTypeCell[]).filter((cell) => isLand(roomId, cell.x, cell.y));
     if (onLand.length > 0) {
-      captureStroke(roomId, sessionId, [], onLand);
+      captureStroke(roomId, sessionId, strokeId, [], onLand);
       applyTerrainTypes(roomId, onLand);
+      recordStrokeResult(roomId, sessionId, strokeId, onLand);
       broadcast(roomId, "terrain-type:update", { cells: onLand });
       logActivity(roomId, sessionId, "terrain-type:paint", cellsSummary(onLand));
     }
@@ -626,18 +643,29 @@ async function handleRoomApi(
   if (path === "/api/terrain/undo" && req.method === "POST") {
     // The session id from the request's own cookie and the room from the
     // URL token are the entire input: nothing here can name another
-    // session's stroke (ADR 2).
-    const result = undoLastStroke(roomId, sessionId);
+    // session's history (ADR 2). Undoes this person's latest change, a
+    // terrain stroke or a place, whichever came last (src/undo.ts).
+    const result = undoLast(roomId, sessionId);
     if (!result.ok) {
       sendJson(res, 409, { error: "nothing to undo for this session" });
       return true;
     }
-    broadcast(roomId, "terrain:update", { cells: result.elevationCells });
-    if (result.restoredTypeCells.length > 0) broadcast(roomId, "terrain-type:update", { cells: result.restoredTypeCells });
-    if (result.clearedTypeCells.length > 0) broadcast(roomId, "terrain-type:clear", { cells: result.clearedTypeCells });
-    logActivity(roomId, sessionId, "terrain:undo", cellsSummary(result.elevationCells));
-    res.writeHead(204);
-    res.end();
+    if (result.what === "stroke") {
+      if (result.elevationCells.length > 0) broadcast(roomId, "terrain:update", { cells: result.elevationCells });
+      if (result.restoredTypeCells.length > 0) broadcast(roomId, "terrain-type:update", { cells: result.restoredTypeCells });
+      if (result.clearedTypeCells.length > 0) broadcast(roomId, "terrain-type:clear", { cells: result.clearedTypeCells });
+      logActivity(roomId, sessionId, "terrain:undo", cellsSummary(result.elevationCells));
+    } else {
+      if (result.upserted) broadcast(roomId, "objects:upsert", result.upserted);
+      if (result.deletedId !== null) broadcast(roomId, "objects:delete", { id: result.deletedId });
+      logActivity(roomId, sessionId, "terrain:undo", result.upserted ? `place ${result.upserted.id} restored` : result.deletedId !== null ? `place ${result.deletedId} removed` : "place left as a collaborator changed it");
+    }
+    sendJson(res, 200, { what: result.what, skipped: result.skipped, remaining: result.remaining });
+    return true;
+  }
+
+  if (path === "/api/terrain/undo" && req.method === "GET") {
+    sendJson(res, 200, { remaining: undoDepth(roomId, sessionId) });
     return true;
   }
 

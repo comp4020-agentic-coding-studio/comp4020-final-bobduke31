@@ -11,7 +11,9 @@
     <meta property="og:image" content="/api/room/thumbnail.png?size=og" />
     <link rel="preload" href="/world/vendor/fonts/figtree-latin-var.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/world/vendor/fonts/im-fell-english-sc-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="/world/vendor/driver/driver.css" />
     <link rel="stylesheet" href="/atlas/atlas.css" />
+    <link rel="stylesheet" href="/atlas/guide.css" />
   </head>
   <body>
     <svg width="0" height="0" class="defs" aria-hidden="true">
@@ -36,6 +38,7 @@
           <a href="#yours" id="nav-yours" class="hidden">Your maps</a>
           <a href="#gallery">Gallery</a>
           <a href="/world/">Shared world</a>
+          <button type="button" class="nav-help" data-guide-open>Help</button>
         </nav>
         <span id="me" class="me hidden" title="Your name and colour on every map">
           <span class="sigil" data-tincture="argent"><svg viewBox="0 0 26 30" aria-hidden="true"><use href="#shield" /></svg><em id="me-initial"></em></span>
@@ -166,12 +169,31 @@
       <div class="wrap colophon-row">
         <span>Atlas Table, a COMP4020 project.</span>
         <nav aria-label="About">
+          <button type="button" class="link-button" data-guide-open>Take the tour</button>
           <a href="/readme/">About</a>
           <a href="/credits/">Credits</a>
           <a href="/logs/">Activity</a>
         </nav>
       </div>
     </footer>
+
+    <!-- First visit: offer the tour. Help (above) reopens it at any time. -->
+    <dialog id="welcome-dialog" class="welcome" aria-labelledby="welcome-title">
+      <form method="dialog" class="welcome-close-form">
+        <button type="submit" class="welcome-close" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+        </button>
+      </form>
+      <svg width="40" height="40" class="rose" aria-hidden="true"><use href="#rose" /></svg>
+      <h2 id="welcome-title">Welcome to Atlas Table</h2>
+      <p>Make a fantasy world, shape it, and work on it with friends from a single link. No account needed.</p>
+      <p class="welcome-sub">Would you like a one-minute tour of how it works?</p>
+      <div class="welcome-actions">
+        <button type="button" class="primary-button" data-guide-start autofocus>Take the tour</button>
+        <form method="dialog"><button type="submit" class="ghost-button">Skip for now</button></form>
+      </div>
+      <p class="welcome-note">You can open the tour again any time from <b>Help</b>.</p>
+    </dialog>
 
     <script type="module" src="/atlas/atlas.js"></script>
   </body>

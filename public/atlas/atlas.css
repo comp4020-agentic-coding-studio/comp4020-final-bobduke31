@@ -882,3 +882,46 @@ input[type="range"] {
     transition: none;
   }
 }
+
+/* --- Help and the first-use guide ---------------------------------------
+   The welcome dialog and the tour's popovers (driver.js, vendored) in the
+   chart-table identity. driver.css supplies layout and the spotlight; only
+   colours, type and sizes are set in /atlas/guide.css, shared with the
+   editor. These are the home page's Help buttons. */
+.nav-help,
+.link-button {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  padding: 0 0.7rem;
+  background: none;
+  border: 0;
+  border-radius: var(--radius);
+  color: var(--ink-dim);
+  font: inherit;
+  font-weight: 550;
+  font-size: 0.92rem;
+  cursor: pointer;
+}
+.nav-help:hover,
+.link-button:hover {
+  color: var(--ink);
+  background: var(--shelf-2);
+}
+.colophon .link-button {
+  padding: 0;
+  min-height: 0;
+  font-size: inherit;
+  font-weight: inherit;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.colophon .link-button:hover {
+  background: none;
+}
+@media (max-width: 34rem) {
+  .nav-help {
+    padding: 0 0.5rem;
+    font-size: 0.85rem;
+  }
+}

@@ -7,7 +7,9 @@
     <title>Atlas Table</title>
     <link rel="preload" href="/world/vendor/fonts/figtree-latin-var.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/world/vendor/fonts/im-fell-english-sc-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="/world/vendor/driver/driver.css" />
     <link rel="stylesheet" href="/world/world.css" />
+    <link rel="stylesheet" href="/atlas/guide.css" />
   </head>
   <body>
     <svg width="0" height="0" class="defs" aria-hidden="true">
@@ -48,11 +50,14 @@
         </div>
 
         <div class="topbar-right">
-          <button type="button" id="undo-button" class="ghost-button undo-button" title="Undo your own last stroke. It never touches anyone else's.">
+          <button type="button" id="undo-button" class="ghost-button undo-button" title="Undo your own last change, a stroke or a place (Ctrl+Z). Press again to go further back. It never touches anyone else's.">
             <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M9 14L4 9l5-5M4 9h11a5 5 0 010 10h-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
             <span>Undo</span>
           </button>
           <div id="presence" class="presence" aria-live="polite"></div>
+          <button type="button" id="help-button" class="icon-button help-button" aria-haspopup="dialog" aria-controls="help-dialog" title="Help and the tour" aria-label="Help">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="9.2" fill="none" stroke="currentColor" stroke-width="1.8" /><path d="M9.6 9.3a2.5 2.5 0 014.8.9c0 1.7-2.4 2.1-2.4 3.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" /><circle cx="12" cy="17.2" r="1.1" fill="currentColor" /></svg>
+          </button>
           <button type="button" id="share-button" class="primary-button hidden" aria-haspopup="dialog" aria-controls="share-dialog">Share</button>
           <button type="button" id="me-button" class="me-button" aria-haspopup="dialog" aria-controls="me-dialog" title="Your name and colour">
             <span class="sigil" data-tincture="argent"><svg viewBox="0 0 26 30" aria-hidden="true"><use href="#shield" /></svg><em id="me-initial"></em></span>
@@ -78,7 +83,7 @@
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M3 21V11l4-3 4 3v10zM13 21V7l4-4 4 4v14z" fill="currentColor" /></svg>
           <span>Places</span>
         </button>
-        <button type="button" class="category-btn rail-undo" id="rail-undo" aria-label="Undo your last stroke">
+        <button type="button" class="category-btn rail-undo" id="rail-undo" aria-label="Undo your last change">
           <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M9 14L4 9l5-5M4 9h11a5 5 0 010 10h-3" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" /></svg>
           <span>Undo</span>
         </button>
@@ -321,6 +326,29 @@
         </div>
         <p id="rename-error" class="form-error hidden" role="alert"></p>
       </form>
+    </dialog>
+
+    <dialog id="help-dialog" class="sheet narrow help-sheet" aria-labelledby="help-title">
+      <form method="dialog" class="sheet-head">
+        <h2 id="help-title">Help</h2>
+        <button class="icon-button" value="close" aria-label="Close">&times;</button>
+      </form>
+      <div class="help-actions">
+        <button type="button" id="help-editor-tour" class="primary-button">Tour this editor</button>
+        <a href="/#tour" class="ghost-button">The full tour: worlds, sharing and links</a>
+      </div>
+      <h3>Private and shared worlds</h3>
+      <p class="sheet-sub">A world you create is private: only people with its link can open it. The shared world at <a href="/world/">/world/</a> is open to everyone.</p>
+      <h3>Edit and view links</h3>
+      <p class="sheet-sub">An edit link lets someone change the map with you, live. A view link lets them watch every change but not make any. Share gives you both, and can withdraw either.</p>
+      <h3>Keys</h3>
+      <dl class="help-keys">
+        <dt><kbd>Ctrl</kbd> <kbd>Z</kbd> or <kbd>&#8984;</kbd> <kbd>Z</kbd></dt><dd>Undo your own last change, a stroke or a place. Press again to go further back.</dd>
+        <dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Brush smaller or bigger</dd>
+        <dt><kbd>-</kbd> <kbd>=</kbd></dt><dd>Strength down or up</dd>
+        <dt><kbd>Shift</kbd> while painting</dt><dd>Swap Raise and Lower</dd>
+        <dt><kbd>Q</kbd> <kbd>E</kbd>, <kbd>Delete</kbd></dt><dd>Turn or remove the selected place</dd>
+      </dl>
     </dialog>
 
     <dialog id="me-dialog" class="sheet" aria-labelledby="me-title">
