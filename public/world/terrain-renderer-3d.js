@@ -1389,6 +1389,18 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     renderer.render(scene, camera);
   }
 
+  // The canvas stays square; only its resolution follows the box the
+  // layout gives it (a phone's box changes when panels open and close, or
+  // the phone turns), so the map stays sharp at any size.
+  let currentSize = logicalSize;
+  function resize(size) {
+    const next = Math.round(size);
+    if (!(next > 0) || next === currentSize) return;
+    currentSize = next;
+    renderer.setSize(next, next, false);
+    render();
+  }
+
   function setAspect() {}
 
   // `region` (cells, inclusive) bounds what changed, so only nearby tree
@@ -1470,6 +1482,7 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     updateHeight: (g) => update(g, currentTypeGridRef, { typeChanged: false }),
     updateType: (g, t) => update(g, t, { elevationChanged: false }),
     setStrokeActive,
+    resize,
     pick,
     pickObject,
     pickPoint,

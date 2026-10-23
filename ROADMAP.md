@@ -2595,6 +2595,83 @@ Found through use of the live app (Stage B, Fly v16). Built in 0821846.
     - on desktop, the camera panel covers part of the map;
     - the 3 test checkpoints left in the demo village's history.
 
+#### Mobile editor layout and touch (23 Oct, branch `atlas-guide`, not merged or deployed)
+
+Found through real use on a phone in portrait. Relief was worst: some
+camera controls, including the North/South and East/West presets, could not
+be reached. An earlier attempt fixed reach by letting the page scroll, which
+made dragging on the map fight the page. That was not brought back.
+
+- **Measured before changing anything** (Playwright device emulation;
+  map size on screen):
+
+  | Phone | Relief map | Chart map |
+  |---|---|---|
+  | iPhone SE (320 wide) | 2 px | 77 px |
+  | iPhone 13 (390 wide) | 117 px | 225 px |
+  | iPhone 13, landscape | 2 x 2 px | - |
+
+- **Causes:**
+  - At 900 px wide and under, the camera panel, the tool row and both
+    brush sliders were always stacked in a fixed-height grid. The map got
+    whatever was left, which in Relief was almost nothing.
+  - The WebGL canvas resolution was set once at load, so a small map was
+    also blurry.
+  - There were no touch gestures, so the camera panel could not be hidden
+    without losing the camera.
+- **Fix:**
+  - The map gets the space. The page never scrolls; the map has
+    `touch-action: none`.
+  - Camera and brush size and strength open as overlay sheets from a
+    **Camera** button on the map and a **Brush** summary in the tool row.
+    Only one is open at a time. Each closes with its own button, and
+    painting closes the brush sheet. A long camera panel scrolls inside
+    itself, never the page.
+  - In Relief a north button on the map turns the view back to north. Its
+    needle follows the camera.
+  - Touch follows Apple and Google Maps, Procreate and MapLibre. One finger
+    paints, or sets down and drags a place. Two fingers navigate: pinch
+    zooms, drag pans, and in Relief twist turns and a two-finger vertical
+    slide tilts (MapLibre's touch-pitch rule; its code was not vendored).
+  - A second finger cancels the stroke the first one started, locally and
+    on the server, so starting a pinch never leaves a dab. In Places it
+    puts a dragged building back.
+  - A quick two-finger tap undoes.
+  - A ResizeObserver keeps the WebGL canvas at its real on-screen size, so
+    the map stays sharp.
+  - Phones in landscape put the map on the left and the tools on the right.
+  - Desktop is unchanged.
+- **Checked** (emulated iPhone SE, iPhone 13 and Pixel 7, all modes: Chart
+  and Relief, Land, Terrain, Water and Places):
+  - Map size after the fix: iPhone SE 290 px, iPhone 13 377 px, Pixel 7
+    399 px, iPhone 13 landscape 316 px.
+  - With its panel open, every essential control is on screen and can be
+    reached on all three phones. That covers the compass, all four direction
+    presets, tilt, zoom, Fit, brush size and strength, Undo, Share, Help,
+    the view switch and every tool. The page is never wider or taller than
+    the screen.
+  - Touch suite driven through Chrome DevTools touch events on iPhone 13,
+    all passing:
+    - one finger paints, and the page doesn't move;
+    - pinch zooms and two-finger drag pans, neither painting;
+    - twist turns Relief, and a two-finger slide tilts it (55 to 82);
+    - the north button resets the view;
+    - a second finger cancels a stroke, leaving the terrain unchanged;
+    - a two-finger tap undoes the previous stroke;
+    - a tap sets down a house, and a pinch in Places adds no second one;
+    - the panels swap and close;
+    - no page errors.
+  - Desktop at 1366 wide looks the same as before.
+  - 92/92 tests pass and the typecheck is clean.
+- **Not done, and known limits:**
+  - **Not yet tested on a real phone.** Emulated Chrome sometimes delivers
+    only the first finger of a two-finger touch. A pinch that starts in
+    Places and the real timing of the two-finger tap still need a real
+    phone.
+  - The editor tour's "Paint on the map" step still names mouse controls
+    on a phone. The Help sheet's keyboard list is shown on phones too.
+  - The camera sheet covers the lower part of the map while open.
+
 #### Next: connected walls and roads (user request, 22 Oct; not started)
 
 Stage B accepted by the user as a direction. Recorded for the next stage,

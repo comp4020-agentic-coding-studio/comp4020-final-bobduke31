@@ -95,6 +95,9 @@ export function createPlaces(scene3d, canvas3d) {
   // Returns true when it handled the event (so painting doesn't).
   function pointerDown(event) {
     if (!active || event.button !== 0) return false;
+    // Only the first finger places or drags; a second one is a pinch
+    // (world-client.js's touch gestures), never a second building.
+    if (event.pointerType === "touch" && !event.isPrimary) return true;
     const [px, py] = toCanvas(event);
     if (!room.canEdit) return true;
     if (armedKind) {
@@ -226,5 +229,14 @@ export function createPlaces(scene3d, canvas3d) {
   }
 
   wire();
-  return { pointerDown, pointerMove, pointerUp, setActive, wireEvents, load, settle };
+  // A second finger turned the drag into a pinch: put the place back where
+  // the drag started, without sending anything.
+  function cancelDrag() {
+    if (!drag) return;
+    const o = objects.get(drag.id);
+    if (o) apply({ ...o, x: drag.startX, y: drag.startY });
+    drag = null;
+  }
+
+  return { pointerDown, pointerMove, pointerUp, setActive, wireEvents, load, settle, cancelDrag };
 }

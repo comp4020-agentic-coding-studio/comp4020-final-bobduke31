@@ -598,6 +598,14 @@ button {
 .sw-forest { background: #3f6e3a; }
 .sw-rock { background: #8a7f72; }
 
+/* Phone-only controls (shown in the max-width: 900px block). */
+.map-fabs,
+.brush-summary,
+.camera-close,
+.camera-gestures {
+  display: none;
+}
+
 .options-footer {
   margin-top: auto;
   padding-top: 1rem;
@@ -1499,31 +1507,94 @@ body.read-only .edit-only {
   #share-button { min-height: var(--tap); }
   .icon-button { min-width: var(--tap); min-height: var(--tap); }
 
-  .canvas-wrap { grid-row: 2; }
-  /* Map takes whatever height is left; the camera strip below never gets
-     squeezed out (a grid row, unlike a flex column, gives the canvas a
-     definite box for max-height to resolve against). */
-  .canvas-area { padding: 0.5rem; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 0.5rem; justify-items: center; align-items: center; }
-  #stage, #stage-3d { grid-row: 1; grid-column: 1; width: auto; height: auto; max-width: 100%; max-height: 100%; }
+  .canvas-wrap { grid-row: 2; min-height: 0; }
+  /* The map gets every pixel between the top bar and the tool strip. The
+     camera and brush controls open over it (below) instead of being
+     stacked under it, which is what used to squeeze the map to a sliver.
+     The page never scrolls: touches on the map are drawing or two-finger
+     navigation, never page movement. */
+  .canvas-area { position: relative; padding: 0.4rem; display: grid; place-items: center; overflow: hidden; container-type: size; }
+  /* The square map is as big as the smaller side of its box, in portrait
+     (width) and on its side (height) alike. */
+  #stage, #stage-3d { grid-area: 1 / 1; width: min(100cqw, 100cqh); height: min(100cqw, 100cqh); max-width: none; max-height: none; aspect-ratio: 1; }
 
   .tool-hint { display: none; }
 
-  /* Camera controls: a compact strip under the map, not an overlay. */
+  /* Map buttons, top-right over the map: Camera opens the camera panel,
+     the compass (Relief only) faces north again. */
+  .map-fabs {
+    position: absolute;
+    top: 0.7rem;
+    right: 0.7rem;
+    z-index: 3;
+    display: flex;
+    gap: 0.45rem;
+  }
+  .map-fab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    min-width: var(--tap);
+    min-height: var(--tap);
+    padding: 0 0.7rem;
+    border: 1px solid var(--rule-strong);
+    border-radius: 22px;
+    background: rgba(19, 35, 49, 0.92);
+    color: var(--ink);
+    font: inherit;
+    font-weight: 600;
+    font-size: 0.9rem;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+  }
+  .map-fab[aria-expanded="true"] { background: var(--brass); color: var(--brass-ink); border-color: var(--brass-hi); }
+  .north-fab { padding: 0; width: var(--tap); }
+  .north-fab svg { transition: transform 0.15s; }
+  body:not(.view-oblique) .oblique-only-fab { display: none; }
+
+  /* The camera panel: a card over the bottom of the map, opened by the
+     Camera button, closed by its own close button or the button again. */
   .camera-float {
-    position: static;
-    grid-row: 2;
-    width: 100%;
+    position: absolute;
+    top: auto;
+    right: 0.5rem;
+    bottom: 0.5rem;
+    left: 0.5rem;
+    width: auto;
+    z-index: 4;
+    max-height: calc(100% - 4.4rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     flex-direction: row;
     flex-wrap: wrap;
     align-items: center;
     justify-content: center;
-    padding: 0.4rem 0.6rem;
+    padding: 0.6rem 0.7rem 0.7rem;
     gap: 0.5rem;
-    background: var(--shelf);
-    backdrop-filter: none;
-    box-shadow: none;
   }
-  .camera-float h4 { display: none; }
+  .camera-float:not(.open) { display: none; }
+  .camera-float h4 { display: block; flex: 1 1 auto; margin: 0; text-align: left; }
+  .camera-close {
+    display: block;
+    flex: none;
+    width: var(--tap);
+    height: var(--tap);
+    margin: -0.35rem -0.35rem 0 0;
+    border: 0;
+    background: none;
+    color: var(--ink-dim);
+    font-size: 1.5rem;
+    line-height: 1;
+  }
+  .camera-gestures { display: block; flex: 1 1 100%; margin: 0 0 0.2rem; font-size: 0.8rem; color: var(--ink-dim); text-align: left; }
+  .camera-float label { min-height: 36px; }
+  /* Short phones (iPhone SE): the open panel may cover the whole map area,
+     buttons included, so nothing in it is ever cut off. */
+  @media (max-height: 640px) {
+    .camera-float { top: 3.9rem; bottom: 0.4rem; max-height: none; align-content: flex-start; row-gap: 0.35rem; }
+    .camera-float h4 { font-size: 0.75rem; }
+    .camera-gestures { display: none; }
+  }
   .camera-float .oblique-only { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.5rem; width: 100%; }
   .camera-float label { flex: 1 1 8rem; width: auto; flex-direction: row; align-items: center; gap: 0.6rem; font-size: 0.86rem; }
   .camera-float label input { flex: 1; min-width: 0; }
@@ -1534,20 +1605,69 @@ body.read-only .edit-only {
   .pan-trackpad { width: 72px; height: var(--tap); flex: none; }
   #camera-fit { width: auto; flex: none; min-height: var(--tap); padding: 0 1rem; }
 
-  /* Tool options become a sheet above the dock. */
+  /* Tool options: one row of tools above the dock. The brush sliders fold
+     behind a one-line summary and open over the map, so they never take
+     the map's height. */
   .options-panel {
     grid-row: 3;
+    position: relative;
     border-left: 0;
     border-top: 1px solid var(--rule);
-    padding: 0.6rem max(12px, env(safe-area-inset-right)) 0.6rem max(12px, env(safe-area-inset-left));
+    padding: 0.5rem max(12px, env(safe-area-inset-right)) 0.5rem max(12px, env(safe-area-inset-left));
     overflow: visible;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.5rem;
   }
+  .options-panel > .options-section { grid-column: 1; grid-row: 1; min-width: 0; }
+  .options-panel > .options-section[data-panel="places"] { grid-column: 1 / -1; }
+  .brush-summary {
+    display: inline-flex;
+    grid-column: 2;
+    grid-row: 1;
+    align-items: center;
+    gap: 0.35rem;
+    min-height: var(--tap);
+    padding: 0 0.75rem;
+    border: 1px solid var(--rule-strong);
+    border-radius: 22px;
+    background: var(--shelf-2);
+    color: var(--ink-dim);
+    font: inherit;
+    font-size: 0.85rem;
+    white-space: nowrap;
+  }
+  .brush-summary b { color: var(--ink); font-weight: 650; }
+  .brush-summary svg { transition: transform 0.15s; }
+  .brush-summary[aria-expanded="true"] { background: var(--brass); color: var(--brass-ink); border-color: var(--brass-hi); }
+  .brush-summary[aria-expanded="true"] b { color: var(--brass-ink); }
+  .brush-summary[aria-expanded="true"] svg { transform: rotate(180deg); }
+  body.places-active .brush-summary { display: none; }
   .options-section h3 { display: none; }
   /* One row of chips that scrolls sideways if a category has many tools. */
   .options-section:not(.hidden) { display: flex; flex-wrap: nowrap; gap: 0.4rem; overflow-x: auto; scrollbar-width: none; margin: 0 -2px; padding: 2px; }
   .options-section .btn-grid { display: contents; }
   .btn-grid button { min-height: var(--tap); flex: 1 0 auto; padding: 0 0.95rem; border-radius: 22px; white-space: nowrap; }
-  .options-footer { margin-top: 0.6rem; padding-top: 0.5rem; flex-direction: row; gap: 1rem; }
+  .options-footer {
+    position: absolute;
+    left: 0.5rem;
+    right: 0.5rem;
+    bottom: calc(100% + 0.5rem);
+    z-index: 5;
+    margin: 0;
+    padding: 0.7rem 0.9rem 0.4rem;
+    flex-direction: column;
+    gap: 0.1rem;
+    background: rgba(19, 35, 49, 0.97);
+    border: 1px solid var(--rule-strong);
+    border-radius: 10px;
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.45);
+  }
+  .options-footer:not(.open) { display: none; }
+  /* Label and value on one line, the slider right under it. */
+  .options-footer .slider-label { gap: 0; }
+  .options-footer .slider-label input[type="range"] { height: 38px; margin: 0; }
 
   /* Places: the palette is the one sideways-scrolling row; the selected
      place's controls get their own compact row under it, and the credit a
@@ -1590,6 +1710,44 @@ body.read-only .edit-only {
   .map-link,
   .sheet-actions .primary-button,
   .sheet-footer a { min-height: var(--tap); }
+}
+
+/* A phone on its side: the screen is too short for map, tool row and dock
+   stacked. The map takes the left, a square as tall as the screen allows;
+   the tool row and dock stack on the right. The top bar stays one row. */
+@media (max-width: 900px) and (orientation: landscape) and (max-height: 520px) {
+  .app {
+    grid-template-columns: minmax(0, 1fr) minmax(15rem, 40%);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+  .topbar {
+    grid-column: 1 / -1;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "room view right";
+    padding-top: max(4px, env(safe-area-inset-top));
+    padding-bottom: 4px;
+  }
+  .topbar-view { justify-content: center; }
+  .view-switch { flex: 0 1 16rem; }
+  .canvas-wrap { grid-column: 1; grid-row: 2 / 4; }
+  .options-panel {
+    grid-column: 2;
+    grid-row: 2;
+    border-top: 0;
+    border-left: 1px solid var(--rule);
+    align-content: start;
+    grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
+  }
+  .options-panel > .options-section,
+  .brush-summary { grid-column: 1; grid-row: auto; }
+  .options-section:not(.hidden) { flex-wrap: wrap; overflow: visible; }
+  /* Room on the right: brush sliders stay open, no summary needed. */
+  .brush-summary { display: none; }
+  .options-footer,
+  .options-footer:not(.open) { display: flex; position: static; box-shadow: none; border: 0; background: none; padding: 0.4rem 0 0; }
+  .category-rail { grid-column: 2; grid-row: 3; border-left: 1px solid var(--rule); }
+  .category-btn { min-height: 46px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

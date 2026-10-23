@@ -94,8 +94,22 @@
           <canvas id="stage"></canvas>
           <canvas id="stage-3d" class="hidden"></canvas>
 
+          <!-- Phone only: the map gets the screen, and these open what used
+               to be stacked under it (world.css, max-width 900px). -->
+          <div class="map-fabs" id="map-fabs">
+            <button type="button" class="map-fab north-fab oblique-only-fab" id="north-fab" title="Face north again" aria-label="Face north again">
+              <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path id="north-needle" d="M12 3l3.5 9H8.5z" fill="var(--danger)" /><path d="M12 21l-3.5-9h7z" fill="currentColor" opacity=".55" /></svg>
+            </button>
+            <button type="button" class="map-fab" id="camera-fab" aria-expanded="false" aria-controls="camera-toolbar" title="Camera: turn, tilt, zoom and fit">
+              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 8h3l2-2.5h6L17 8h3v11H4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" /><circle cx="12" cy="13" r="3.4" fill="none" stroke="currentColor" stroke-width="1.8" /></svg>
+              <span>Camera</span>
+            </button>
+          </div>
+
           <div class="camera-float" id="camera-toolbar">
             <h4>Camera</h4>
+            <button type="button" class="camera-close" id="camera-close" aria-label="Close the camera controls">&times;</button>
+            <p class="camera-gestures">Or use two fingers on the map: pinch, drag, twist, slide to tilt.</p>
             <div class="oblique-only">
               <div class="compass" id="camera-compass" title="Drag the dial to rotate the view.">
                 <svg viewBox="0 0 100 100" width="72" height="72" aria-hidden="true">
@@ -183,7 +197,11 @@
           <p class="places-credit">Buildings: KayKit Medieval pack by Kay Lousberg (CC0).</p>
         </section>
 
-        <div class="options-footer">
+        <button type="button" class="brush-summary" id="brush-summary" aria-expanded="false" aria-controls="options-footer">
+          <span>Brush <b id="brush-summary-size">10</b> · <b id="brush-summary-strength">4.0%</b></span>
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M6 15l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        </button>
+        <div class="options-footer" id="options-footer">
           <label class="slider-label"><span>Brush size <output id="brush-size-out">10</output></span><input id="brush-size" type="range" min="1" max="28" step="1" value="10" /></label>
           <label class="slider-label"><span>Strength <output id="brush-strength-out">4.0%</output></span><input id="brush-strength" type="range" min="0" max="100" step="1" value="45" aria-describedby="strength-help" /></label>
           <label class="slider-label" id="hardness-row"><span>Edge <output id="brush-hardness-out">Soft</output></span><input id="brush-hardness" type="range" min="0" max="0.9" step="0.05" value="0" /></label>

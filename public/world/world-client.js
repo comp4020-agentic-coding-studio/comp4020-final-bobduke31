@@ -134,6 +134,13 @@ if (scene3d) {
   canvas.classList.add("hidden");
   canvas3d.classList.remove("hidden");
   scene3d.onAsyncChange(() => scene3d.render());
+  // The map's box changes on a phone (panels open and close, the phone
+  // turns): match the WebGL resolution to the box actually shown, rather
+  // than the size measured once at load.
+  new ResizeObserver(() => {
+    const r = canvas3d.getBoundingClientRect();
+    if (r.width > 0) scene3d.resize(Math.min(r.width, r.height || r.width));
+  }).observe(canvas3d);
 } else {
   loadGrassTexture("/world/assets/textures/grass-cethiel.png");
 }
@@ -251,6 +258,9 @@ function redrawAll() {
 // Batches sealed when a new gesture started while the previous one still
 // had cells queued; sent in order before the current queue.
 const sealedBatches = [];
+// Stroke ids with at least one batch sent, so a cancelled stroke knows
+// whether the server has anything of it to undo.
+const sentStrokes = new Set();
 
 // A new gesture's first cell seals whatever the previous gesture left
 // queued, so each request belongs to exactly one stroke.
@@ -319,6 +329,7 @@ async function flush() {
   }
   flushing = (async () => {
     for (const { stroke, elevation, types } of batches) {
+      sentStrokes.add(stroke);
       try {
         if (elevation.length > 0) await postBatch("/api/terrain/cells", elevation, stroke);
         if (types.length > 0) await postBatch("/api/terrain/types", types, stroke);
@@ -815,6 +826,8 @@ function handlePointerDown(event) {
   // View-only: left-drag does nothing (the server would refuse it anyway);
   // pan and zoom are wired separately and still work.
   if (!room.canEdit || event.button !== 0) return;
+  // A second finger is a pinch, never a second brush.
+  if (event.pointerType === "touch" && !event.isPrimary) return;
   painting = true;
   strokeId = `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   beginStroke();
@@ -841,6 +854,37 @@ function handlePointerMove(event) {
     paintAt(pos.x, pos.y);
     lastStampPos = pos;
   }
+}
+
+// A second finger turned a one-finger stroke into a pinch: end the stroke
+// and undo what it had already painted, so navigating leaves no mark.
+function cancelStroke({ undoOnServer = true } = {}) {
+  const restore = strokeStart ? [...strokeStart.entries()] : [];
+  const cancelled = strokeId;
+  // Nothing sent yet: drop the queued cells so they never are.
+  if (!undoOnServer && pendingStroke === cancelled) {
+    if (flushHandle) clearTimeout(flushHandle);
+    flushHandle = null;
+    pendingElevation.clear();
+    pendingTypes.clear();
+  }
+  stopPainting();
+  if (restore.length === 0) return;
+  // Put the cells back locally at once, then let the server undo the
+  // stroke (it was sent under its own stroke id), which also tells everyone
+  // else.
+  for (const [index, elevation] of restore) {
+    elevationGrid[index] = elevation;
+    markDirty(index % GRID_SIZE, Math.floor(index / GRID_SIZE));
+  }
+  dirtyElevation = true;
+  scheduleRender();
+  if (undoOnServer) undoLastStroke({ quiet: true });
+}
+
+// Has any batch of the current stroke left for the server yet?
+function strokeHasSent() {
+  return sentStrokes.has(strokeId);
 }
 
 function stopPainting() {
@@ -946,8 +990,8 @@ function wireToolbar() {
     event.preventDefault();
   });
 
-  document.getElementById("undo-button").addEventListener("click", undoLastStroke);
-  document.getElementById("rail-undo").addEventListener("click", undoLastStroke);
+  document.getElementById("undo-button").addEventListener("click", () => undoLastStroke());
+  document.getElementById("rail-undo").addEventListener("click", () => undoLastStroke());
 }
 
 // PROTOTYPE (final-redesign-prototype branch, UI/UX redesign): the left
@@ -993,6 +1037,7 @@ function wireCategoryRail() {
       railButton.classList.add("active");
       for (const section of sections) section.classList.toggle("hidden", section.dataset.panel !== category);
       places?.setActive(category === "places");
+      document.body.classList.toggle("places-active", category === "places");
       const cameraHint = document.getElementById("camera-hint");
       if (category === "places") {
         // The brush sliders mean nothing for places.
@@ -1024,7 +1069,7 @@ function wireCategoryRail() {
 // asking: otherwise undo could race the stroke the person just drew and
 // reverse the one before it.
 let undoing = false;
-async function undoLastStroke() {
+async function undoLastStroke({ quiet = false } = {}) {
   if (undoing || !room.canEdit) return;
   undoing = true;
   try {
@@ -1032,6 +1077,7 @@ async function undoLastStroke() {
     while (flushing) await flushing;
     await places?.settle();
     const res = await fetch(apiPath("/api/terrain/undo"), { method: "POST" });
+    if (quiet) return;
     if (res.status === 409) return toast("Nothing more to undo.");
     if (!res.ok) return toast("Couldn't undo just now. Try again.");
     const { what, skipped, remaining } = await res.json();
@@ -1140,6 +1186,10 @@ function wireViewToggle() {
 // events are attached to the canvas (zoom has no existing canvas gesture to
 // conflict with - painting is pointer-drag-based, not wheel-based).
 let syncCameraUI = () => {};
+// One frame for a camera change (no data changed, so no rebake).
+function renderOnce() {
+  scene3d?.render();
+}
 
 function wireCameraControls() {
   if (!scene3d) {
@@ -1149,9 +1199,6 @@ function wireCameraControls() {
     return;
   }
 
-  function renderOnce() {
-    scene3d.render();
-  }
 
   function angularDiff(a, b) {
     return Math.abs((((a - b + 540) % 360) + 360) % 360 - 180);
@@ -1356,6 +1403,170 @@ function wireCameraControls() {
   };
   canvas3d.addEventListener("pointerup", endPan, true);
   canvas3d.addEventListener("pointercancel", endPan, true);
+  wireTouchGestures();
+  wirePhonePanels();
+}
+
+// Phone: the camera panel and the brush sliders open over the map from a
+// button each, and close again, so the map keeps its space (world.css).
+// One open at a time. The compass button faces north again in Relief.
+function wirePhonePanels() {
+  const camera = document.getElementById("camera-toolbar");
+  const cameraFab = document.getElementById("camera-fab");
+  const footer = document.getElementById("options-footer");
+  const summary = document.getElementById("brush-summary");
+  const setOpen = (panel, button, open) => {
+    panel.classList.toggle("open", open);
+    button.setAttribute("aria-expanded", String(open));
+  };
+  cameraFab.addEventListener("click", () => {
+    const open = !camera.classList.contains("open");
+    setOpen(camera, cameraFab, open);
+    if (open) setOpen(footer, summary, false);
+  });
+  document.getElementById("camera-close").addEventListener("click", () => setOpen(camera, cameraFab, false));
+  summary.addEventListener("click", () => {
+    const open = !footer.classList.contains("open");
+    setOpen(footer, summary, open);
+    if (open) setOpen(camera, cameraFab, false);
+  });
+  // Starting a stroke closes the brush sheet: you've picked your settings.
+  canvas3d.addEventListener("pointerdown", () => setOpen(footer, summary, false));
+
+  const sizeOut = document.getElementById("brush-size-out");
+  const strengthOut = document.getElementById("brush-strength-out");
+  const sync = () => {
+    document.getElementById("brush-summary-size").textContent = sizeOut.textContent;
+    document.getElementById("brush-summary-strength").textContent = strengthOut.textContent;
+  };
+  new MutationObserver(sync).observe(sizeOut, { childList: true, characterData: true, subtree: true });
+  new MutationObserver(sync).observe(strengthOut, { childList: true, characterData: true, subtree: true });
+  sync();
+
+  const needle = document.querySelector("#north-fab svg");
+  document.getElementById("north-fab").addEventListener("click", () => {
+    scene3d.setAzimuth(0);
+    syncCameraUI();
+    renderOnce();
+  });
+  const prevSync = syncCameraUI;
+  syncCameraUI = () => {
+    prevSync();
+    needle.style.transform = `rotate(${-scene3d.getCameraState().azimuthDeg}deg)`;
+  };
+  const setViewClass = () => document.body.classList.toggle("view-oblique", viewMode === "oblique");
+  for (const b of document.querySelectorAll("[data-view]")) b.addEventListener("click", () => requestAnimationFrame(setViewClass));
+  setViewClass();
+}
+
+// Touch: one finger paints (or, in Places, sets down and drags); two fingers
+// navigate, the convention of maps and painting apps alike - pinch zooms
+// about the fingers, dragging both pans, twisting turns the Relief view and
+// moving both fingers up or down together tilts it. A second finger landing
+// mid-stroke takes the gesture over: that stroke is ended and undone, so a
+// pinch never leaves a smear where the first finger touched down.
+//
+// Registered in the capture phase so it sees every touch before painting
+// and Places do; the page itself never scrolls (touch-action: none on the
+// canvas), which is what made scrolling and drawing fight before.
+function wireTouchGestures() {
+  const touches = new Map(); // pointerId -> {x, y}
+  let gesture = null; // {dist, angle, mid, startedStroke}
+  const midpoint = () => {
+    const [a, b] = [...touches.values()];
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, dist: Math.hypot(b.x - a.x, b.y - a.y), angle: Math.atan2(b.y - a.y, b.x - a.x) };
+  };
+  canvas3d.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (event.pointerType !== "touch") return;
+      // A primary touch means no other finger is down: forget any finger
+      // whose pointerup the browser never delivered, so a lost event can't
+      // turn the next one-finger stroke into a "pinch".
+      if (event.isPrimary) {
+        touches.clear();
+        gesture = null;
+      }
+      touches.set(event.pointerId, { x: event.clientX, y: event.clientY, at: performance.now() });
+      if (touches.size === 2) {
+        // A second finger: cancel whatever the first one started. If it
+        // landed almost together with the first (a two-finger tap or the
+        // start of a pinch), the first finger never meant to paint, so the
+        // tap still counts as an undo of the stroke before.
+        const first = [...touches.values()][0];
+        const together = performance.now() - first.at < 250;
+        const strokeWasLive = painting && !together;
+        if (painting) cancelStroke({ undoOnServer: !together || strokeHasSent() });
+        places?.cancelDrag();
+        gesture = { ...midpoint(), strokeWasLive, travel: 0, at: performance.now() };
+        event.stopImmediatePropagation();
+        canvas3d.setPointerCapture(event.pointerId);
+      } else if (touches.size > 2) {
+        event.stopImmediatePropagation();
+      }
+    },
+    true,
+  );
+  canvas3d.addEventListener(
+    "pointermove",
+    (event) => {
+      if (event.pointerType !== "touch" || !touches.has(event.pointerId)) return;
+      const prev = touches.get(event.pointerId);
+      touches.set(event.pointerId, { x: event.clientX, y: event.clientY, dy: event.clientY - prev.y });
+      if (!gesture || touches.size < 2) return;
+      event.stopImmediatePropagation();
+      const now = midpoint();
+      const rect = canvas3d.getBoundingClientRect();
+      gesture.travel += Math.hypot(now.x - gesture.x, now.y - gesture.y) + Math.abs(now.dist - gesture.dist);
+      // Tilt (Relief only), as in MapLibre's two-finger pitch: both fingers
+      // moving vertically the same way, more up/down than sideways, without
+      // pinching. Otherwise it's pan, zoom and turn.
+      const [a, b] = [...touches.values()];
+      const tilting =
+        viewMode === "oblique" &&
+        Math.sign(a.dy ?? 0) === Math.sign(b.dy ?? 0) &&
+        Math.abs(now.y - gesture.y) > Math.abs(now.x - gesture.x) * 1.5 &&
+        Math.abs(now.dist - gesture.dist) < 4 &&
+        Math.abs(a.y - b.y) < rect.height * 0.35;
+      if (tilting) {
+        scene3d.setTilt(scene3d.getCameraState().tiltDeg - (now.y - gesture.y) * 0.5);
+      } else {
+        // Zoom about the point between the fingers, and pan with it.
+        if (gesture.dist > 0 && now.dist > 0) {
+          const ndcX = ((now.x - rect.left) / rect.width) * 2 - 1;
+          const ndcY = -(((now.y - rect.top) / rect.height) * 2 - 1);
+          scene3d.zoomAtCursor(now.dist / gesture.dist, ndcX, ndcY);
+        }
+        scene3d.panBy(-(now.x - gesture.x) / rect.width, (now.y - gesture.y) / rect.height);
+        if (viewMode === "oblique") {
+          const twist = ((now.angle - gesture.angle) * 180) / Math.PI;
+          if (Math.abs(twist) < 45) scene3d.setAzimuth(scene3d.getCameraState().azimuthDeg - twist);
+        }
+      }
+      Object.assign(gesture, now);
+      syncCameraUI();
+      renderOnce();
+    },
+    true,
+  );
+  const lift = (event) => {
+    if (event.pointerType !== "touch" || !touches.has(event.pointerId)) return;
+    touches.delete(event.pointerId);
+    if (gesture) {
+      event.stopImmediatePropagation();
+      // The gesture lasts until every finger is up, so lifting one finger
+      // of a pinch doesn't start painting with the other.
+      if (touches.size === 0) {
+        // A quick two-finger tap that didn't move: undo, as in Procreate
+        // and Fresco. (A stroke the second finger cut short was already
+        // taken back, so the tap isn't spent on that.)
+        if (!gesture.strokeWasLive && gesture.travel < 12 && performance.now() - gesture.at < 300) undoLastStroke();
+        gesture = null;
+      }
+    }
+  };
+  canvas3d.addEventListener("pointerup", lift, true);
+  canvas3d.addEventListener("pointercancel", lift, true);
 }
 
 async function loadTerrain() {
