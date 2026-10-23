@@ -2523,6 +2523,78 @@ ab8593a (places). Fixes after the first review are in 12b13f3.
     saw a raised hill re-level a house pad live.
   - Known limit: a building right on a cliff edge sits half on its cut.
 
+#### Undo and the first-use guide (23 Oct, branch `atlas-guide`, not merged or deployed)
+
+Found through use of the live app (Stage B, Fly v16). Built in 0821846.
+
+- **Undo did not reliably undo the last action.** Reproduced over HTTP on
+  the deployed code before changing anything:
+  - It was one step deep: a second undo answered "nothing to undo".
+  - A stroke was whatever arrived within 400 ms. Holding the mouse still
+    mid-stroke split it, and undo took back only the second half.
+  - Places weren't covered. Undo after setting down a house reverted the
+    terrain painted before it, and the house stayed.
+  - Undo restored its snapshot whatever had happened since, so it erased
+    a collaborator's later paint on the same cells.
+  - The client didn't wait for a request already in flight before asking
+    to undo.
+- **Fix** (`src/undo.ts`):
+  - Per person and map, up to 30 steps, covering strokes and every kind
+    of place change.
+  - The client names each gesture from pointer down to up, and every
+    batch carries that name.
+  - Undo only restores cells and places still holding what this person
+    left there. Anything changed by someone else since is left alone,
+    and the toast says so.
+  - A version restore clears pending undos for that map. Ctrl+Z and
+    Cmd+Z work.
+  - Still in memory: a server restart forgets pending undos (named limit).
+    There is no redo.
+- **Checked:**
+  - 92/92 tests on a fresh database (five new undo tests), and the
+    typecheck is clean.
+  - In real browsers, three strokes (one with a 0.9 s pause) undid one
+    at a time by button and Ctrl+Z, and a fourth said "Nothing more to
+    undo."
+  - A house placed, dragged inland, then undone twice went back to
+    where it was set down, then disappeared.
+  - Two people in separate browsers: one undid a stroke the other had
+    partly painted over. Only the first person's cells reverted; the
+    other's 361 cells stayed.
+  - Painting persisted across reload, and a restore brought back the
+    saved map. Undo straight after a restore did nothing.
+  - No page errors.
+- **First-use guide.** Stage A's entry flow had no tour and no Help.
+  - The first visit to the Atlas home offers a tour in a welcome
+    dialog, with Take the tour, Skip and close. It is shown once per
+    browser.
+  - The tour has nine steps on the real controls: the generated world,
+    shape, name, private maps, edit versus view links, the shared
+    world, the gallery, and it ends on **Create this world**.
+  - **Help** in the masthead and footer reopens it. In the editor, a
+    Help button gives an eight-step tour of the editor, a link to the
+    full tour, the two kinds of world and link, and the keys.
+  - Built on driver.js 1.8.0 (MIT, vendored). The AGPL alternatives
+    were passed over (`CREDITS.md`).
+  - Checked at 1366x860 and 390x844 (emulated): every step reached,
+    Skip and close both dismiss, the welcome doesn't return, Help and
+    Escape work, and there is no horizontal scroll. On a phone, steps
+    point at the phone's own controls.
+- **Not done, and known limits:**
+  - No redo, and undo history is lost on a server restart.
+  - Undo can't bring back a place removed by a version restore (the
+    history is cleared at restore).
+  - The tour hasn't been run on a real phone. The Help sheet's keyboard
+    list is shown on phones, where it matters less.
+  - The welcome is remembered per browser (`localStorage`), so private
+    windows see it every time.
+  - Still open from stage B:
+    - a building on a cliff edge sits half on its cut;
+    - no Gate arrival card;
+    - the overview PNG is only 1024 px;
+    - on desktop, the camera panel covers part of the map;
+    - the 3 test checkpoints left in the demo village's history.
+
 #### Next: connected walls and roads (user request, 22 Oct; not started)
 
 Stage B accepted by the user as a direction. Recorded for the next stage,
