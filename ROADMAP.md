@@ -2523,7 +2523,7 @@ ab8593a (places). Fixes after the first review are in 12b13f3.
     saw a raised hill re-level a house pad live.
   - Known limit: a building right on a cliff edge sits half on its cut.
 
-#### Undo and the first-use guide (23 Oct, branch `atlas-guide`, not merged or deployed)
+#### Undo and the first-use guide (23 Oct; merged in 434d2c3 and deployed as Fly v17)
 
 Found through use of the live app (Stage B, Fly v16). Built in 0821846.
 
@@ -2595,7 +2595,7 @@ Found through use of the live app (Stage B, Fly v16). Built in 0821846.
     - on desktop, the camera panel covers part of the map;
     - the 3 test checkpoints left in the demo village's history.
 
-#### Mobile editor layout and touch (23 Oct, branch `atlas-guide`, not merged or deployed)
+#### Mobile editor layout and touch (23 Oct; merged in 434d2c3 and deployed as Fly v17)
 
 Found through real use on a phone in portrait. Relief was worst: some
 camera controls, including the North/South and East/West presets, could not
@@ -2671,6 +2671,24 @@ made dragging on the map fight the page. That was not brought back.
   - The editor tour's "Paint on the map" step still names mouse controls
     on a phone. The Help sheet's keyboard list is shown on phones too.
   - The camera sheet covers the lower part of the map while open.
+
+#### Deploy: undo, guide and mobile (23 Oct, user-approved, Fly v17)
+
+- `main` fast-forwarded from 2f050de to 434d2c3. The research-note branch
+  is not in its history.
+- Volume snapshot `vs_OgzeJ2kLzlwNUnwKqkYlyBND` (66 MiB) showed as
+  created before the push.
+- CI run 39928390364 passed checks and deploy, and the release is v17.
+- After the deploy, the shared world's terrain, terrain types, places and
+  room data were byte-identical to a copy fetched just before it.
+  `spec/rooms.test.ts` and `spec/invariants.test.ts` passed against
+  production (20/20).
+- Real browser against production (desktop 1366x860 and emulated
+  iPhone 13): the editor loaded with no page errors and the home page
+  offered the welcome tour. On the phone the map was 377 px, nothing
+  scrolled, and all four direction presets and Fit were on screen in
+  Relief with the camera panel open.
+- Still to do: a test on a real phone (see the limits above).
 
 #### Next: connected walls and roads (user request, 22 Oct; not started)
 
