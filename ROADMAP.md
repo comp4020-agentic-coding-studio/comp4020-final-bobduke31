@@ -2693,7 +2693,7 @@ made dragging on the map fight the page. That was not brought back.
   user's report. No measurements or screenshots were taken from the
   device.
 
-#### Connected walls, gates, towers and roads (25 Oct, branch `atlas-walls`, not merged or deployed)
+#### Connected walls, gates, towers and roads (25 Oct; merged in 1f0c3c4 and deployed as Fly v18)
 
 The user asked for convincing towns and fortifications, not scattered
 models. The plan recorded on 22 Oct was:
@@ -2808,6 +2808,24 @@ All of that is built.
     compile shaders. Deployed code already did this for buildings. A real
     GPU compiles in milliseconds, but this hasn't been measured on a phone.
   - **Not yet tried on a real phone.**
+
+#### Deploy: walls, gates, towers and roads (25 Oct, user-approved, Fly v18)
+
+- `main` fast-forwarded from 434d2c3 to 1f0c3c4. The research-note branch
+  is not in its history.
+- Fly had replaced the data volume since v17: vol_4qlw6ygdzzlq80wr was
+  destroyed, and the app now uses vol_vgn0g8z9q793ndj4. Live data was
+  unchanged. Snapshot `vs_zw4wJVDMyKMQt3OO8kw35w37` showed as created
+  before the push, and an automatic snapshot from 7 hours earlier,
+  `vs_QegelVk6O16nf767RNVxqBll`, is also kept.
+- CI run 40172100369 passed checks and deploy, and the release is v18.
+- After the deploy, the shared world's terrain, terrain types, places and
+  room data were byte-identical to a copy fetched just before it.
+  `/api/paths` answers (empty, as expected). `spec/rooms.test.ts` and
+  `spec/invariants.test.ts` passed against production (20/20).
+- The live editor loaded in a browser with the three wall and road buttons
+  in Places, and no page errors. The new tools have not yet been used on
+  the live site.
 
 ### Writing track (runs alongside the phases, not only at the end)
 
