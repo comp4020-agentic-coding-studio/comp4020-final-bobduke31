@@ -2827,6 +2827,73 @@ All of that is built.
   in Places, and no page errors. The new tools have not yet been used on
   the live site.
 
+#### Priority until the final deadline (user direction, 25 Oct)
+
+The final project is due 9 November. The user asked that until then, the
+research note and the other required submission materials come first,
+reviewed carefully, ahead of optional features or extensive visual polish.
+Research Note draft 2 stays private and unchanged until the user has
+reviewed it. The four items below are recorded for later; none has been
+started.
+
+#### For future consideration (user request, 25 Oct; not started)
+
+1. **Map permissions: investigate before assuming a bug.** The user has
+   seen maps edited by other people appear editable to them. Find out
+   which of these it is before changing anything:
+   - **Expected, the shared world:** `/world/` is open to everyone by
+     design (ADR.md), so anyone can edit it.
+   - **Expected, an edit link:** whoever opens an edit link can edit that
+     map. That includes anyone the link was forwarded to, and everyone
+     sees everyone else's changes.
+   - **A real permission problem:** a view link or an unrelated map that
+     accepts writes.
+
+   Gather evidence first:
+   - which URL was open (`/world/`, `/m/<edit token>` or `/m/<view
+     token>`);
+   - what `/api/room` reported for `role` and `isPublic`;
+   - whether a write was actually accepted, or only the UI looked
+     editable.
+
+   The server checks writes on every route, and `spec/rooms.test.ts`
+   checks that view links are refused. That makes "expected behaviour, but
+   unclear in the UI" the likelier answer, but it isn't proven. If the
+   cause is that the UI is unclear, the fix is to make the map's status
+   plainer ("Anyone can edit", "Shared with you to edit", "View only"),
+   not to change permissions.
+2. **Rotate a building by dragging.** Add a rotation ring or handle around
+   the selected building, the way most map and design editors do (drag
+   the ring, with an optional angle snap such as Shift for 15 degrees).
+   Turn left and Turn right, and Q and E, stay as they are. Things to work
+   out:
+   - picking the handle versus the building, and versus the ground;
+   - the Chart view's lean;
+   - two fingers on a phone are already camera navigation, so a one-finger
+     drag on the ring is needed;
+   - one undo step and one request per drag, as moving already works.
+3. **Undo improvements, without unlimited history.** The 30-step limit
+   per person and map is accepted. Possible improvements:
+   - **Redo** of an undone change, with the same rule that it never
+     overwrites someone else's newer work;
+   - **feedback** on how many steps are left, for example on the Undo
+     button's tooltip or in the toast;
+   - a clear message when the oldest step has been dropped;
+   - a clear message that a server restart clears undo history.
+
+   Versions remain the durable way back.
+4. **Select several buildings at once.** Box-select (drag a rectangle,
+   or Shift-click to add) and act on the group:
+   - move, turn about the group's centre, and delete together;
+   - one undo entry for the whole group action;
+   - collaboration: the server applies the group change in one request,
+     each place still obeys the same land rule, and a place someone else
+     has moved since is left alone, as undo does now.
+
+   Box-drag on the map conflicts with painting and with one-finger
+   placing on a phone, so it probably needs a modifier key or a select
+   mode.
+
 ### Writing track (runs alongside the phases, not only at the end)
 
 Figures from `topics/assessment` and `assessments/final-project`, checked
