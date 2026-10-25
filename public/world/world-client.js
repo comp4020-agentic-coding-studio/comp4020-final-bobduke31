@@ -1022,7 +1022,7 @@ const CATEGORY_HINT = {
   land: "One stroke moves the land by at most Strength - stroke again to build higher. Shift lowers, Alt smooths. [ ] size, - = strength.",
   terrain: "Paint grassland, sand, forest or rock onto land. Lower Coverage for open woods and scattered stands.",
   water: "Create land and Paint sea move the coastline. Deepen and Shallow shape the seabed.",
-  places: "Pick a place, then click the map to set it down (hold Shift to set down several). Click a place to select it; drag to move. Q and E turn it.",
+  places: "Pick a place, then click the map to set it down (Shift sets down several). For walls and roads, click point by point: click the first point to close a ring, double-click or Enter to finish. A road through a wall makes a gate.",
 };
 
 function wireCategoryRail() {
@@ -1082,8 +1082,8 @@ async function undoLastStroke({ quiet = false } = {}) {
     if (!res.ok) return toast("Couldn't undo just now. Try again.");
     const { what, skipped, remaining } = await res.json();
     // The change itself arrives over SSE like anyone else's edit.
-    const thing = what === "place" ? "place" : "stroke";
-    const kept = skipped ? (what === "place" ? " Someone has changed it since, so theirs stays." : ` ${skipped} cell${skipped === 1 ? "" : "s"} someone else has painted since were left as they are.`) : "";
+    const thing = what === "place" ? "place" : what === "path" ? "wall or road" : "stroke";
+    const kept = skipped ? (what !== "stroke" ? " Someone has changed it since, so theirs stays." : ` ${skipped} cell${skipped === 1 ? "" : "s"} someone else has painted since were left as they are.`) : "";
     toast(`Undid your last ${thing}.${kept}${remaining ? "" : " That was the last one."}`);
   } finally {
     undoing = false;

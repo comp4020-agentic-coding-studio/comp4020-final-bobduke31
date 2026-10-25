@@ -105,9 +105,10 @@ Sebastian Lague's hydraulic erosion (MIT) as too slow to run per preview at
 
 ### Places: buildings and map objects (Atlas Table stage B)
 
-- **Asset**: `public/world/assets/kaykit-medieval/` (10 models as glTF +
+- **Asset**: `public/world/assets/kaykit-medieval/` (11 models as glTF +
   .bin, one shared 15 KB colour atlas `hexagons_medieval.png`, and the
-  pack's own `LICENSE.txt`)
+  pack's own `LICENSE.txt`). `wall_straight_gate` was added for walls and
+  roads (below).
 - **Pack**: [KayKit Medieval Hexagon Pack 1.0](https://github.com/KayKit-Game-Assets/KayKit-Medieval-Hexagon-Pack-1.0)
 - **Author**: Kay Lousberg (<https://www.kaylousberg.com>), the same author
   as the KayKit trees already in the renderer
@@ -139,6 +140,39 @@ Sebastian Lague's hydraulic erosion (MIT) as too slow to run per preview at
 - **Chart view.** Buildings tilt back towards the overhead camera, so they
   read as upright map symbols, not just roofs. Flat things (fields,
   bridges) don't tilt.
+
+### Walls, gates, towers and roads
+
+`src/paths.ts`, `public/world/paths-layer.js` and the drawing tools in
+`public/world/places-ui.js`. Searched first, per `CLAUDE.md`.
+
+- **Interaction: adopted from Dungeondraft and Wonderdraft** (patterns only,
+  no code). Both draw walls and paths as a line of points: click to place
+  each point, finish explicitly, and move points afterwards
+  ([Encounter Library: Dungeondraft design tools](https://encounterlibrary.com/dungeondraft-basics/design-tools/),
+  [the Dungeondraft path tool](https://www.youtube.com/watch?v=tz3BzB-ACfU)).
+  Snapping a new point to an existing end follows the same tools' snap. Game
+  level editors' "spline plus fitted segments" walls are the same idea: the
+  person draws the line, the editor fits the pieces.
+- **Wall and gate models: KayKit Medieval Hexagon Pack** (CC0, the pack
+  credited above). `wall_straight` (already in use) and `wall_straight_gate`
+  are fitted along each run. Each is stretched slightly to fit exactly and
+  sheared to follow the slope. Towers are the pack's `building_tower_A_red`.
+- **Passed over:**
+  - The pack's corner walls (`wall_corner_A_*`, `wall_corner_B_*`). They
+    are fixed hex angles (60 and 120 degrees), so they can't turn a corner
+    drawn at any other angle. A tower at the corner covers the joint at any
+    angle, as on real curtain walls.
+  - The pack's wood and stone fences. They are hex-edge pieces, too short
+    and low to read at map scale.
+  - The hex road tiles, for the reason given above.
+- **Built in code:**
+  - The palisade stakes. No CC0 stockade model was found in a matching
+    low-poly style, so each stake is a six-sided post with a point, in
+    timber colours sampled from the pack's atlas.
+  - The road ribbon. Packed earth with darker wheel ruts, smoothed through
+    the drawn points and laid on the displayed surface. No CC0 road texture
+    was needed at this scale.
 
 ### The Atlas home and gallery (Atlas Table stage A)
 

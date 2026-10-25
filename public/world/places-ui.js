@@ -3,6 +3,12 @@
 // to select it, drag to move, and turn or remove it from the panel. Every
 // change goes to the server, which broadcasts it, so all open maps update
 // live. Needs the WebGL2 renderer; the canvas fallback hides the tab.
+//
+// Walls, palisades and roads are drawn the way Dungeondraft and
+// Wonderdraft draw them: click point by point, click the first point again
+// to close a ring, double-click or Enter to finish. A new point snaps to
+// the end or corner of an existing wall or road, and to a tower or castle
+// set down as a place, so runs join up instead of nearly meeting.
 import { apiPath, room, toast } from "./room-ui.js";
 
 const $ = (id) => document.getElementById(id);
@@ -22,6 +28,10 @@ export const PLACE_KINDS = [
 ];
 
 const TURN = Math.PI / 8;
+const PATH_LABEL = { wall: "Stone wall", palisade: "Palisade", road: "Road" };
+// Snap reach, in cells: about a fingertip at a typical zoom.
+const SNAP = 1.6;
+const DOUBLE_CLICK_MS = 350;
 
 export function createPlaces(scene3d, canvas3d) {
   const objects = new Map(); // id -> data
@@ -29,6 +39,12 @@ export function createPlaces(scene3d, canvas3d) {
   let armedKind = null; // the palette choice; null = select/move mode
   let selected = null;
   let drag = null;
+  // Walls and roads.
+  let drawKind = null; // armed path kind
+  let drawing = null; // { kind, points, closed } being drawn
+  let pathSelected = null;
+  let pathDrag = null; // { id, handle, start }
+  let lastClick = 0;
 
   const toCanvas = (event) => {
     const rect = canvas3d.getBoundingClientRect();
@@ -76,20 +92,162 @@ export function createPlaces(scene3d, canvas3d) {
     if (o) $("place-selected-name").textContent = PLACE_KINDS.find((k) => k.kind === o.kind)?.label ?? o.kind;
   }
 
+  // --- Walls and roads ---------------------------------------------------
+  // Snap a point to the nearest path end or corner, or tower/castle.
+  function snap(at, skip) {
+    let best = null;
+    let bestD = SNAP;
+    const consider = (x, y) => {
+      const d = Math.hypot(x - at.x, y - at.y);
+      if (d < bestD) {
+        bestD = d;
+        best = { x, y };
+      }
+    };
+    for (const p of scene3d.paths.all()) {
+      p.points.forEach(([x, y], i) => {
+        if (skip && skip.id === p.id && skip.handle === i) return;
+        consider(x, y);
+      });
+    }
+    for (const a of scene3d.objects.anchors()) consider(a.x, a.y);
+    return best ?? at;
+  }
+
+  function showDrawing() {
+    $("path-drawing").classList.toggle("hidden", !drawing);
+    document.body.classList.toggle("path-drawing", !!drawing);
+    if (drawing) {
+      $("path-drawing-name").textContent = PATH_LABEL[drawing.kind];
+      $("path-drawing-count").textContent = String(drawing.points.length);
+    }
+    scene3d.paths.setDraft(drawing && drawing.points.length > 0 ? drawing : null);
+  }
+
+  // Pick a wall, palisade or road to draw; picking the same one again puts
+  // it down (finishing a line already started).
+  function armPath(kind) {
+    const same = drawKind === kind;
+    if (drawing) finishDrawing();
+    else stopDrawing();
+    if (same) return;
+    disarmPlace();
+    select(null);
+    selectPath(null);
+    drawKind = kind;
+    drawing = { kind, points: [], closed: false };
+    for (const b of document.querySelectorAll("[data-path]")) b.classList.toggle("active", b.dataset.path === kind);
+    canvas3d.classList.add("placing");
+    showDrawing();
+  }
+
+  // Put the path tool down without saving anything.
+  function stopDrawing() {
+    drawing = null;
+    drawKind = null;
+    for (const b of document.querySelectorAll("[data-path]")) b.classList.remove("active");
+    canvas3d.classList.toggle("placing", !!armedKind);
+    showDrawing();
+  }
+
+  function cancelDrawing() {
+    stopDrawing();
+  }
+
+  function finishDrawing() {
+    const d = drawing;
+    drawing = null;
+    const kind = drawKind;
+    drawKind = null;
+    for (const b of document.querySelectorAll("[data-path]")) b.classList.remove("active");
+    canvas3d.classList.remove("placing");
+    if (d && d.points.length >= 2) {
+      send("/api/paths", { kind: d.kind, points: d.points, closed: d.closed })
+        .then((p) => {
+          scene3d.paths.setDraft(null);
+          scene3d.paths.upsert(p);
+          selectPath(p.id);
+        })
+        .catch((err) => {
+          scene3d.paths.setDraft(null);
+          toast(err.message);
+        });
+      showDrawingPanelOnly();
+      return;
+    }
+    if (d && d.points.length > 0) toast(`A ${PATH_LABEL[kind].toLowerCase()} needs at least two points.`);
+    showDrawing();
+  }
+  // The draft stays drawn until the server's answer replaces it.
+  function showDrawingPanelOnly() {
+    $("path-drawing").classList.add("hidden");
+    document.body.classList.remove("path-drawing");
+  }
+
+  function addPoint(at) {
+    const p = snap(at);
+    const pts = drawing.points;
+    // Clicking the first point again closes a wall into a ring.
+    if (pts.length >= 3 && drawing.kind !== "road" && Math.hypot(p.x - pts[0][0], p.y - pts[0][1]) < SNAP) {
+      drawing.closed = true;
+      finishDrawing();
+      return;
+    }
+    const last = pts.at(-1);
+    if (last && Math.hypot(p.x - last[0], p.y - last[1]) < 0.75) return;
+    if (pts.length >= 64) return toast("That's as long as one line can be. Finish it and start another.");
+    pts.push([+p.x.toFixed(2), +p.y.toFixed(2)]);
+    showDrawing();
+  }
+
+  function selectPath(id) {
+    pathSelected = id;
+    scene3d.paths.select(id);
+    const p = id === null ? null : scene3d.paths.get(id);
+    $("path-selected").classList.toggle("hidden", !p);
+    if (p) $("path-selected-name").textContent = PATH_LABEL[p.kind] + (p.closed ? " (ring)" : "");
+  }
+
+  function removeSelectedPath() {
+    const id = pathSelected;
+    if (id === null) return;
+    const p = scene3d.paths.get(id);
+    selectPath(null);
+    scene3d.paths.remove(id);
+    send("/api/paths/delete", { id }).catch((err) => {
+      if (p) scene3d.paths.upsert(p);
+      toast(err.message);
+    });
+  }
+
   function arm(kind) {
-    armedKind = armedKind === kind ? null : kind;
+    const next = armedKind === kind ? null : kind;
+    if (next && drawKind) {
+      if (drawing?.points.length >= 2) finishDrawing();
+      else stopDrawing();
+    }
+    armedKind = next;
     for (const b of document.querySelectorAll("[data-place]")) b.classList.toggle("active", b.dataset.place === armedKind);
     canvas3d.classList.toggle("placing", !!armedKind);
-    if (armedKind) select(null);
+    if (armedKind) {
+      select(null);
+      selectPath(null);
+    }
+  }
+
+  function disarmPlace() {
+    if (armedKind) arm(armedKind);
   }
 
   async function load() {
-    const res = await fetch(apiPath("/api/objects")).catch(() => null);
+    const [res, pres] = await Promise.all([fetch(apiPath("/api/objects")).catch(() => null), fetch(apiPath("/api/paths")).catch(() => null)]);
     const list = res?.ok ? await res.json() : [];
     objects.clear();
     for (const o of list) objects.set(o.id, o);
     scene3d.objects.setAll(list);
     if (selected !== null && !objects.has(selected)) select(null);
+    scene3d.paths.setAll(pres?.ok ? await pres.json() : []);
+    if (pathSelected !== null && !scene3d.paths.get(pathSelected)) selectPath(null);
   }
 
   // Returns true when it handled the event (so painting doesn't).
@@ -100,6 +258,26 @@ export function createPlaces(scene3d, canvas3d) {
     if (event.pointerType === "touch" && !event.isPrimary) return true;
     const [px, py] = toCanvas(event);
     if (!room.canEdit) return true;
+    if (drawing) {
+      const now = performance.now();
+      const at = scene3d.pickPoint(px, py);
+      const last = drawing.points.at(-1);
+      // A double-click on the last point finishes; two quick taps in
+      // different places are just two points.
+      const double = now - lastClick < DOUBLE_CLICK_MS && at && last && Math.hypot(at.x - last[0], at.y - last[1]) < SNAP;
+      lastClick = now;
+      if (double) finishDrawing();
+      else if (at) addPoint(at);
+      return true;
+    }
+    // A handle on the selected wall or road, then any wall or road.
+    const hitPath = scene3d.pickPath(px, py);
+    if (hitPath && hitPath.handle !== undefined && !armedKind) {
+      const p = scene3d.paths.get(hitPath.id);
+      pathDrag = { id: hitPath.id, handle: hitPath.handle, start: p, moved: false };
+      event.currentTarget.setPointerCapture(event.pointerId);
+      return true;
+    }
     if (armedKind) {
       const at = scene3d.pickPoint(px, py);
       if (!at) return true;
@@ -116,6 +294,8 @@ export function createPlaces(scene3d, canvas3d) {
     }
     const id = scene3d.pickObject(px, py);
     select(id);
+    if (id === null) selectPath(hitPath ? hitPath.id : null);
+    else selectPath(null);
     if (id !== null) {
       const o = objects.get(id);
       drag = { id, startX: o.x, startY: o.y, moved: false };
@@ -126,6 +306,17 @@ export function createPlaces(scene3d, canvas3d) {
 
   function pointerMove(event) {
     if (!active) return false;
+    if (pathDrag) {
+      const [px, py] = toCanvas(event);
+      const at = scene3d.pickPoint(px, py);
+      const p = scene3d.paths.get(pathDrag.id);
+      if (!at || !p) return true;
+      const q = snap(at, pathDrag);
+      const points = p.points.map((pt, i) => (i === pathDrag.handle ? [+q.x.toFixed(2), +q.y.toFixed(2)] : pt));
+      pathDrag.moved = true;
+      scene3d.paths.upsert({ ...p, points });
+      return true;
+    }
     if (!drag) return true;
     const [px, py] = toCanvas(event);
     const at = scene3d.pickPoint(px, py);
@@ -142,6 +333,18 @@ export function createPlaces(scene3d, canvas3d) {
 
   function pointerUp() {
     if (!active) return false;
+    if (pathDrag) {
+      const { id, moved, start } = pathDrag;
+      pathDrag = null;
+      const p = scene3d.paths.get(id);
+      if (moved && p) {
+        send("/api/paths/update", { id, points: p.points }).catch((err) => {
+          scene3d.paths.upsert(start);
+          toast(err.message);
+        });
+      }
+      return true;
+    }
     if (!drag) return true;
     const { id, moved, startX, startY } = drag;
     drag = null;
@@ -193,8 +396,35 @@ export function createPlaces(scene3d, canvas3d) {
     $("place-smaller").addEventListener("click", () => change({ scale: Math.max(0.5, +((objects.get(selected)?.scale ?? 1) - 0.25).toFixed(2)) }));
     $("place-bigger").addEventListener("click", () => change({ scale: Math.min(2.5, +((objects.get(selected)?.scale ?? 1) + 0.25).toFixed(2)) }));
     $("place-remove").addEventListener("click", removeSelected);
+    for (const b of document.querySelectorAll("[data-path]")) b.addEventListener("click", () => armPath(b.dataset.path));
+    $("path-finish").addEventListener("click", finishDrawing);
+    $("path-cancel").addEventListener("click", cancelDrawing);
+    $("path-back").addEventListener("click", () => {
+      drawing?.points.pop();
+      showDrawing();
+    });
+    $("path-remove").addEventListener("click", removeSelectedPath);
     window.addEventListener("keydown", (event) => {
       if (!active || event.target instanceof HTMLInputElement) return;
+      if (drawing) {
+        if (event.key === "Escape") cancelDrawing();
+        else if (event.key === "Enter") finishDrawing();
+        else if (event.key === "Backspace") {
+          event.preventDefault();
+          drawing.points.pop();
+          showDrawing();
+        }
+        return;
+      }
+      if ((event.key === "Delete" || event.key === "Backspace") && pathSelected !== null && room.canEdit) {
+        event.preventDefault();
+        removeSelectedPath();
+        return;
+      }
+      if (event.key === "Escape" && pathSelected !== null) {
+        selectPath(null);
+        return;
+      }
       if (event.key === "Escape") {
         if (armedKind) arm(armedKind);
         else select(null);
@@ -211,7 +441,9 @@ export function createPlaces(scene3d, canvas3d) {
     active = on;
     if (!on) {
       if (armedKind) arm(armedKind);
+      if (drawKind) stopDrawing();
       select(null);
+      selectPath(null);
     }
   }
 
@@ -223,6 +455,17 @@ export function createPlaces(scene3d, canvas3d) {
       apply(o);
     });
     source.addEventListener("objects:delete", (event) => drop(JSON.parse(event.data).id));
+    source.addEventListener("paths:upsert", (event) => {
+      const p = JSON.parse(event.data);
+      if (pathDrag?.id === p.id) return;
+      scene3d.paths.upsert(p);
+      if (pathSelected === p.id) selectPath(p.id);
+    });
+    source.addEventListener("paths:delete", (event) => {
+      const { id } = JSON.parse(event.data);
+      scene3d.paths.remove(id);
+      if (pathSelected === id) selectPath(null);
+    });
     // A restore swaps the whole map, places included.
     source.addEventListener("terrain:reload", load);
     source.addEventListener("open", load);
@@ -232,6 +475,10 @@ export function createPlaces(scene3d, canvas3d) {
   // A second finger turned the drag into a pinch: put the place back where
   // the drag started, without sending anything.
   function cancelDrag() {
+    if (pathDrag) {
+      scene3d.paths.upsert(pathDrag.start);
+      pathDrag = null;
+    }
     if (!drag) return;
     const o = objects.get(drag.id);
     if (o) apply({ ...o, x: drag.startX, y: drag.startY });

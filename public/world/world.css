@@ -982,6 +982,29 @@ body.read-only #stage-3d {
   color: var(--danger);
 }
 
+.build-title {
+  margin-top: 1.1rem;
+}
+
+.narrow-only {
+  display: none;
+}
+
+/* On a phone this row scrolls sideways; on a desktop it's just a block. */
+.places-row {
+  display: block;
+}
+
+.path-grid button {
+  font-size: 0.85rem;
+}
+
+.path-help {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--ink-faint);
+}
+
 .places-credit {
   margin: 1rem 0 0;
   font-size: 0.75rem;
@@ -1673,6 +1696,26 @@ body.read-only .edit-only {
      place's controls get their own compact row under it, and the credit a
      single line, so nothing in the section stretches the chips. */
   .options-section[data-panel="places"]:not(.hidden) { display: grid; gap: 0.45rem; overflow: visible; }
+  /* Walls and roads join the buildings' row rather than adding one, and
+     the drawing bar replaces that row while drawing, so the map never
+     changes size mid-line (a moving map ate taps). */
+  .options-section[data-panel="places"] { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .options-section[data-panel="places"].hidden { display: none; }
+  .options-section[data-panel="places"] > * { flex: 1 1 100%; min-width: 0; }
+  .places-row { display: flex; gap: 0.4rem; overflow-x: auto; scrollbar-width: none; padding: 2px; margin: 0 -2px; }
+  .places-row > .btn-grid { display: contents !important; }
+  .places-row button { flex: none; }
+  .build-title, .path-help, .places-credit { display: none; }
+  body.path-drawing .places-row { display: none; }
+  #path-drawing { margin-top: 0; padding-top: 0; border-top: 0; display: flex; align-items: center; gap: 0.4rem; }
+  #path-drawing.hidden { display: none; }
+  #path-drawing .wide-only { display: none; }
+  #path-drawing .narrow-only { display: inline; }
+  #path-drawing h3 { text-transform: none; letter-spacing: 0; flex: 1 1 auto; min-width: 0; font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #path-drawing .btn-grid { display: flex; gap: 0.35rem; }
+  #path-drawing button { flex: none; padding: 0 0.75rem; min-height: var(--tap); }
+  #path-cancel { width: auto; }
+  #path-selected { grid-template-columns: auto minmax(0, 1fr); }
   .place-grid { display: flex !important; gap: 0.4rem; overflow-x: auto; scrollbar-width: none; padding: 2px; margin: 0 -2px; }
   .place-grid button { flex: none; }
   .place-selected { margin-top: 0; padding-top: 0.45rem; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 0.4rem 0.6rem; }

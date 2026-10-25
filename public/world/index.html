@@ -183,7 +183,15 @@
 
         <section class="options-section hidden" data-panel="places">
           <h3>Set down a place</h3>
-          <div class="btn-grid place-grid" id="place-palette"></div>
+          <div class="places-row">
+            <div class="btn-grid place-grid" id="place-palette"></div>
+            <h3 class="build-title">Walls and roads</h3>
+            <div class="btn-grid path-grid" id="path-palette">
+              <button type="button" data-path="wall" title="Stone town wall with towers. Click points; click the first point to close it.">Stone wall</button>
+              <button type="button" data-path="palisade" title="Timber palisade. Click points; click the first point to close it.">Palisade</button>
+              <button type="button" data-path="road" title="Road. Where it crosses a wall, a gate is built.">Road</button>
+            </div>
+          </div>
           <div id="place-selected" class="place-selected hidden">
             <h3>Selected: <span id="place-selected-name"></span></h3>
             <div class="btn-grid">
@@ -194,7 +202,20 @@
             </div>
             <button type="button" id="place-remove" class="ghost-button full-width danger-text" title="Remove (Delete)">Remove from the map</button>
           </div>
-          <p class="places-credit">Buildings: KayKit Medieval pack by Kay Lousberg (CC0).</p>
+          <div id="path-drawing" class="place-selected hidden">
+            <h3><span id="path-drawing-name">Stone wall</span>: <span id="path-drawing-count">0</span> <span class="wide-only">points</span><span class="narrow-only">pts</span></h3>
+            <div class="btn-grid">
+              <button type="button" id="path-finish" title="Finish (Enter, or double-click)">Finish</button>
+              <button type="button" id="path-back" title="Take back the last point (Backspace)" aria-label="Back a point">Back<span class="wide-only"> a point</span></button>
+            </div>
+            <button type="button" id="path-cancel" class="ghost-button full-width" title="Stop drawing (Esc)" aria-label="Cancel drawing">Cancel</button>
+          </div>
+          <div id="path-selected" class="place-selected hidden">
+            <h3>Selected: <span id="path-selected-name"></span></h3>
+            <p class="path-help">Drag a gold point to move it.</p>
+            <button type="button" id="path-remove" class="ghost-button full-width danger-text" title="Remove (Delete)">Remove from the map</button>
+          </div>
+          <p class="places-credit">Buildings and walls: KayKit Medieval pack by Kay Lousberg (CC0).</p>
         </section>
 
         <button type="button" class="brush-summary" id="brush-summary" aria-expanded="false" aria-controls="options-footer">

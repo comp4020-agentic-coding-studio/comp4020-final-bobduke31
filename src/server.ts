@@ -20,7 +20,7 @@ import type { TerrainCell, TerrainTypeCell } from "./terrain.ts";
 import { subscribe, broadcast, closeTagged } from "./realtime.ts";
 import { log as logActivity, recentActivity, roomsWithActivityBy } from "./activity.ts";
 import type { ActivityAction } from "./activity.ts";
-import { captureStroke, forgetRoom, recordPlaceChange, recordStrokeResult, undoDepth, undoLast } from "./undo.ts";
+import { recordPathChange, captureStroke, forgetRoom, recordPlaceChange, recordStrokeResult, undoDepth, undoLast } from "./undo.ts";
 import { parseForge, forgeIntoRoom } from "./forge.ts";
 import { thumbnailFor, type ThumbSize } from "./thumbnail.ts";
 import { isListed, listGallery, listedRoomByViewToken, setListed } from "./gallery.ts";
@@ -38,6 +38,7 @@ import {
   type Snapshot,
 } from "./versions.ts";
 import { createObject, deleteObject, getObject, listObjects, parsePlacement, standsOnLand, updateObject } from "./objects.ts";
+import { createPath, deletePath, getPath, listPaths, parsePath, pathOnLand, updatePath } from "./paths.ts";
 import {
   PUBLIC_ACCESS,
   PUBLIC_ROOM_ID,
@@ -174,6 +175,9 @@ const PUBLIC_ROOM_PATHS = new Set([
   "/api/objects",
   "/api/objects/update",
   "/api/objects/delete",
+  "/api/paths",
+  "/api/paths/update",
+  "/api/paths/delete",
 ]);
 
 const DENIED_ACTION = {
@@ -189,6 +193,9 @@ const DENIED_ACTION = {
   "/api/objects": "object:place",
   "/api/objects/update": "object:move",
   "/api/objects/delete": "object:remove",
+  "/api/paths": "path:draw",
+  "/api/paths/update": "path:edit",
+  "/api/paths/delete": "path:remove",
 } as const satisfies Record<string, ActivityAction>;
 const WRITE_PATHS = new Set(Object.keys(DENIED_ACTION));
 
@@ -576,6 +583,82 @@ async function handleRoomApi(
     return true;
   }
 
+  // Walls, palisades and roads: drawn as a line of points (src/paths.ts).
+  // Same rules as places - edit-only through WRITE_PATHS, every change
+  // broadcast, each one undoable by the person who made it.
+  if (path === "/api/paths" && req.method === "GET") {
+    sendJson(res, 200, listPaths(roomId));
+    return true;
+  }
+
+  if ((path === "/api/paths" || path === "/api/paths/update" || path === "/api/paths/delete") && req.method === "POST") {
+    const payload = await readJsonOr400(req, res);
+    if (!payload) return true;
+    if (rateLimited(`objects:${sessionId}`, OBJECT_RATE_MAX)) {
+      sendJson(res, 429, { error: "too many changes just now - try again in a moment" });
+      return true;
+    }
+    if (path === "/api/paths") {
+      const drawn = parsePath(payload);
+      if (!drawn) {
+        sendJson(res, 400, { error: "a wall or road needs a known kind and at least two points on the map" });
+        return true;
+      }
+      if (drawn.kind !== "road" && !pathOnLand(roomId, drawn)) {
+        sendJson(res, 400, { error: "walls stand on land - every corner needs to be on land" });
+        return true;
+      }
+      const result = createPath(roomId, sessionId, drawn);
+      if (!result.ok) {
+        sendJson(res, result.status, { error: result.error });
+        return true;
+      }
+      recordPathChange(roomId, sessionId, null, result.path);
+      broadcast(roomId, "paths:upsert", result.path);
+      logActivity(roomId, sessionId, "path:draw", `${result.path.kind}, ${result.path.points.length} points`);
+      sendJson(res, 201, result.path);
+      return true;
+    }
+    const id = Number(payload.id);
+    if (!Number.isInteger(id)) {
+      sendJson(res, 400, { error: "id must be a wall or road id" });
+      return true;
+    }
+    const previous = getPath(roomId, id);
+    if (!previous) {
+      sendJson(res, 404, { error: "that wall or road is no longer on the map" });
+      return true;
+    }
+    if (path === "/api/paths/delete") {
+      deletePath(roomId, id);
+      recordPathChange(roomId, sessionId, previous, null);
+      broadcast(roomId, "paths:delete", { id });
+      logActivity(roomId, sessionId, "path:remove", `${previous.kind} ${id}`);
+      res.writeHead(204);
+      res.end();
+      return true;
+    }
+    const changes = parsePath(payload, true);
+    if (!changes || changes.kind !== undefined) {
+      sendJson(res, 400, { error: "an edit needs the points (at least two, on the map) or whether it's closed" });
+      return true;
+    }
+    if (previous.kind !== "road" && !pathOnLand(roomId, changes)) {
+      sendJson(res, 400, { error: "walls stand on land - every corner needs to be on land" });
+      return true;
+    }
+    const result = updatePath(roomId, id, changes);
+    if (!result.ok) {
+      sendJson(res, result.status, { error: result.error });
+      return true;
+    }
+    recordPathChange(roomId, sessionId, previous, result.path);
+    broadcast(roomId, "paths:upsert", result.path);
+    if (!rateLimited(`objlog:${sessionId}`)) logActivity(roomId, sessionId, "path:edit", `${result.path.kind} ${id}`);
+    sendJson(res, 200, result.path);
+    return true;
+  }
+
   if (path === "/api/terrain" && req.method === "GET") {
     sendJson(res, 200, listCells(roomId));
     return true;
@@ -655,6 +738,10 @@ async function handleRoomApi(
       if (result.restoredTypeCells.length > 0) broadcast(roomId, "terrain-type:update", { cells: result.restoredTypeCells });
       if (result.clearedTypeCells.length > 0) broadcast(roomId, "terrain-type:clear", { cells: result.clearedTypeCells });
       logActivity(roomId, sessionId, "terrain:undo", cellsSummary(result.elevationCells));
+    } else if (result.what === "path") {
+      if (result.upserted) broadcast(roomId, "paths:upsert", result.upserted);
+      if (result.deletedId !== null) broadcast(roomId, "paths:delete", { id: result.deletedId });
+      logActivity(roomId, sessionId, "terrain:undo", result.upserted ? `${result.upserted.kind} ${result.upserted.id} restored` : result.deletedId !== null ? `path ${result.deletedId} removed` : "path left as a collaborator changed it");
     } else {
       if (result.upserted) broadcast(roomId, "objects:upsert", result.upserted);
       if (result.deletedId !== null) broadcast(roomId, "objects:delete", { id: result.deletedId });

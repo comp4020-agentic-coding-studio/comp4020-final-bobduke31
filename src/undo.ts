@@ -9,6 +9,7 @@ import {
   type TerrainTypeCell,
 } from "./terrain.ts";
 import { createObject, deleteObject, getObject, updateObject, type MapObject } from "./objects.ts";
+import { createPath, deletePath, getPath, updatePath, type MapPath } from "./paths.ts";
 
 // Undo, per person and per map. Terrain cells and places stay the shared,
 // ownerless canvas ADR.md decided on: anyone with the edit link may change
@@ -50,7 +51,12 @@ interface PlaceEntry {
   before: MapObject | null; // null: the change created it
   after: MapObject | null; // null: the change removed it
 }
-type Entry = StrokeEntry | PlaceEntry;
+interface PathEntry {
+  kind: "path";
+  before: MapPath | null; // null: the change drew it
+  after: MapPath | null; // null: the change removed it
+}
+type Entry = StrokeEntry | PlaceEntry | PathEntry;
 
 const histories = new Map<string, Entry[]>();
 const keyFor = (roomId: string, sessionId: string) => `${roomId}\u0000${sessionId}`;
@@ -117,6 +123,10 @@ export function recordPlaceChange(roomId: string, sessionId: string, before: Map
   push(history(roomId, sessionId), { kind: "place", before, after });
 }
 
+export function recordPathChange(roomId: string, sessionId: string, before: MapPath | null, after: MapPath | null): void {
+  push(history(roomId, sessionId), { kind: "path", before, after });
+}
+
 export function undoDepth(roomId: string, sessionId: string): number {
   return histories.get(keyFor(roomId, sessionId))?.length ?? 0;
 }
@@ -138,6 +148,7 @@ export type UndoResult =
       remaining: number;
     }
   | { ok: true; what: "place"; upserted: MapObject | null; deletedId: number | null; skipped: number; remaining: number }
+  | { ok: true; what: "path"; upserted: MapPath | null; deletedId: number | null; skipped: number; remaining: number }
   | { ok: false; reason: "nothing-to-undo" };
 
 const sameObject = (a: MapObject | undefined, b: MapObject) =>
@@ -153,6 +164,7 @@ export function undoLast(roomId: string, sessionId: string): UndoResult {
   const remaining = list.length;
 
   if (entry.kind === "place") return undoPlace(roomId, sessionId, entry, remaining);
+  if (entry.kind === "path") return undoPath(roomId, sessionId, entry, remaining);
 
   const cells = [...entry.after.values()];
   const nowElev = elevationsFor(roomId, cells);
@@ -209,4 +221,30 @@ function undoPlace(roomId: string, sessionId: string, entry: PlaceEntry, remaini
   return res.ok
     ? { ok: true, what: "place", upserted: res.object, deletedId: null, skipped: 0, remaining }
     : { ok: true, what: "place", upserted: null, deletedId: null, skipped: 1, remaining };
+}
+
+const samePath = (a: MapPath | undefined, b: MapPath) => !!a && a.closed === b.closed && JSON.stringify(a.points) === JSON.stringify(b.points);
+
+// The same rule as places: a wall or road someone has reshaped or removed
+// since stays as they left it.
+function undoPath(roomId: string, sessionId: string, entry: PathEntry, remaining: number): UndoResult {
+  const { before, after } = entry;
+  const left = (n: number) => ({ ok: true as const, what: "path" as const, upserted: null, deletedId: null, skipped: n, remaining });
+  if (after && !samePath(getPath(roomId, after.id), after)) return left(1);
+  if (!before) {
+    deletePath(roomId, after!.id);
+    return { ok: true, what: "path", upserted: null, deletedId: after!.id, skipped: 0, remaining };
+  }
+  if (!after) {
+    const res = createPath(roomId, sessionId, before);
+    if (!res.ok) return left(1);
+    for (const e of histories.get(keyFor(roomId, sessionId)) ?? []) {
+      if (e.kind !== "path") continue;
+      if (e.before?.id === before.id) e.before = { ...e.before, id: res.path.id };
+      if (e.after?.id === before.id) e.after = { ...e.after, id: res.path.id };
+    }
+    return { ok: true, what: "path", upserted: res.path, deletedId: null, skipped: 0, remaining };
+  }
+  const res = updatePath(roomId, after.id, { points: before.points, closed: before.closed });
+  return res.ok ? { ok: true, what: "path", upserted: res.path, deletedId: null, skipped: 0, remaining } : left(1);
 }

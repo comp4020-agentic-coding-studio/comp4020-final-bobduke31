@@ -11,6 +11,7 @@
 import { gunzipSync, gzipSync } from "node:zlib";
 import { db } from "./db.ts";
 import { listObjects, parsePlacement, replaceObjects, type MapObject } from "./objects.ts";
+import { listPaths, parsePath, replacePaths, type MapPath } from "./paths.ts";
 import { PUBLIC_ROOM_ID } from "./rooms-schema.ts";
 import type { RoomAccess } from "./rooms.ts";
 import {
@@ -47,11 +48,14 @@ export interface MapData {
   // Places on the map (cottages, castles...). Optional: versions and files
   // made before objects existed simply have none.
   objects?: Omit<MapObject, "id">[];
+  // Walls, palisades and roads. Optional for the same reason.
+  paths?: Omit<MapPath, "id">[];
 }
 export interface Snapshot {
   elevation: TerrainCell[];
   types: TerrainTypeCell[];
   objects: Omit<MapObject, "id">[];
+  paths: Omit<MapPath, "id">[];
 }
 
 const insertStmt = db.prepare(
@@ -68,6 +72,7 @@ const oldestCheckpointStmt = db.prepare(
 const deleteStmt = db.prepare("DELETE FROM room_versions WHERE room_id = ? AND id = ?");
 
 const withoutIds = (list: MapObject[]) => list.map(({ kind, x, y, rotation, scale }) => ({ kind, x, y, rotation, scale }));
+const pathsWithoutIds = (list: MapPath[]) => list.map(({ kind, points, closed }) => ({ kind, points, closed }));
 
 export function mapDataFor(roomId: string, name?: string): MapData {
   return {
@@ -77,13 +82,15 @@ export function mapDataFor(roomId: string, name?: string): MapData {
     elevation: listCells(roomId),
     types: listTerrainTypes(roomId),
     objects: withoutIds(listObjects(roomId)),
+    paths: pathsWithoutIds(listPaths(roomId)),
   };
 }
 
-// Terrain and objects together, as restore and copy apply them.
+// Terrain, places and paths together, as restore and copy apply them.
 export function applySnapshot(roomId: string, snap: Snapshot, sessionId: string): void {
   replaceTerrain(roomId, snap.elevation, snap.types);
   replaceObjects(roomId, snap.objects, sessionId);
+  replacePaths(roomId, snap.paths, sessionId);
 }
 
 export function cleanVersionName(value: unknown): string | null {
@@ -111,7 +118,7 @@ function insertVersion(roomId: string, name: string, kind: VersionKind, sessionI
     deleteStmt.run(roomId, oldest.id);
   }
   const data = mapDataFor(roomId);
-  const blob = gzipSync(JSON.stringify({ elevation: data.elevation, types: data.types, objects: data.objects }));
+  const blob = gzipSync(JSON.stringify({ elevation: data.elevation, types: data.types, objects: data.objects, paths: data.paths }));
   const row = insertStmt.run(roomId, name, kind, sessionId, data.elevation.length, blob);
   return { ok: true, value: Number(row.lastInsertRowid) };
 }
@@ -132,7 +139,7 @@ function readVersion(roomId: string, id: number): Snapshot | null {
   const row = getStmt.get(roomId, id) as { data: Uint8Array } | undefined;
   if (!row) return null;
   const snap = JSON.parse(gunzipSync(row.data).toString("utf8"));
-  return { elevation: snap.elevation, types: snap.types, objects: snap.objects ?? [] };
+  return { elevation: snap.elevation, types: snap.types, objects: snap.objects ?? [], paths: snap.paths ?? [] };
 }
 
 const nameStmt = db.prepare("SELECT name FROM room_versions WHERE room_id = ? AND id = ?");
@@ -169,7 +176,7 @@ export function deleteVersion(access: RoomAccess, id: number): Result<null> {
 export function versionData(roomId: string, id: number | null): Snapshot | null {
   if (id !== null) return readVersion(roomId, id);
   const now = mapDataFor(roomId);
-  return { elevation: now.elevation, types: now.types, objects: now.objects ?? [] };
+  return { elevation: now.elevation, types: now.types, objects: now.objects ?? [], paths: now.paths ?? [] };
 }
 
 // An uploaded map file, checked cell by cell exactly as painting is: a file
@@ -183,11 +190,14 @@ export function parseMapData(value: unknown): Snapshot | null {
   if (!v.elevation.every(isValidCell) || !v.types.every(isValidTerrainTypeCell)) return null;
   const objects = v.objects === undefined ? [] : Array.isArray(v.objects) ? v.objects.map((o) => parsePlacement(o)) : [null];
   if (objects.some((o) => o === null)) return null;
+  const paths = v.paths === undefined ? [] : Array.isArray(v.paths) ? v.paths.map((p) => parsePath(p)) : [null];
+  if (paths.some((p) => p === null)) return null;
   const land = new Set(v.elevation.filter((c) => c.elevation > SEA_LEVEL).map((c) => `${c.x},${c.y}`));
   const dedupe = <T extends { x: number; y: number }>(list: T[]) => [...new Map(list.map((c) => [`${c.x},${c.y}`, c])).values()];
   return {
     elevation: dedupe(v.elevation.map(({ x, y, elevation }) => ({ x, y, elevation }))),
     types: dedupe(v.types.filter((t) => land.has(`${t.x},${t.y}`)).map(({ x, y, terrain }) => ({ x, y, terrain }))),
     objects: (objects as Partial<Omit<MapObject, "id">>[]).map((o) => ({ kind: o.kind!, x: o.x!, y: o.y!, rotation: o.rotation ?? 0, scale: o.scale ?? 1 })),
+    paths: (paths as Partial<Omit<MapPath, "id">>[]).map((p) => ({ kind: p.kind!, points: p.points!, closed: p.closed ?? false })),
   };
 }

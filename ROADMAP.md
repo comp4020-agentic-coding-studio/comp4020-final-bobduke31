@@ -2693,25 +2693,121 @@ made dragging on the map fight the page. That was not brought back.
   user's report. No measurements or screenshots were taken from the
   device.
 
-#### Next: connected walls and roads (user request, 22 Oct; not started)
+#### Connected walls, gates, towers and roads (25 Oct, branch `atlas-walls`, not merged or deployed)
 
-Stage B accepted by the user as a direction. Recorded for the next stage,
-not built:
+The user asked for convincing towns and fortifications, not scattered
+models. The plan recorded on 22 Oct was:
+- walls as continuous structures, drawn as a path;
+- gates;
+- roads as a painted path, not hex tiles;
+- both seated on the levelled ground.
 
-- **Walls as continuous structures.** Today each wall is a separate piece.
-  Walls should join up: endpoints snap to each other, corners form where
-  two runs meet, and runs connect properly to towers and gates. This likely
-  means drawing a wall as a path (a list of points) rather than placing
-  pieces one by one, and fitting straight, corner and end pieces along it.
-  Gates are a new kind to add.
-- **Roads**, to make villages and castles feel complete. The KayKit road
-  pieces are hex tiles, so roads need a painted-path tool that follows the
-  terrain. Reuse before build: search for an existing path/spline-road
-  approach and CC0 road textures first, and record what was found in
-  `CREDITS.md`.
-- Both depend on the foundation levelling in 12b13f3: wall runs and roads
-  should seat on the same levelled surface, so they don't float or bury on
-  slopes.
+All of that is built.
+
+- **Design, from established editors.** Dungeondraft and Wonderdraft both
+  draw walls and paths as a line of points: you click each point, then
+  move points afterwards. The editor fits the pieces to the line.
+  Sources are in `CREDITS.md`, "Walls, gates, towers and roads".
+- **Data.** Walls, palisades and roads are stored as a line of points in
+  a new table, `room_paths` (`src/paths.ts`). Following the database
+  rule, no existing table changed. Rules:
+  - every corner of a wall or palisade must be on land;
+  - a road may cross water;
+  - at most 64 points per line, and 200 lines per map.
+
+  Paths are the same shared canvas as places:
+  - every change is broadcast live;
+  - each one can be undone by the person who made it;
+  - an undo leaves a path alone if someone else has reshaped it since;
+  - paths travel with versions, export, import and copy.
+- **Drawing.** These are in the Places panel, as Stone wall, Palisade and
+  Road:
+  - click point by point;
+  - click the first point to close a ring;
+  - double-click the last point, or press Enter, to finish;
+  - Backspace takes back a point, and Esc cancels.
+
+  A new point snaps to the end or corner of any wall or road, or to a tower
+  or castle set down as a place, so runs join up. To edit a drawn line,
+  click it, then drag its gold points. Delete removes it.
+- **What is fitted** (`public/world/paths-layer.js`):
+  - **Wall pieces.** Each run gets whole KayKit wall pieces, stretched
+    slightly to fit exactly and sheared to the slope, so a wall climbs a
+    hill.
+  - **Towers.** They stand at corners, at open ends and every four
+    pieces. None is added where a placed tower or castle already stands.
+  - **Gates.** Wherever a road crosses a wall, the gate piece is centred
+    on the crossing, with a tower on each side. A gate can't be set down by
+    hand, so it never ends up where no road goes.
+  - **Palisades.** A line of sharpened stakes, with an opening where a
+    road passes.
+  - **Roads.** A rutted earth ribbon smoothed through the points and laid
+    on the displayed surface.
+  - **Trees.** They keep clear of walls and roads. Inside a closed ring
+    the forest is cleared to a few garden trees. This is drawn, not
+    stored: removing the wall brings the forest back.
+  - **Chart view.** Towers and stakes lean back like the buildings. Wall
+    runs stay a flat crenellated band, because leaned runs broke apart into
+    separate slabs when tried.
+- **Checked:**
+  - **Tests:** 98/98 pass on a fresh database, with 6 new path tests in
+    `spec/paths.test.ts`, and the typecheck is clean. The path tests cover:
+    - drawing;
+    - the land, shape and view-link rules;
+    - moving a point;
+    - removing;
+    - multi-step undo;
+    - collaborator protection;
+    - versions, export and import.
+  - **Desktop, real mouse input (12/12 passed):**
+    - the point count;
+    - Enter and double-click to finish;
+    - snapping a new wall onto another's end;
+    - selecting by clicking a wall;
+    - dragging a point;
+    - closing a ring;
+    - Undo of a drawing, then of a drag, with a "wall or road" toast;
+    - Delete.
+  - **Regressions:** dragging a building still works, and picking a
+    building while drawing puts the path tool down, and the reverse.
+  - **View link:**
+    - it has no Places tab;
+    - a wall another person drew appeared live;
+    - nothing the view link tried was saved.
+  - **Phone, emulated iPhone 13 with touch:**
+    - three taps drew three points and Finish saved the wall;
+    - the map stayed 377 px wide and didn't change size while drawing;
+    - the page didn't scroll.
+
+    A first version stacked extra rows and shrank the map to 297 px, and a
+    tap was lost when the map moved. It now shares the buildings' row, and
+    the drawing bar replaces that row.
+  - **Looked at in Chart and Relief:**
+    - a walled town in the seeded demo scene;
+    - a hillside castle town whose wall follows the slope, joins the
+      castle, and has a gatehouse where the road enters;
+    - a palisade round a farm.
+
+    No page errors.
+- **Not done, and known limits:**
+  - **Ground colour inside a ring.** Inside a cleared ring the ground keeps
+    its painted forest colour. Repaint it as grassland with the Terrain
+    tool. Changing it automatically would mean editing the ground shader's
+    material twin.
+  - **Chart view at full-map zoom.** Walls are small. They read clearly
+    once zoomed in.
+  - **Gate visibility in Chart.** From straight above, the gate's archway
+    is hidden by the wall top, so the road seems to pass under the wall.
+    The two flanking towers mark the gate. Relief shows it properly.
+  - **Corners.** A tower covers each corner. No mitred wall corner is
+    built.
+  - **No bridges or fords.** A road over water is laid as a plank
+    causeway at the water line, not as a bridge model.
+  - **Shader compile stall.** The first time a new kind of model appears,
+    software-rendered browsers (CI, Playwright) pause for seconds to
+    compile shaders. Deployed code already did this for buildings. A real
+    GPU compiles in milliseconds, but this hasn't been measured on a phone.
+  - **Not yet tried on a real phone.**
 
 ### Writing track (runs alongside the phases, not only at the end)
 

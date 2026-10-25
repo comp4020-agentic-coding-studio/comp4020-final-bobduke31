@@ -15,6 +15,7 @@
 // placement and picking on the CPU agree exactly with what the GPU draws.
 import * as THREE from "./vendor/three/three.module.js";
 import { GLTFLoader } from "./vendor/three/GLTFLoader.js";
+import { createPathLayer } from "./paths-layer.js";
 import { GRID_SIZE, ELEVATION_MIN, ELEVATION_MAX, SEA_LEVEL, TERRAIN_TYPES } from "./terrain-model.js";
 import {
   HEIGHT_SCALE,
@@ -466,8 +467,19 @@ function sampleCoast(sdf, x, y) {
   return sdf[py * COAST_SDF_RES + px];
 }
 
+// Even-odd point-in-polygon test.
+function insideRing(points, x, y) {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const [xi, yi] = points[i];
+    const [xj, yj] = points[j];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
 function placeTreesInChunk(cx, cy, fields) {
-  const { elevationGrid, typeWeights, coastSDF, surface, footprints = [] } = fields;
+  const { elevationGrid, typeWeights, coastSDF, surface, footprints = [], enclosures = [] } = fields;
   const placements = [];
   // Places standing in or near this chunk: no tree grows through a house.
   const x0 = cx * TREE_CHUNK - 1;
@@ -476,6 +488,8 @@ function placeTreesInChunk(cx, cy, fields) {
     const b = footprintBounds(f, TREE_CLEARANCE);
     return b.maxX >= x0 && b.minX <= x0 + TREE_CHUNK + 1 && b.maxY >= y0 && b.minY <= y0 + TREE_CHUNK + 1;
   });
+  // Closed town walls and palisades in or near this chunk (paths-layer.js).
+  const rings = enclosures.filter((r) => r.maxX >= x0 && r.minX <= x0 + TREE_CHUNK + 1 && r.maxY >= y0 && r.minY <= y0 + TREE_CHUNK + 1);
   for (let y = cy * TREE_CHUNK; y < (cy + 1) * TREE_CHUNK; y++) {
     for (let x = cx * TREE_CHUNK; x < (cx + 1) * TREE_CHUNK; x++) {
       for (let k = 0; k < 2; k++) {
@@ -495,11 +509,14 @@ function placeTreesInChunk(cx, cy, fields) {
         if (roll > 0.82) continue;
         const material = paintedMaterialAt(typeWeights, px, py);
         const clump = 0.5 + 0.5 * snoise(px * 0.11 + 31, py * 0.11 + 17);
-        const forest = material[2] * (1 - m / 0.55);
+        // Inside a town wall the forest has been cleared: what was painted
+        // forest grows as the odd garden tree, like open grassland.
+        const walled = rings.length > 0 && rings.some((r) => insideRing(r.points, px, py));
+        const forest = walled ? 0 : material[2] * (1 - m / 0.55);
         let chance = forest > 0.25 ? (0.32 + 0.5 * clump) * Math.min(1, (forest - 0.25) / 0.35) : 0;
         // Lone trees and copses in open grassland.
         const copse = snoise(px * 0.23 + 71, py * 0.23 + 5);
-        chance += material[0] * (1 - m) * (copse > 0.72 ? 0.35 : 0.004);
+        chance += (walled ? material[0] + material[2] : material[0]) * (1 - m) * (copse > 0.72 ? 0.35 : 0.004);
         if (roll > chance) continue;
         const h = sampleSurface(surface, px, py);
         const edge = Math.min(1, Math.max(0.35, forest + 0.2));
@@ -878,7 +895,12 @@ function buildObjectLayer(scene, onChange, onFootprints) {
     return null;
   }
 
-  return { upsert, remove, setAll, select, setSurface, setLean, footprints, pickObject, count: () => live.size };
+  // Towers and castles set down as places: a wall drawn to one ends on it
+  // rather than putting a second tower inside it.
+  const anchors = () =>
+    [...live.values()].filter((e) => e.kind === "tower" || e.kind === "castle").map((e) => ({ x: e.data.x, y: e.data.y }));
+
+  return { upsert, remove, setAll, select, setSurface, setLean, footprints, pickObject, anchors, count: () => live.size };
 }
 
 // --- Picking --------------------------------------------------------------
@@ -1076,12 +1098,38 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     (regions) => {
       for (const r of regions) relevel(r);
       objects.setSurface(surfaceData);
+      paths.setSurface(surfaceData);
+      syncAnchors();
       for (const r of regions) scheduleTrees(r);
       invalidateShadows();
       onAsyncChange();
     },
   );
   let footprintList = [];
+
+  // Walls, palisades and roads (paths-layer.js). Trees keep clear of them
+  // the same way they keep clear of places.
+  let anchorKey = "";
+  const paths = createPathLayer(scene, {
+    onChange: () => {
+      invalidateShadows();
+      onAsyncChange();
+    },
+  });
+  paths.setSurface(surfaceData);
+  function syncAnchors() {
+    const list = objects.anchors();
+    const key = list.map((a) => `${a.x},${a.y}`).join(";");
+    if (key === anchorKey) return;
+    anchorKey = key;
+    paths.setAnchors(list);
+  }
+  let pathRegionTimer = null;
+  function pathsChanged() {
+    // Trees around every path are re-placed on the next tree pass.
+    clearTimeout(pathRegionTimer);
+    pathRegionTimer = setTimeout(() => scheduleTrees(null), 60);
+  }
 
   // Re-apply foundations over a cell region (or everything) and upload
   // just the texels that changed.
@@ -1106,7 +1154,7 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
   }
 
   function currentFields() {
-    return { elevationGrid: currentElevationGridRef, typeWeights, coastSDF: coastData, surface: surfaceData, footprints: footprintList };
+    return { elevationGrid: currentElevationGridRef, typeWeights, coastSDF: coastData, surface: surfaceData, footprints: footprintList.concat(paths.clearance()), enclosures: paths.enclosures() };
   }
 
   let currentElevationGridRef = elevationGrid;
@@ -1305,6 +1353,7 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     mode = next === "top" ? "top" : "oblique";
     camView = views[mode];
     objects.setLean(mode === "top" ? CHART_LEAN : 0);
+    paths.setLean(mode === "top" ? CHART_LEAN : 0);
     applyCameraState();
   }
 
@@ -1424,6 +1473,7 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
       );
       invalidateShadows();
       objects.setSurface(surfaceData);
+      paths.setSurface(surfaceData);
     }
     if (elevationChanged || typeChanged) {
       // +1: a cell crossing sea level changes its own type weight only, but
@@ -1453,6 +1503,14 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
     ndc.y = -(py / canvas.height) * 2 + 1;
     raycaster.setFromCamera(ndc, camera);
     return objects.pickObject(raycaster.ray);
+  }
+
+  // A wall or road under the cursor (or a handle on the selected one).
+  function pickPath(px, py) {
+    ndc.x = (px / canvas.width) * 2 - 1;
+    ndc.y = -(py / canvas.height) * 2 + 1;
+    raycaster.setFromCamera(ndc, camera);
+    return paths.pick(raycaster.ray);
   }
 
   // The exact (fractional) map point under the cursor, for placing and
@@ -1492,6 +1550,27 @@ export function createTerrainScene3D(canvas, elevationGrid, typeGrid, logicalSiz
       remove: (id) => objects.remove(id),
       select: (id) => objects.select(id),
       count: () => objects.count(),
+      anchors: () => objects.anchors(),
+    },
+    pickPath,
+    paths: {
+      setAll: (list) => {
+        paths.setAll(list);
+        pathsChanged();
+      },
+      upsert: (p) => {
+        paths.upsert(p);
+        pathsChanged();
+      },
+      remove: (id) => {
+        paths.remove(id);
+        pathsChanged();
+      },
+      setDraft: (p) => paths.setDraft(p),
+      select: (id) => paths.select(id),
+      get: (id) => paths.get(id),
+      all: () => paths.all(),
+      ready: paths.ready,
     },
     setAspect,
     dispose,

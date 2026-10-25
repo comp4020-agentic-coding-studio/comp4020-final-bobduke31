@@ -39,6 +39,9 @@ export const ACTIONS = [
   "object:place",
   "object:move",
   "object:remove",
+  "path:draw",
+  "path:edit",
+  "path:remove",
   "person:rename",
 ] as const;
 export type ActivityAction = (typeof ACTIONS)[number];
