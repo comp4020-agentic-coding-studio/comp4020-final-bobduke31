@@ -2664,10 +2664,10 @@ made dragging on the map fight the page. That was not brought back.
   - Desktop at 1366 wide looks the same as before.
   - 92/92 tests pass and the typecheck is clean.
 - **Not done, and known limits:**
-  - **Not yet tested on a real phone.** Emulated Chrome sometimes delivers
-    only the first finger of a two-finger touch. A pinch that starts in
-    Places and the real timing of the two-finger tap still need a real
-    phone.
+  - Not tested on a real phone before the deploy, because emulated Chrome
+    sometimes delivers only the first finger of a two-finger touch. The
+    user has since tested v17 on a real phone (see the deploy record
+    below).
   - The editor tour's "Paint on the map" step still names mouse controls
     on a phone. The Help sheet's keyboard list is shown on phones too.
   - The camera sheet covers the lower part of the map while open.
@@ -2688,7 +2688,10 @@ made dragging on the map fight the page. That was not brought back.
   offered the welcome tour. On the phone the map was 377 px, nothing
   scrolled, and all four direction presets and Fit were on screen in
   Relief with the camera panel open.
-- Still to do: a test on a real phone (see the limits above).
+- **Real phone (23 Oct, after the deploy):** the user tested the live v17
+  editor on their own phone and reported that it works. This is the
+  user's report. No measurements or screenshots were taken from the
+  device.
 
 #### Next: connected walls and roads (user request, 22 Oct; not started)
 
