@@ -1,69 +1,82 @@
-# Shared terrain
+# Atlas Table
 
-A real-time, multiplayer fantasy map: anyone who opens it paints shared
-terrain — raise mountains, carve coastlines, plant forests — and sees
-everyone else's changes arrive live, with no reload. There's no login; an
-anonymous session distinguishes one visitor from another, and the server
-checks who did what before it acts.
+A table for fantasy maps that a small group shapes together, live. Make a
+world, raise its mountains, paint its forests, set down villages, draw town
+walls and roads, and send a link: everyone with it sees each change arrive
+within a second. No account is needed.
 
-This started as **The Isle** (Crit 8): a fictional island where visitors
-dropped fixed marks. That app still runs, unchanged, at [`/isle/`](/isle/)
-— it isn't deleted, just no longer the homepage, now that the project's
-actual direction (a real-time, multiplayer map editor, not marks on a
-static image) has a working prototype of its own.
+## Try it
 
-## The core interaction
+- **Home** ([`/`](/)): a world is generated for you; press **Create this
+  world** to make it yours. **Help** replays a one-minute tour.
+- **Editor**: Land, Terrain and Water shape the map, and Places sets down
+  buildings, walls, palisades and roads. **Chart** is a flat map;
+  **Relief** is the same map in 3D. **Share** gives an edit link and a view
+  link.
+- **The shared world** ([`/world/`](/world/)) is open to anyone, so two
+  browsers can try it together straight away.
 
-1. Open the map.
-2. Pick a tool — Raise, Lower, Mountain, Forest, and more line the toolbar.
-3. Drag on the map. The stroke appears instantly for you, and within about a
-   second for everyone else who has the page open.
-4. Made a mistake? **Undo my last stroke** reverts your own most recent
-   edit — never anyone else's, even if someone paints over the same spot
-   right after you.
-5. Switch between a flat Top-down view (precise editing) and a 3D Oblique
-   view (a real lit, shaded heightfield) at any time — both stay in sync
-   with the same shared data.
+## What "good" means here
 
-Everything anyone paints is saved to the server immediately; reload, or
-come back tomorrow, and it's still there.
+Good means a handful of people can make one convincing map together, and
+trust it. Three parts:
 
-## Multi-user, checked on the server
+1. **It looks like a map worth keeping.** Painted cartography, in the style
+   of Inkarnate and Wonderdraft, not a tile grid or icons on a picture. My
+   first version put marks on a fixed island picture; I threw it away
+   because nobody would want to keep what it made.
+2. **Other people make it better, not riskier.** You see who is here and
+   what they change, live. Undo only ever takes back your own work, and it
+   never overwrites a collaborator's newer edit.
+3. **Nothing is lost by accident.** Maps survive restarts and redeploys.
+   Named versions can be restored, with a checkpoint taken first, and maps
+   can be exported and imported.
 
-Two people, each in their own browser with no shared cookies, act on the
-same map and are told apart. What's shared and what's per-person is a
-deliberate choice, not an accident:
+It is built for a small, known group rather than a crowd. Clay Shirky calls
+this "software designed in and for a particular social situation"
+([*Situated Software*](https://gwern.net/doc/technology/2004-03-30-shirky-situatedsoftware.html),
+2004), and Robin Sloan describes making an app "for, and with, my family"
+([*An app can be a home-cooked meal*](https://www.robinsloan.com/notes/home-cooked-app/),
+2020). The design borrows from tools people already trust:
+- Excalidraw and tldraw: rooms joined by a link, not an account, and the
+  work before any sign-up;
+- Owlbear Rodeo: your own maps first, as pictures;
+- Figma and Google Docs: named versions;
+- Dungeondraft: walls drawn point by point.
 
-- **Terrain itself stays a shared, ownerless canvas.** Anyone can paint any
-  cell — there's no claim or lock on a piece of land. This was decided for
-  Crit 9 and hasn't changed; see `ADR.md`'s first entry for why.
-- **Undo is strictly per-session, checked server-side.** A request can only
-  ever undo whatever *that same session* last painted — there's no way to
-  address someone else's edit, by construction, not just by convention. See
-  `ADR.md`'s second entry for the full reasoning.
-- **Every edit is logged, server-side, with who did it** — including
-  attempts that get refused. [`/logs/`](/logs/) shows this live; the same
-  information is also in this app's own process output
-  (`flyctl logs -a <repo>`), so it's there whether or not anyone's looking
-  at the page.
+The full list is in [`CREDITS.md`](CREDITS.md).
 
-## Known gaps — named now, not hidden
+## What is enforced, and what is judged
 
-- **Visual quality is a work in progress.** `ROADMAP.md` tracks this
-  honestly: some terrain (mountains, in particular) still reads as
-  obviously stamped rather than hand-sculpted, named as a real,
-  not-yet-fixed limitation rather than hidden behind a nicer screenshot.
-- **Undo is one level deep, in memory.** It reverts your very last stroke,
-  not a history you can step back through further — that's deliberately
-  left to a later, properly persisted version-history feature, not
-  conflated with this narrower permission feature.
-- **No rate limiting.** A visitor can paint as fast as they like.
-- **One shared map, no growth or multiple maps yet.**
+**Enforced by the checks in [`spec/`](spec/)**, run on every push:
+- A view link can never write.
+- Each map's cells, events and activity stay inside that map.
+- A change reaches everyone else within a second.
+- Undo touches only your own changes, and never a collaborator's newer
+  edit.
+- A version restores the map exactly.
+- Places and walls stay on land.
 
-## Credits
+**Judged by looking**, under the rule in [`CLAUDE.md`](CLAUDE.md): a visual
+change isn't done until it has been rendered, in the browser, beside
+reference maps. This covers how the terrain, buildings and walls look, and
+whether the phone layout is usable. `ROADMAP.md` records those judgements,
+including the failures.
 
-Terrain rendering reuses Three.js (vendored, MIT) and techniques adapted
-from published work — see [the credits page](/credits/) (also
-[`CREDITS.md`](CREDITS.md) in the repo) for the full licence and
-attribution record, including what was built from scratch versus adapted
-from an existing source.
+## What I chose not to build
+
+- **Accounts.** A link is the permission, as in Excalidraw and tldraw.
+- **Locking land to one person.** The map is a shared canvas, and
+  last-write-wins is enough for one server ([`ADR.md`](ADR.md)).
+- **A city-scale isometric view.**
+- **Unlimited undo.** It is 30 steps; versions are the durable way back.
+
+## Known limits
+
+- Undo history is lost on a server restart, and there is no redo.
+- The server holds at most 150 private maps.
+- Walls are small in Chart view until you zoom in.
+- The ground inside a walled town keeps its painted forest colour.
+
+The first prototype, The Isle, still runs at [`/isle/`](/isle/), and a live
+log of who did what is at [`/logs/`](/logs/).

@@ -160,6 +160,9 @@ main {
 }
 
 .readme {
+  /* main is a flex row for The Isle's map; here it would put every heading
+     and paragraph side by side, which on a phone overflowed to ~930px. */
+  display: block;
   max-width: 42rem;
   margin: 2rem auto;
   padding: 0 1.5rem;

@@ -15,6 +15,31 @@ and needs re-adding). A regional-scale map is the near-term fidelity target;
 continent scale is the same engine at a later, larger scope; an isometric
 city view is out of scope for now.
 
+## What the app must never do
+
+These follow from `README.md`'s definition of good. The first two are held
+by the checks in `spec/`, so a change that breaks one fails `pnpm check`.
+The third is checked in part: writes are read back from the database, and
+versions round-trip exactly. Surviving a redeploy is checked by comparing
+production data before and after each deploy (ROADMAP.md). The last two
+can't be tested, so they are rules of conduct.
+
+- **A view link never writes.** Every write route refuses the view link
+  and the wrong map (`spec/rooms.test.ts`).
+- **Undo is yours alone.** It reverses only the caller's own changes, and
+  never a collaborator's newer edit (`spec/activity.test.ts`,
+  `spec/versions.test.ts`, `spec/paths.test.ts`).
+- **Nothing is lost by accident.** Data survives restarts and redeploys.
+  A restore checkpoints the map first. A schema change adds new tables.
+  The one migration that changed existing tables (rooms, in phase 1) was
+  first rehearsed on a copy of production data, with content hashes
+  checked (`src/rooms-schema.ts`, ADR.md).
+- **Deploy safely.** Deploy only through a push to `main` and CI, after a
+  volume snapshot has been seen listed as created. Never deploy from a
+  local machine (ROADMAP.md, 928e90f).
+- **Report only what was observed.** A check that wasn't run is reported
+  as not run. A deploy record once stated a backup that did not exist.
+
 ## Reuse before you build
 
 C8's abandoned terrain brush and this prototype's ink-sketch renderer both
