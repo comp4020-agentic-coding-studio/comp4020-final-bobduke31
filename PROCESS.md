@@ -1,17 +1,15 @@
 # Process overview
 
-<!-- DRAFT for the author to rewrite in their own voice (the brief asks
-students to draft PROCESS.md themselves). Every factual claim below is
-taken from the commit record and ROADMAP.md; the commit links resolve
-(`pnpm check:evidence`). Passages marked [YOUR VIEW] need your own
-judgement. The previous 6,800-word version is in the history at
-119dc2f; the brief asks for this file to be rewritten, not appended to. -->
-
 Atlas Table is a shared fantasy-map table. This account covers how it got
 from the brief to the harness behind it, and why I chose the stack and
 the way of working with agents.
 
 ## From The Isle to a map people make together
+
+The brief put multi-user interaction at the centre, and I wanted that to
+mean something more than many people touching one page. My goal was a
+collaborative fantasy map editor that is actually useful: people building
+and shaping a world together in real time, not decorating a fixed picture.
 
 Crit 8 shipped The Isle: visitors dropped marks on a fixed island picture
 ([37a6cc1](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/37a6cc1)).
@@ -39,8 +37,11 @@ From 21 October the product grew into Atlas Table:
 - town walls and roads
   ([1f0c3c4](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/1f0c3c4)).
 
-[YOUR VIEW: why "a map worth keeping, made with people you trust" became
-your definition of good, rather than, say, a game or a chat space.]
+Each of these served one of four things I came to see as inseparable:
+collaboration, a result that looks good, freedom to shape the world, and
+controls that feel intuitive. Real-time sync with ugly output, or a
+beautiful map nobody else can touch, would each miss the point. Success,
+for me, is collaborative world-building that both works and is fun.
 
 ## Stack: the case, and what it cost
 
@@ -82,13 +83,17 @@ in [`CREDITS.md`](CREDITS.md) with what was passed over.
 
 **Two models.** Commit trailers show Sonnet from 4 to 20 October and
 mostly Opus after that. On the terrain's look, Sonnet went through several
-rejected approaches over two weeks. Opus then fixed the two worst problems,
-circular mountains and rectangular forests, at their source in one session
+rejected approaches over two weeks. During that time I kept changing the
+prompts, the instructions in `CLAUDE.md` and the workflow, but the
+pictures weren't getting much better. Sonnet identified some of the
+problems but repeatedly failed to solve them. So I changed a different
+variable: the model. Opus then fixed the two worst problems, circular mountains and
+rectangular forests, at their source in one session
 ([3dc0491](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/3dc0491)).
-The fix was in the data and the brush, not in more texture on top. That
-lesson went into `CLAUDE.md`.
-
-[YOUR VIEW: how you decided when to switch models, and what that cost.]
+The fix was in the data and the brush, not in more texture on top, and
+that lesson went into `CLAUDE.md`. I took from this that model capability
+really matters, but it wasn't a fair test: Opus started with Sonnet's
+earlier analysis and the improved project context.
 
 ## Corrections that landed in the harness
 
@@ -114,9 +119,9 @@ lesson went into `CLAUDE.md`.
   ([928e90f](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/928e90f)).
   Since then, deploys go only through CI, after a snapshot that is shown
   as listed.
-- **Undo that didn't undo.** Using the app showed that undo was one step
-  deep and split long strokes. It was rebuilt per person and covered by
-  five new tests
+- **Undo that didn't undo.** Using the app showed that undo was
+  one step deep and split long strokes. It was rebuilt per person and
+  covered by five new tests
   ([0821846](https://github.com/comp4020-agentic-coding-studio/comp4020-final-bobduke31/commit/0821846)).
 
 ## What the tests can't see
@@ -126,5 +131,7 @@ never caught a rendering fault: every one above was found by looking. So I
 treat the screenshots in `ROADMAP.md`, and the rule that produces them, as
 part of the checks.
 
-[YOUR VIEW: one or two sentences on what you'd do differently, and what
-the reflections taught you.]
+If I started again, I would study established map editors and fix a clear
+visual target first, then build a small working prototype and use it
+myself before expanding. Automated tests are worth having, but passing
+them never told me the product was good.
