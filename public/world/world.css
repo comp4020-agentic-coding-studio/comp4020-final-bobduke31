@@ -176,6 +176,9 @@ button {
 }
 
 .room-name {
+  /* The map's name is the page's h1; it keeps the topbar's look. */
+  margin: 0;
+  font-weight: inherit;
   font-family: var(--display);
   font-size: 1.28rem;
   letter-spacing: 0.01em;
@@ -708,7 +711,7 @@ input[type="range"]::-moz-range-thumb {
   display: none;
 }
 
-.camera-float h4 {
+.camera-float h2 {
   margin: 0;
   align-self: flex-start;
   font-size: 0.75rem;
@@ -1596,7 +1599,7 @@ body.read-only .edit-only {
     gap: 0.5rem;
   }
   .camera-float:not(.open) { display: none; }
-  .camera-float h4 { display: block; flex: 1 1 auto; margin: 0; text-align: left; }
+  .camera-float h2 { display: block; flex: 1 1 auto; margin: 0; text-align: left; }
   .camera-close {
     display: block;
     flex: none;
@@ -1615,7 +1618,7 @@ body.read-only .edit-only {
      buttons included, so nothing in it is ever cut off. */
   @media (max-height: 640px) {
     .camera-float { top: 3.9rem; bottom: 0.4rem; max-height: none; align-content: flex-start; row-gap: 0.35rem; }
-    .camera-float h4 { font-size: 0.75rem; }
+    .camera-float h2 { font-size: 0.75rem; }
     .camera-gestures { display: none; }
   }
   .camera-float .oblique-only { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.5rem; width: 100%; }
