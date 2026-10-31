@@ -2896,6 +2896,26 @@ All of that is built.
   token and terrain is identical before and after. The cap now counts 49
   maps: 15 real, plus 34 test maps that each got one painted cell from the
   spec. That leaves 101 places.
+- **Two gaps closed before deploying** (the user asked whether the new
+  logic could allow unlimited empty maps, or break when an empty map is
+  filled later):
+  - *Unlimited empty maps:* a second cap of 1,000 maps in all, empty or
+    not. Tested locally: creation stopped at exactly 1,000, and 1,000
+    empty maps took 0.7 MB.
+  - *An empty map filled later:* edits never consult the count. Refusing
+    them would lock people out of maps they already have, so they stay
+    allowed. Instead every map write, the shared world's included, is
+    refused with 507 when the volume has under 50 MB free. Tested locally
+    by setting the threshold above the real free space: create got 429,
+    painting got 507 "the server's storage is full", and reading still
+    returned 200. 160 empty maps were filled after creation had stopped,
+    and all saved.
+  - The editor used to ignore any failed write except 403, so a refused
+    stroke would have looked saved. It now shows the server's reason and
+    reloads the map.
+  - `pnpm check` passes 100/100. In a real browser, a map made through the
+    home page took a brush stroke (elevation rose) with no error, and a
+    second visitor opened it on a phone.
 
 #### Priority until the final deadline (user direction, 25 Oct)
 

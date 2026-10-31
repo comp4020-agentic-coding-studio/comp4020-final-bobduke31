@@ -44,8 +44,10 @@ import {
   PUBLIC_ROOM_ID,
   ROOM_NAME_MAX,
   MAX_ROOMS_PER_SESSION_PER_DAY,
+  MIN_FREE_BYTES_TO_WRITE,
   cleanRoomName,
   createRoom,
+  diskNearlyFull,
   rememberRoom,
   renameRoom,
   reissueToken,
@@ -336,6 +338,10 @@ async function handleRoomApi(
       logActivity(roomId, sessionId, DENIED_ACTION[path as keyof typeof DENIED_ACTION], `DENIED ${path} (view-only link)`);
     }
     sendJson(res, 403, { error: "this is a view-only link - ask for the edit link to make changes" });
+    return true;
+  }
+  if (isWrite && diskNearlyFull(MIN_FREE_BYTES_TO_WRITE)) {
+    sendJson(res, 507, { error: "the server's storage is full - changes can't be saved right now" });
     return true;
   }
 

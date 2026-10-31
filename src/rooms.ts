@@ -29,10 +29,15 @@ export const ROOM_NAME_MAX = 60;
 // hundred bytes, and counting those let 136 untouched test maps fill the
 // cap on production while the volume was 90% free (ROADMAP.md, v19).
 export const MAX_ROOMS_TOTAL = 150;
+// Empty maps still take a row each, so they have a ceiling of their own.
+export const MAX_ROOMS_INCLUDING_EMPTY = 1000;
 export const MAX_ROOMS_PER_SESSION_PER_DAY = 10;
-// And whatever the count, no new map once the volume is nearly full: the
-// cap is a proxy for disk space, this checks the disk itself.
-export const MIN_FREE_BYTES = 150 * 1024 * 1024;
+// The count is a proxy for disk space, and a map that was empty when the
+// count was taken can be filled later, so the disk itself is checked too:
+// no new map under 150 MB free, and no write to any map under 50 MB
+// (server.ts), which leaves SQLite room to finish what it has started.
+export const MIN_FREE_BYTES_TO_CREATE = 150 * 1024 * 1024;
+export const MIN_FREE_BYTES_TO_WRITE = 50 * 1024 * 1024;
 
 // 128 bits, base64url: unguessable and safe in a URL path.
 const TOKEN_RE = /^[A-Za-z0-9_-]{22}$/;
@@ -81,6 +86,7 @@ export function cleanRoomName(value: unknown): string | null {
 const insertRoom = db.prepare(
   "INSERT INTO rooms (id, name, edit_token, view_token, created_by) VALUES (?, ?, ?, ?, ?)",
 );
+const countAllRooms = db.prepare("SELECT count(*) c FROM rooms WHERE id <> ?");
 const countRooms = db.prepare(`
   SELECT count(*) c FROM rooms r WHERE r.id <> ? AND (
     EXISTS (SELECT 1 FROM terrain_cells WHERE room_id = r.id) OR
@@ -89,12 +95,12 @@ const countRooms = db.prepare(`
     EXISTS (SELECT 1 FROM room_paths WHERE room_id = r.id)
   )`);
 
-function diskNearlyFull(): boolean {
+export function diskNearlyFull(minFreeBytes: number): boolean {
   try {
     const fs = statfsSync(dirname(dbPath));
-    return fs.bavail * fs.bsize < MIN_FREE_BYTES;
+    return fs.bavail * fs.bsize < minFreeBytes;
   } catch {
-    return false; // can't tell (e.g. an unusual filesystem): fall back to the count
+    return false; // can't tell (e.g. an unusual filesystem): fall back to the counts
   }
 }
 const countRecentBySession = db.prepare(
@@ -106,7 +112,11 @@ export type CreateResult =
   | { ok: false; reason: "server-full" | "session-limit" };
 
 export function createRoom(name: string, sessionId: string): CreateResult {
-  if (diskNearlyFull() || (countRooms.get(PUBLIC_ROOM_ID) as { c: number }).c >= MAX_ROOMS_TOTAL) {
+  if (
+    diskNearlyFull(MIN_FREE_BYTES_TO_CREATE) ||
+    (countRooms.get(PUBLIC_ROOM_ID) as { c: number }).c >= MAX_ROOMS_TOTAL ||
+    (countAllRooms.get(PUBLIC_ROOM_ID) as { c: number }).c >= MAX_ROOMS_INCLUDING_EMPTY
+  ) {
     return { ok: false, reason: "server-full" };
   }
   if ((countRecentBySession.get(sessionId) as { c: number }).c >= MAX_ROOMS_PER_SESSION_PER_DAY) {

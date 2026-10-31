@@ -307,6 +307,12 @@ async function postBatch(path, cells, stroke) {
   if (res.status === 403) {
     toast("This is a view-only link - changes aren't saved.");
     loadTerrain();
+  } else if (!res.ok) {
+    // e.g. 507 when the server's storage is full: say so, and show what
+    // was actually saved rather than a stroke that wasn't.
+    const { error } = await res.json().catch(() => ({}));
+    toast(error ? `Not saved: ${error}.` : "That change wasn't saved. Try again.");
+    loadTerrain();
   }
 }
 
