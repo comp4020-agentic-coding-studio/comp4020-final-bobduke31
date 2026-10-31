@@ -2917,6 +2917,29 @@ All of that is built.
     home page took a brush stroke (elevation rose) with no error, and a
     second visitor opened it on a phone.
 
+#### Deploy: the map-cap fix (31 Oct, user-approved, CI run 41172833774)
+
+- `main` went from 6c02e1a to 881fd82 (1fa0414, 718da95, 881fd82). The
+  research-note branch is not in its history and not on GitHub.
+- Backups before the push: a full copy of `/data/app.db` downloaded
+  locally (45 MB), and volume snapshot `vs_LNJnp6Dw2Vzosg3wZGoYM` listed as
+  created.
+- CI passed check and deploy, and the live site serves the new client.
+  Fly's release list still showed v19 straight afterwards, as it did
+  after the last deploy.
+- After the deploy, a read-only summary of the database matched the one
+  taken before it exactly: 151 rooms with the same ids, names and links,
+  440,217 terrain cells with the same elevation sum, 109,058 terrain
+  types, and the same places, walls and versions. The public data
+  (terrain, types, marks, places, paths, gallery, room) was byte-identical.
+- On the live site, a map created through the home page took a brush
+  stroke and saved, with no error and no page errors. Between two
+  visitors, an edit arrived in about 20 ms. One browser measurement
+  showed 35 s, but that was the test's own extra connection under the
+  emulated browser, not the app.
+- These checks created two maps on production, both named "Live check 31
+  Oct". No destructive test was run there.
+
 #### Priority until the final deadline (user direction, 25 Oct)
 
 The final project is due 9 November. The user asked that until then, the
