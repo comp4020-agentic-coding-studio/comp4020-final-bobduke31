@@ -2827,6 +2827,41 @@ All of that is built.
   in Places, and no page errors. The new tools have not yet been used on
   the live site.
 
+#### Deploy: Final documents, /readme/ phone fix, editor accessibility (31 Oct, user-approved, Fly v19)
+
+- `main` fast-forwarded from 1f0c3c4 to 6c02e1a: the v18 record and
+  deadline notes (14ba999, dd6c454), the Final README, PROCESS and
+  CLAUDE.md (9fff3df, 1177bea), and two accessibility fixes (6c02e1a).
+  The research-note branch is not in its history and is not on GitHub.
+- Fly had replaced the data volume again since v18: the app now uses
+  vol_r685k2lndnx7e0q4. Before the deploy, the shared world's terrain,
+  terrain types and marks were byte-identical to the copies saved on
+  22 Oct (`.localdata/prod-terrain.json`, `.localdata/deploy4/`), so
+  nothing was lost in the swap. Snapshot `vs_mk1ZG27QDpBeS96OxO42x` showed
+  as created before the push.
+- CI run 41170417295 passed check and deploy; the release is v19.
+- After the deploy, terrain, terrain types, marks, places, paths, gallery
+  and room data were byte-identical to copies fetched just before it.
+- Accessibility: axe (WCAG 2 A/AA and best practice) found nothing on `/`
+  or `/readme/`. On `/world/` it found no h1 and an aria-label on a plain
+  div (the presence list); after the fix the h1 also exposed the Camera
+  panel's h4 as out of order, now an h2. All three pages are clean on the
+  live site at 1920x1080, 390x844 and 960x540 (200% zoom). Every tab stop
+  shows a 2px gold outline; the help dialog opens from the keyboard, takes
+  focus, and gives it back on Escape. The map canvas itself can't be used
+  from the keyboard (not fixed: that would be a new feature).
+- Live `/readme/` now serves the new README, 390px wide on a phone (it
+  was ~930px before the CSS fix).
+- **Found: production is at its 150-map limit.** Any visitor pressing
+  "Create this world" gets "this server has reached its map limit".
+  Because of it, 7 of 20 tests in `spec/rooms.test.ts` failed against
+  production with 429 (they create maps); `spec/invariants.test.ts`
+  passed. Each earlier run of the rooms spec against production created
+  maps that count towards the cap, so test maps are probably part of the
+  150, but how many has not been checked. Not yet fixed.
+- Checked only in Chromium (desktop and phone emulation); Firefox and
+  Safari were not tested.
+
 #### Priority until the final deadline (user direction, 25 Oct)
 
 The final project is due 9 November. The user asked that until then, the
