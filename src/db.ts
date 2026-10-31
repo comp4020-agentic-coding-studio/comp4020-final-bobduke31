@@ -15,7 +15,7 @@ export interface Mark {
   createdAt: string;
 }
 
-const dbPath = process.env.DB_PATH ?? "/data/app.db";
+export const dbPath = process.env.DB_PATH ?? "/data/app.db";
 mkdirSync(dirname(dbPath), { recursive: true });
 
 export const db = new DatabaseSync(dbPath);

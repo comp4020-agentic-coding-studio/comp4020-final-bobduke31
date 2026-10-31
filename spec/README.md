@@ -35,9 +35,13 @@ spec.
 
 `terrain.test.ts`, `activity.test.ts`, `marks.test.ts` and `people.test.ts`
 write to the shared world (or rely on it being quiet), so run them only
-against a throwaway database, as CI does. `rooms.test.ts` and
-`invariants.test.ts` only create private maps or read, and are safe to run
-against the live app. `forge.test.ts` also only creates private maps, but
+against a throwaway database, as CI does. Only `invariants.test.ts` is safe
+to run against the live app: it only reads. `rooms.test.ts` creates 16
+private maps a run and nothing removes them; six deploy checks left 136 of
+them on production, and with the map cap counting every map that refused
+everyone a new map on 31 Oct (ROADMAP.md, v19). Run it against a
+throwaway database too. `capacity.test.ts` creates 160 maps, so the same
+goes for it. `forge.test.ts` also only creates private maps, but
 each stores tens of thousands of cells, so don't run it against production:
 it would spend the live volume and the 150-map cap on test worlds.
 `gallery.test.ts` and `versions.test.ts` forge maps the same way, and the

@@ -77,7 +77,7 @@ maps. That covers how the map looks and whether the phone layout is usable.
 ## Known limits
 
 - Undo history is lost on a server restart, and there is no redo.
-- The server holds at most 150 private maps.
+- The server holds at most 150 private maps with something drawn on them.
 - Walls are small in Chart view until you zoom in.
 - The ground inside a walled town keeps its painted forest colour.
 

@@ -2862,6 +2862,41 @@ All of that is built.
 - Checked only in Chromium (desktop and phone emulation); Firefox and
   Safari were not tested.
 
+#### The full map cap: cause and fix (31 Oct; fix local, not yet deployed)
+
+- **Cause, measured** with a read-only query on production: 151 rooms,
+  the shared world plus 150 private maps. 136 of those carry the exact
+  names `spec/rooms.test.ts` uses ("Test map" x69, "Map A", "Map B" and
+  "Northern Reaches" x9, "Undo A", "Undo B", "Own map", "Listed map" and
+  "New name" x8). Between them they hold 34 terrain cells. The rest, about
+  14, are real or hand-made maps holding 440,183 cells. The database is
+  45 MB, and the 1 GB volume is about 90% free. So the cap was full of
+  test maps, not storage.
+- **Why:** the cap counted every map. `spec/README.md` called
+  `rooms.test.ts` safe against production, and it was run there at six
+  deploys (v10, v12, v13, v15, v17, v18). It creates 16 maps a run and
+  nothing removes them. Each deploy check therefore took 16 places from
+  real users.
+- **Fix** (src/rooms.ts):
+  - the cap counts only maps with terrain, terrain types, places or walls.
+    An empty map is a few hundred bytes;
+  - new maps are also refused once the volume has under 150 MB free, which
+    checks the disk the cap stands in for;
+  - `spec/README.md` now says only `invariants.test.ts` is safe against
+    production;
+  - no map is deleted.
+- **Tests:**
+  - new `spec/capacity.test.ts` creates 160 empty maps, then one that is
+    drawn on. Against the old code it fails at map 151 with "this server
+    has reached its map limit", as production does. With the fix it
+    passes;
+  - `pnpm check` passes 100/100 on an empty database.
+- **On a copy of production's database:** the fixed server created a new
+  generated map, which production refuses. Every existing map's name,
+  token and terrain is identical before and after. The cap now counts 49
+  maps: 15 real, plus 34 test maps that each got one painted cell from the
+  spec. That leaves 101 places.
+
 #### Priority until the final deadline (user direction, 25 Oct)
 
 The final project is due 9 November. The user asked that until then, the
